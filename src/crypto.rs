@@ -55,7 +55,7 @@ impl SerializableKeypair {
 
 pub fn generate_keypair() -> Result<NodeKeypair> {
     let mut secret_bytes = [0u8; SECRET_KEY_LENGTH];
-    OsRng.try_fill_bytes(&mut secret_bytes)?;
+    OsRng.try_fill_bytes(&mut secret_bytes);
 
     let signing = SigningKey::from_bytes(&secret_bytes);
     let verifying = VerifyingKey::from(&signing);
