@@ -55,7 +55,9 @@ impl SerializableKeypair {
 
 pub fn generate_keypair() -> Result<NodeKeypair> {
     let mut secret_bytes = [0u8; SECRET_KEY_LENGTH];
-    OsRng.try_fill_bytes(&mut secret_bytes);
+    OsRng
+        .try_fill_bytes(&mut secret_bytes)
+        .map_err(|e| crate::error::SyncError::Other(format!("RNG error: {}", e)))?;
 
     let signing = SigningKey::from_bytes(&secret_bytes);
     let verifying = VerifyingKey::from(&signing);
@@ -133,5 +135,16 @@ pub fn default_key_path() -> PathBuf {
         let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.push(".config/p2p_sync/keys.json");
         home
+    }
+}
+
+pub fn load_or_create_keypair() -> Result<NodeKeypair> {
+    match load_keypair(None) {
+        Ok(kp) => Ok(kp),
+        Err(_) => {
+            let kp = generate_keypair()?;
+            save_keypair(&kp, None)?;
+            Ok(kp)
+        }
     }
 }

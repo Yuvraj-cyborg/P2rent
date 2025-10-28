@@ -5,3 +5,5 @@ pub mod manifest;
 pub mod net;
 pub mod scanner;
 pub mod sync;
+pub mod storage;
+pub mod protocol;
