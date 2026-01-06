@@ -2,9 +2,11 @@ use crate::crypto;
 use crate::crypto::NodeKeypair;
 use crate::error::Result;
 use crate::protocol::Message;
-use quinn::{ClientConfig, Endpoint, ServerConfig};
-use quinn::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use quinn::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use quinn::rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
+use quinn::{ClientConfig, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,9 +22,11 @@ pub struct Peer {
 // Self note : PrivateKeyDer::Pkcs8() expects enum of PrivatePkcs8KeyDer.
 fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
     let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
-    let cert_der =  CertificateDer::from(certified_key.cert.der().to_vec());
+    let cert_der = CertificateDer::from(certified_key.cert.der().to_vec());
 
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified_key.signing_key.serialize_der()));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        certified_key.signing_key.serialize_der(),
+    ));
 
     Ok((cert_der, key_der))
 }
@@ -43,14 +47,23 @@ impl QuicServer {
 
     // The handshake logic for now, might change later
     pub async fn accept_and_handshake(&self) -> Result<Peer> {
-        let incoming_conn = self.endpoint.accept().await.ok_or_else(|| crate::error::SyncError::Other("Endpoint closed".into()))?;
+        let incoming_conn = self
+            .endpoint
+            .accept()
+            .await
+            .ok_or_else(|| crate::error::SyncError::Other("Endpoint closed".into()))?;
         let conn = incoming_conn.await?;
         let (mut send, mut recv) = conn.accept_bi().await?;
         let client_hello = receive_message(&mut recv).await?;
-        if client_hello.len() < 64 + 8 + 64 { return Err(crate::error::SyncError::Other("Invalid handshake".into())); }
+        if client_hello.len() < 64 + 8 + 64 {
+            return Err(crate::error::SyncError::Other("Invalid handshake".into()));
+        }
         let client_id = String::from_utf8(client_hello[0..64].to_vec())?;
         let our_id = crypto::node_id(&self.keypair);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let payload = crypto::build_handshake_payload(&our_id, now);
         let signature = crypto::sign(&self.keypair, &payload)?;
         let mut server_hello = Vec::new();
@@ -58,7 +71,10 @@ impl QuicServer {
         server_hello.extend_from_slice(&now.to_be_bytes());
         server_hello.extend_from_slice(&signature);
         send_message(&mut send, &server_hello).await?;
-        Ok(Peer { id: client_id, connection: conn })
+        Ok(Peer {
+            id: client_id,
+            connection: conn,
+        })
     }
 }
 
@@ -132,11 +148,18 @@ impl QuicClient {
     }
 
     // The handshake logic is self-contained and complete.
-    pub async fn connect_and_handshake(&self, addr: SocketAddr, keypair: &NodeKeypair) -> Result<Peer> {
+    pub async fn connect_and_handshake(
+        &self,
+        addr: SocketAddr,
+        keypair: &NodeKeypair,
+    ) -> Result<Peer> {
         let conn = self.endpoint.connect(addr, "localhost")?.await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let our_id = crypto::node_id(keypair);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let payload = crypto::build_handshake_payload(&our_id, now);
         let signature = crypto::sign(keypair, &payload)?;
         let mut client_hello = Vec::new();
@@ -145,9 +168,14 @@ impl QuicClient {
         client_hello.extend_from_slice(&signature);
         send_message(&mut send, &client_hello).await?;
         let server_hello = receive_message(&mut recv).await?;
-        if server_hello.len() < 64 + 8 + 64 { return Err(crate::error::SyncError::Other("Invalid handshake".into())); }
+        if server_hello.len() < 64 + 8 + 64 {
+            return Err(crate::error::SyncError::Other("Invalid handshake".into()));
+        }
         let server_id = String::from_utf8(server_hello[0..64].to_vec())?;
-        Ok(Peer { id: server_id, connection: conn })
+        Ok(Peer {
+            id: server_id,
+            connection: conn,
+        })
     }
 }
 
