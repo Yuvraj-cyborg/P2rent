@@ -1,250 +1,185 @@
-<div align="center">
+# p2rent
 
-<picture>
-  <img src="./assets/logo.png" alt="p2rent Logo">
-</picture>
+![p2rent logo](assets/logo.png)
 
-<b>p2rent</b>: A blazing-fast peer-to-peer file sharing tool built from scratch in Rust.
+[![Rust](https://img.shields.io/badge/language-Rust-orange)](https://www.rust-lang.org/)
+[![QUIC](https://img.shields.io/badge/transport-QUIC-blue)](https://www.rfc-editor.org/rfc/rfc9000.html)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-<h3>
-  <a href="#getting-started">Get Started</a> |
-  <a href="#features">Features</a> |
-  <a href="#how-it-works">How It Works</a> |
-  <a href="#license">License</a>
-</h3>
-
-[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange)](https://www.rust-lang.org/)
-[![QUIC Protocol](https://img.shields.io/badge/protocol-QUIC-blue)](https://quicwg.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](#license)
-
-</div>
-
-<hr>
-
-**p2rent** is a mini BitTorrent-like file sharing system that leverages the modern QUIC protocol for fast, secure, and reliable peer-to-peer transfers.
-
-No more slow uploads, complicated torrent clients, or centralized servers. Just share files directly between peers with end-to-end encryption and cryptographic integrity verification.
+Peer-to-peer file transfer over QUIC. Files are split into Blake3-verified chunks; peers exchange data over TLS 1.3 with Ed25519 handshake identity.
 
 ---
 
-## Key Features
+## Contents
 
-|                              |                                                                                                                                                      |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **QUIC Protocol**            | Built on Quinn (Rust QUIC implementation) for multiplexed, low-latency connections with built-in TLS 1.3 encryption.                                |
-| **Cryptographic Security**   | Ed25519 keypairs for peer identity, Blake3 hashing for chunk integrity verification, and automatic certificate generation.                          |
-| **Smart Chunking**           | Files are split into configurable chunks with content-addressed storage, enabling efficient parallel transfers and resumable downloads.             |
-| **Parallel Processing**      | Optional parallel chunking using Rayon for blazing-fast preparation of large directories.                                                           |
-| **Manifest System**          | JSON manifests track file metadata and chunk hashes, making it easy to verify integrity and resume interrupted transfers.                           |
-| **Zero Configuration**       | Automatic keypair generation and storage, sensible defaults, and a simple CLI interface.                                                            |
+- [p2rent](#p2rent)
+  - [Contents](#contents)
+  - [Features](#features)
+  - [Requirements](#requirements)
+  - [Install](#install)
+    - [From source (Cargo)](#from-source-cargo)
+    - [Nix](#nix)
+  - [Usage](#usage)
+  - [Manifests and the wire protocol](#manifests-and-the-wire-protocol)
+  - [CLI](#cli)
+  - [Project layout](#project-layout)
+  - [Security model](#security-model)
+  - [Development](#development)
+  - [Roadmap](#roadmap)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 ---
 
-## Getting Started
+## Features
 
-### Prerequisites
+- **QUIC (Quinn)** — Multiplexed streams, built-in TLS 1.3.
+- **Chunking & integrity** — Configurable chunk size; Blake3 per chunk; hashes checked on fetch.
+- **Identity** — Ed25519 keypairs, signed handshake with replay window.
+- **Wire format** — Binary messages (bincode), size-capped reads.
+- **Manifests** — Small metadata files on disk (see below).
+- **CLI** — `share`, `serve`, `fetch` with optional parallel directory preparation (Rayon).
 
-- Rust 1.85+ (2024 edition)
-- Cargo package manager
+---
 
-### Installation
+## Requirements
+
+- **Rust** 1.85 or newer (2024 edition)
+- **Cargo** (for building from source)
+
+Optional: **Nix** with flakes enabled, for reproducible builds and dev shells.
+
+---
+
+## Install
+
+### From source (Cargo)
 
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/p2rent.git
 cd p2rent
-
-# Build the project
 cargo build --release
-
-# The binary will be at ./target/release/p2rent
+# Binary: target/release/p2rent
 ```
 
-### Install with Nix
+### Nix
 
 ```bash
-# Run directly without installing
 nix run github:yourusername/p2rent
-
-# Install into your profile
-nix profile install github:yourusername/p2rent
-
-# Development shell with all tools
-nix develop
+nix profile install github:yourusername/p2rent   # optional: install into profile
+nix develop                                       # dev shell with toolchain
 ```
 
-### Quick Start
+Replace `yourusername/p2rent` with your fork or organization.
 
-#### 1. Share a File or Directory
+---
+
+## Usage
+
+**1. Prepare content (chunk + manifest + store)**
 
 ```bash
-# Share a single file
-p2rent share myfile.zip
-
-# Share an entire directory (parallel processing)
-p2rent share ./my-folder --parallel
-
-# Custom chunk size (default: 1MB)
-p2rent share largefile.iso --chunk-size 4194304
+p2rent share path/to/file.zip
+p2rent share ./directory --parallel
+p2rent share large.iso --chunk-size 4194304
 ```
 
-#### 2. Start a Server
+**2. Serve chunks**
 
 ```bash
-# Start serving on default address (127.0.0.1:5000)
 p2rent serve
-
-# Or specify a custom address
 p2rent serve --addr 0.0.0.0:5000
 ```
 
-#### 3. Fetch from a Peer
+**3. Fetch using the manifest path**
 
 ```bash
-# Fetch a file using its manifest
-p2rent fetch --addr 192.168.1.10:5000 --manifest myfile.manifest.json
-
-# Specify output path
-p2rent fetch --addr peer:5000 --manifest file.manifest.json --out downloads/myfile.zip
+p2rent fetch --addr 192.168.1.10:5000 --manifest manifests/file.manifest.json
+p2rent fetch --addr peer:5000 --manifest ./file.manifest.json --out ./out.zip
 ```
+
+Flow in short: **share** writes chunks and a manifest; **serve** exposes chunks; **fetch** reads the manifest locally, pulls chunks over QUIC, verifies hashes, writes the output file.
 
 ---
 
-## How It Works
+## Manifests and the wire protocol
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Share     │────▶│   Chunking   │────▶│   Storage   │
-│   Command   │     │  + Hashing   │     │   + Index   │
-└─────────────┘     └──────────────┘     └─────────────┘
-                           │
-                           ▼
-                    ┌──────────────┐
-                    │   Manifest   │
-                    │    (JSON)    │
-                    └──────────────┘
-                           │
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Fetch     │◀────│    QUIC      │◀────│   Serve     │
-│   Command   │     │   Transfer   │     │   Command   │
-└─────────────┘     └──────────────┘     └─────────────┘
-```
-
-1. **Share**: Files are split into chunks, each hashed with Blake3 for integrity
-2. **Manifest**: A JSON manifest is created containing file metadata and chunk hashes  
-3. **Serve**: The server listens for incoming QUIC connections and handles chunk requests
-4. **Fetch**: Clients request chunks using the manifest, verifying each chunk's hash
-5. **Assemble**: Received chunks are combined back into the original file
+| Layer | Format | Role |
+| ----- | ------ | ---- |
+| **On-disk manifest** | JSON (`.manifest.json`) | Human-readable metadata: filename, size, chunk size, ordered Blake3 digests. Shared out-of-band like a small “torrent descriptor.” |
+| **Peer messages over QUIC** | **Bincode** (binary) | `RequestChunk`, `Chunk` payloads, etc. Not JSON — avoids huge encoding overhead for megabyte-scale chunk bodies. |
 
 ---
 
-## CLI Reference
+## CLI
 
-```
-p2rent - Mini BitTorrent-like sharing over QUIC
+Run `p2rent --help` and `p2rent <command> --help` for the full, up-to-date interface.
 
-USAGE:
-    p2rent <COMMAND>
+| Command | Purpose |
+| ------- | ------- |
+| `share <PATH>` | Chunk files, write manifest + chunk store |
+| `serve` | Listen for QUIC peers and serve chunks |
+| `fetch` | Connect to a peer and assemble a file from a manifest |
 
-COMMANDS:
-    serve   Run a QUIC server and accept peers
-    share   Prepare and share a file or directory (chunk + manifest + store)
-    fetch   Fetch a file from a peer using a local manifest
-    help    Print help information
+Common flags: `--addr`, `--manifest`, `--out`, `--stem`, `--chunk-size`, `--storage-dir`, `--manifest-dir`, `--parallel`.
 
-OPTIONS:
-    -h, --help       Print help
-    -V, --version    Print version
-```
+---
 
-### serve
+## Project layout
+
+| Path | Responsibility |
+| ---- | ---------------- |
+| `src/main.rs` | CLI entrypoint |
+| `src/chunk.rs` | Split / combine files |
+| `src/crypto.rs` | Keys, signing, node id |
+| `src/manifest.rs` | Read/write manifest files |
+| `src/storage.rs` | Chunk files on disk |
+| `src/net/protocol.rs` | Message types (serialized with bincode on the wire) |
+| `src/net/quic.rs` | QUIC client/server |
+| `tests/` | Integration tests |
+
+---
+
+## Security model
+
+- **Transport:** QUIC over TLS 1.3 (self-signed server cert today; client does not pin that cert to a public CA).
+- **Handshake:** Ed25519 signatures over a canonical payload; timestamps limited to a replay window.
+- **Content:** Chunk Blake3 hashes in the manifest are checked after download.
+- **Reads:** Incoming application messages are bounded (e.g. 16 MB cap) to limit memory use.
+- **Keys:** Default path `~/.config/p2rent/keys.json` with restrictive permissions where supported.
+
+This is suitable for controlled or LAN-style sharing; it is not a full public-internet anonymity or trust model.
+
+---
+
+## Development
 
 ```bash
-p2rent serve [OPTIONS]
-
-OPTIONS:
-    --addr <ADDR>          Address to listen on [default: 127.0.0.1:5000]
-    --storage-dir <DIR>    Directory to serve chunks from [default: chunks]
+cargo fmt
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-### share
-
-```bash
-p2rent share <PATH> [OPTIONS]
-
-ARGUMENTS:
-    <PATH>    Path to file or directory to share
-
-OPTIONS:
-    --chunk-size <BYTES>     Chunk size in bytes [default: 1048576]
-    --manifest-dir <DIR>     Directory to write manifests [default: manifests]
-    --storage-dir <DIR>      Directory to store chunks [default: chunks]
-    --parallel               Process directory files in parallel
-```
-
-### fetch
-
-```bash
-p2rent fetch [OPTIONS]
-
-OPTIONS:
-    --addr <ADDR>           Peer address (e.g., 127.0.0.1:5000)
-    --manifest <PATH>       Path to manifest JSON for the file to fetch
-    --out <PATH>            Output file path
-    --stem <NAME>           File stem (folder under storage_dir on the server)
-```
-
----
----
-
-## Security
-
-- **Ed25519 Signatures**: Peer identity is cryptographically verified during handshake (signatures + timestamp replay protection)
-- **Blake3 Hashing**: Every chunk is hashed with Blake3 and verified against the manifest on download
-- **TLS 1.3**: All QUIC connections use TLS 1.3 encryption by default
-- **Binary Wire Protocol**: Peer messages use bincode (compact binary serialization) instead of JSON
-- **Message Size Limits**: All incoming messages are capped at 16 MB to prevent memory exhaustion
-- **Local Keypair Storage**: Keys are stored in `~/.config/p2rent/` with restricted permissions (0600)
-
----
-
-## Performance
-
-p2rent is designed for high throughput:
-
-- **Streaming chunking** with configurable buffer sizes
-- **Parallel directory processing** via Rayon
-- **Multiplexed QUIC streams** for concurrent chunk transfers
-- **Content-addressed storage** enabling deduplication
+CI runs format, clippy, tests, and builds on push/PR; tagged releases publish cross-compiled binaries (see `.github/workflows/`).
 
 ---
 
 ## Roadmap
 
-- [ ] DHT for peer discovery
-- [ ] Multi-peer parallel downloads (swarm)
-- [ ] NAT traversal / hole punching
-- [ ] Bandwidth throttling
-- [ ] Web UI for monitoring
-- [ ] Resume interrupted transfers
-- [ ] Selective file downloading from directories
+- Peer discovery (e.g. DHT)
+- Multi-source / swarm downloads
+- NAT traversal
+- Rate limiting and resumable transfers
+- Selective files from directory manifests
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Issues and pull requests are welcome. Please run `cargo fmt`, `cargo clippy`, and `cargo test` before submitting.
 
 ---
 
 ## License
 
-p2rent is licensed under the MIT License.
-
----
-
-<div align="center">
-
-**Share files, not worries.**
-
-</div>
+This project is licensed under the MIT License — see [LICENSE](LICENSE).
