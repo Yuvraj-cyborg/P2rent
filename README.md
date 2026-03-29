@@ -195,30 +195,6 @@ OPTIONS:
 ```
 
 ---
-
-## Architecture
-
-```
-src/
-├── main.rs        # CLI entry point and command handlers
-├── lib.rs         # Library exports
-├── chunk.rs       # File chunking and reassembly
-├── crypto.rs      # Ed25519 keypairs, signing, verification
-├── error.rs       # Error types and handling
-├── manifest.rs    # Manifest creation and parsing
-├── scanner.rs     # Directory scanning utilities
-├── storage.rs     # Chunk storage and retrieval
-├── sync.rs        # Directory sync orchestration
-└── net/
-    ├── mod.rs     # Network module exports
-    ├── protocol.rs # Wire protocol messages (bincode-serialized)
-    └── quic.rs    # QUIC client/server implementation
-tests/
-├── chunk_storage.rs  # Chunking + storage roundtrip tests
-├── crypto_keys.rs    # Keypair persistence tests
-└── quic_fetch.rs     # End-to-end QUIC transfer test
-```
-
 ---
 
 ## Security
