@@ -1,4 +1,4 @@
-use p2rent::crypto::{default_key_path, load_or_create_keypair};
+use p2rent::crypto::load_or_create_keypair;
 
 #[test]
 fn load_or_create_roundtrip() {
@@ -7,4 +7,3 @@ fn load_or_create_roundtrip() {
     let kp2 = load_or_create_keypair().expect("load again");
     assert_eq!(kp1.verifying.to_bytes(), kp2.verifying.to_bytes());
 }
-

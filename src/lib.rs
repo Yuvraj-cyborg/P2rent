@@ -3,7 +3,6 @@ pub mod crypto;
 pub mod error;
 pub mod manifest;
 pub mod net;
-pub mod protocol;
 pub mod scanner;
 pub mod storage;
 pub mod sync;

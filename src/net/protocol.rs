@@ -5,7 +5,6 @@ pub enum Message {
         file_hash: String,
         total_chunks: u64,
     },
-    /// Client requests a single chunk by file stem and chunk index
     RequestChunk {
         stem: String,
         index: u64,

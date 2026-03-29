@@ -29,8 +29,8 @@ pub struct SerializableKeypair {
 impl From<&NodeKeypair> for SerializableKeypair {
     fn from(kp: &NodeKeypair) -> Self {
         SerializableKeypair {
-            public_b64: general_purpose::STANDARD.encode(&kp.verifying.to_bytes()),
-            private_b64: general_purpose::STANDARD.encode(&kp.signing.to_bytes()),
+            public_b64: general_purpose::STANDARD.encode(kp.verifying.to_bytes()),
+            private_b64: general_purpose::STANDARD.encode(kp.signing.to_bytes()),
             created_at_unix: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -127,13 +127,12 @@ pub fn build_handshake_payload(node_id: &NodeId, timestamp_unix_secs: u64) -> Ve
 
 pub fn default_key_path() -> PathBuf {
     if let Some(mut dir) = dirs::config_dir() {
-        dir.push("p2p_sync");
+        dir.push("p2rent");
         dir.push("keys.json");
         dir
     } else {
-        // fallback ~/.config/p2p_sync/keys.json
         let mut home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.push(".config/p2p_sync/keys.json");
+        home.push(".config/p2rent/keys.json");
         home
     }
 }

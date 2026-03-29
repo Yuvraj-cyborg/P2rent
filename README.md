@@ -44,7 +44,7 @@ No more slow uploads, complicated torrent clients, or centralized servers. Just 
 
 ### Prerequisites
 
-- Rust 1.75+ (2024 edition)
+- Rust 1.85+ (2024 edition)
 - Cargo package manager
 
 ### Installation
@@ -58,6 +58,19 @@ cd p2rent
 cargo build --release
 
 # The binary will be at ./target/release/p2rent
+```
+
+### Install with Nix
+
+```bash
+# Run directly without installing
+nix run github:yourusername/p2rent
+
+# Install into your profile
+nix profile install github:yourusername/p2rent
+
+# Development shell with all tools
+nix develop
 ```
 
 ### Quick Start
@@ -187,28 +200,34 @@ OPTIONS:
 
 ```
 src/
-├── main.rs       # CLI entry point and command handlers
-├── lib.rs        # Library exports
-├── chunk.rs      # File chunking and reassembly
-├── crypto.rs     # Ed25519 keypairs, signing, verification
-├── error.rs      # Error types and handling
-├── manifest.rs   # Manifest creation and parsing
-├── protocol.rs   # Message types for peer communication
-├── scanner.rs    # Directory scanning utilities
-├── storage.rs    # Chunk storage and retrieval
-├── sync.rs       # Synchronization primitives
+├── main.rs        # CLI entry point and command handlers
+├── lib.rs         # Library exports
+├── chunk.rs       # File chunking and reassembly
+├── crypto.rs      # Ed25519 keypairs, signing, verification
+├── error.rs       # Error types and handling
+├── manifest.rs    # Manifest creation and parsing
+├── scanner.rs     # Directory scanning utilities
+├── storage.rs     # Chunk storage and retrieval
+├── sync.rs        # Directory sync orchestration
 └── net/
-    ├── mod.rs    # Network module exports
-    └── quic.rs   # QUIC client/server implementation
+    ├── mod.rs     # Network module exports
+    ├── protocol.rs # Wire protocol messages (bincode-serialized)
+    └── quic.rs    # QUIC client/server implementation
+tests/
+├── chunk_storage.rs  # Chunking + storage roundtrip tests
+├── crypto_keys.rs    # Keypair persistence tests
+└── quic_fetch.rs     # End-to-end QUIC transfer test
 ```
 
 ---
 
 ## Security
 
-- **Ed25519 Signatures**: Peer identity is verified using Ed25519 digital signatures
-- **Blake3 Hashing**: Every chunk is hashed with Blake3, ensuring data integrity
+- **Ed25519 Signatures**: Peer identity is cryptographically verified during handshake (signatures + timestamp replay protection)
+- **Blake3 Hashing**: Every chunk is hashed with Blake3 and verified against the manifest on download
 - **TLS 1.3**: All QUIC connections use TLS 1.3 encryption by default
+- **Binary Wire Protocol**: Peer messages use bincode (compact binary serialization) instead of JSON
+- **Message Size Limits**: All incoming messages are capped at 16 MB to prevent memory exhaustion
 - **Local Keypair Storage**: Keys are stored in `~/.config/p2rent/` with restricted permissions (0600)
 
 ---

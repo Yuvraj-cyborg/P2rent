@@ -1,7 +1,7 @@
 use crate::crypto;
 use crate::crypto::NodeKeypair;
-use crate::error::Result;
-use crate::protocol::Message;
+use crate::error::{Result, SyncError};
+use crate::net::protocol::Message;
 use quinn::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
@@ -12,23 +12,80 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16 MB
+
+const ALPN_PROTOCOL: &[u8] = b"p2rent/1";
+
+/// pubkey (32) + timestamp (8) + ed25519 signature (64)
+const HANDSHAKE_SIZE: usize = 32 + 8 + 64;
+const MAX_HANDSHAKE_DRIFT_SECS: u64 = 60;
+
 #[derive(Debug, Clone)]
 pub struct Peer {
     pub id: crypto::NodeId,
     pub connection: quinn::Connection,
 }
 
-// Need to generate a TLS certificate for the server using Pkcs8, faced issue in enum type of Pkcs8 but now its fixed.
-// Self note : PrivateKeyDer::Pkcs8() expects enum of PrivatePkcs8KeyDer.
 fn generate_self_signed_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
     let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let cert_der = CertificateDer::from(certified_key.cert.der().to_vec());
-
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
         certified_key.signing_key.serialize_der(),
     ));
-
     Ok((cert_der, key_der))
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn build_handshake_bytes(keypair: &NodeKeypair) -> Result<Vec<u8>> {
+    let node_id = crypto::node_id(keypair);
+    let now = current_unix_secs();
+    let payload = crypto::build_handshake_payload(&node_id, now);
+    let signature = crypto::sign(keypair, &payload)?;
+
+    let mut out = Vec::with_capacity(HANDSHAKE_SIZE);
+    out.extend_from_slice(&keypair.verifying.to_bytes());
+    out.extend_from_slice(&now.to_be_bytes());
+    out.extend_from_slice(&signature);
+    Ok(out)
+}
+
+fn verify_handshake(data: &[u8]) -> Result<crypto::NodeId> {
+    if data.len() != HANDSHAKE_SIZE {
+        return Err(SyncError::Other(format!(
+            "invalid handshake: expected {} bytes, got {}",
+            HANDSHAKE_SIZE,
+            data.len()
+        )));
+    }
+
+    let pubkey: [u8; 32] = data[0..32].try_into().unwrap();
+    let timestamp = u64::from_be_bytes(data[32..40].try_into().unwrap());
+    let sig: [u8; 64] = data[40..104].try_into().unwrap();
+
+    let node_id = crypto::node_id_from_pubkey(&pubkey);
+    let payload = crypto::build_handshake_payload(&node_id, timestamp);
+
+    if !crypto::verify(&pubkey, &payload, &sig)? {
+        return Err(SyncError::Other(
+            "handshake signature verification failed".into(),
+        ));
+    }
+
+    let now = current_unix_secs();
+    let drift = now.abs_diff(timestamp);
+    if drift > MAX_HANDSHAKE_DRIFT_SECS {
+        return Err(SyncError::Other(format!(
+            "handshake timestamp drift {drift}s exceeds {MAX_HANDSHAKE_DRIFT_SECS}s limit"
+        )));
+    }
+
+    Ok(node_id)
 }
 
 pub struct QuicServer {
@@ -39,38 +96,32 @@ pub struct QuicServer {
 impl QuicServer {
     pub async fn bind(addr: SocketAddr, keypair: NodeKeypair) -> Result<Self> {
         let (cert, key) = generate_self_signed_cert()?;
-        let server_config = ServerConfig::with_single_cert(vec![cert], key)?;
+        let mut server_crypto = quinn::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)?;
+        server_crypto.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
+        let quic_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
+            .map_err(|e| SyncError::Other(format!("QUIC server crypto config: {e}")))?;
+        let server_config = ServerConfig::with_crypto(Arc::new(quic_crypto));
         let endpoint = Endpoint::server(server_config, addr)?;
-
         Ok(Self { endpoint, keypair })
     }
 
-    // The handshake logic for now, might change later
     pub async fn accept_and_handshake(&self) -> Result<Peer> {
-        let incoming_conn = self
+        let incoming = self
             .endpoint
             .accept()
             .await
-            .ok_or_else(|| crate::error::SyncError::Other("Endpoint closed".into()))?;
-        let conn = incoming_conn.await?;
+            .ok_or_else(|| SyncError::Other("endpoint closed".into()))?;
+        let conn = incoming.await?;
         let (mut send, mut recv) = conn.accept_bi().await?;
-        let client_hello = receive_message(&mut recv).await?;
-        if client_hello.len() < 64 + 8 + 64 {
-            return Err(crate::error::SyncError::Other("Invalid handshake".into()));
-        }
-        let client_id = String::from_utf8(client_hello[0..64].to_vec())?;
-        let our_id = crypto::node_id(&self.keypair);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let payload = crypto::build_handshake_payload(&our_id, now);
-        let signature = crypto::sign(&self.keypair, &payload)?;
-        let mut server_hello = Vec::new();
-        server_hello.extend_from_slice(our_id.as_bytes());
-        server_hello.extend_from_slice(&now.to_be_bytes());
-        server_hello.extend_from_slice(&signature);
-        send_message(&mut send, &server_hello).await?;
+
+        let client_hello = receive_raw(&mut recv, HANDSHAKE_SIZE).await?;
+        let client_id = verify_handshake(&client_hello)?;
+
+        let server_hello = build_handshake_bytes(&self.keypair)?;
+        send_raw(&mut send, &server_hello).await?;
+
         Ok(Peer {
             id: client_id,
             connection: conn,
@@ -134,11 +185,10 @@ impl QuicClient {
         rustls_config
             .dangerous()
             .set_certificate_verifier(Arc::new(SkipServerVerification));
+        rustls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
-        rustls_config.alpn_protocols = vec![b"hq-29".to_vec()];
-
-        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config).unwrap();
-
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
+            .map_err(|e| SyncError::Other(format!("QUIC client crypto config: {e}")))?;
         let client_config = ClientConfig::new(Arc::new(crypto));
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
@@ -147,7 +197,6 @@ impl QuicClient {
         Ok(Self { endpoint })
     }
 
-    // The handshake logic is self-contained and complete.
     pub async fn connect_and_handshake(
         &self,
         addr: SocketAddr,
@@ -155,23 +204,13 @@ impl QuicClient {
     ) -> Result<Peer> {
         let conn = self.endpoint.connect(addr, "localhost")?.await?;
         let (mut send, mut recv) = conn.open_bi().await?;
-        let our_id = crypto::node_id(keypair);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let payload = crypto::build_handshake_payload(&our_id, now);
-        let signature = crypto::sign(keypair, &payload)?;
-        let mut client_hello = Vec::new();
-        client_hello.extend_from_slice(our_id.as_bytes());
-        client_hello.extend_from_slice(&now.to_be_bytes());
-        client_hello.extend_from_slice(&signature);
-        send_message(&mut send, &client_hello).await?;
-        let server_hello = receive_message(&mut recv).await?;
-        if server_hello.len() < 64 + 8 + 64 {
-            return Err(crate::error::SyncError::Other("Invalid handshake".into()));
-        }
-        let server_id = String::from_utf8(server_hello[0..64].to_vec())?;
+
+        let client_hello = build_handshake_bytes(keypair)?;
+        send_raw(&mut send, &client_hello).await?;
+
+        let server_hello = receive_raw(&mut recv, HANDSHAKE_SIZE).await?;
+        let server_id = verify_handshake(&server_hello)?;
+
         Ok(Peer {
             id: server_id,
             connection: conn,
@@ -179,24 +218,26 @@ impl QuicClient {
     }
 }
 
-pub async fn send_message(stream: &mut quinn::SendStream, msg: &[u8]) -> Result<()> {
-    stream.write_all(msg).await?;
+async fn send_raw(stream: &mut quinn::SendStream, data: &[u8]) -> Result<()> {
+    stream.write_all(data).await?;
     stream.finish()?;
     Ok(())
 }
 
-pub async fn receive_message(stream: &mut quinn::RecvStream) -> Result<Vec<u8>> {
-    let data = stream.read_to_end(usize::MAX).await?;
+async fn receive_raw(stream: &mut quinn::RecvStream, max_size: usize) -> Result<Vec<u8>> {
+    let data = stream.read_to_end(max_size).await?;
     Ok(data)
 }
 
-pub async fn send_json_message(stream: &mut quinn::SendStream, msg: &Message) -> Result<()> {
-    let data = serde_json::to_vec(msg)?;
-    send_message(stream, &data).await
+pub async fn send_message(stream: &mut quinn::SendStream, msg: &Message) -> Result<()> {
+    let data =
+        bincode::serialize(msg).map_err(|e| SyncError::Other(format!("bincode encode: {e}")))?;
+    send_raw(stream, &data).await
 }
 
-pub async fn receive_json_message(stream: &mut quinn::RecvStream) -> Result<Message> {
-    let data = receive_message(stream).await?;
-    let msg: Message = serde_json::from_slice(&data)?;
+pub async fn receive_message(stream: &mut quinn::RecvStream) -> Result<Message> {
+    let data = receive_raw(stream, MAX_MESSAGE_SIZE).await?;
+    let msg: Message = bincode::deserialize(&data)
+        .map_err(|e| SyncError::Other(format!("bincode decode: {e}")))?;
     Ok(msg)
 }

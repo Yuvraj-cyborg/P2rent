@@ -4,13 +4,13 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use p2rent::chunk::{self, Chunk};
 use p2rent::crypto::load_or_create_keypair;
 use p2rent::manifest::{self, Manifest};
+use p2rent::net::protocol::Message;
 use p2rent::net::quic::{self, Peer, QuicClient, QuicServer};
 use p2rent::scanner;
 use p2rent::storage;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tokio;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,14 +55,14 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Serve { addr, storage_dir } => {
-            let keypair = load_or_create_keypair().unwrap();
-            let listen_addr: SocketAddr = addr.parse().expect("invalid listen addr");
-            let server = QuicServer::bind(listen_addr, keypair).await.unwrap();
+            let keypair = load_or_create_keypair()?;
+            let listen_addr: SocketAddr = addr.parse()?;
+            let server = QuicServer::bind(listen_addr, keypair).await?;
             println!("Listening on {listen_addr}");
 
             loop {
@@ -87,16 +87,11 @@ async fn main() {
             storage_dir,
             parallel,
         } => {
-            let path = path;
-            let chunk_size = chunk_size;
-            let manifest_dir = manifest_dir;
-            let storage_dir = storage_dir;
-
             if path.is_dir() {
-                let files = scanner::scan_directory(&path).expect("scan failed");
+                let files = scanner::scan_directory(&path)?;
                 if files.is_empty() {
                     println!("No files found in directory.");
-                    return;
+                    return Ok(());
                 }
 
                 println!(
@@ -110,11 +105,10 @@ async fn main() {
                 if !Confirm::new()
                     .with_prompt("Continue?")
                     .default(true)
-                    .interact()
-                    .unwrap()
+                    .interact()?
                 {
                     println!("Cancelled.");
-                    return;
+                    return Ok(());
                 }
 
                 let started = Instant::now();
@@ -138,12 +132,8 @@ async fn main() {
                             share_one_file(file, chunk_size, &manifest_dir, &storage_dir, None)
                         {
                             eprintln!("Failed to share {:?}: {}", file, e);
-                        } else {
-                            if let Ok(meta) = std::fs::metadata(file) {
-                                total_bytes
-                                    .fetch_add(meta.len(), std::sync::atomic::Ordering::Relaxed);
-                            }
-                            // chunks counted inside helper via return value is not collected; skip precise total here
+                        } else if let Ok(meta) = std::fs::metadata(file) {
+                            total_bytes.fetch_add(meta.len(), std::sync::atomic::Ordering::Relaxed);
                         }
                         total_pb.inc(1);
                     });
@@ -200,7 +190,7 @@ async fn main() {
             stem,
         } => {
             // Load manifest and prepare output
-            let manifest_data = p2rent::manifest::read_manifest(&manifest).expect("read manifest");
+            let manifest_data = p2rent::manifest::read_manifest(&manifest)?;
             let out_path = out.unwrap_or_else(|| PathBuf::from(&manifest_data.file_name));
             let stem = stem.unwrap_or_else(|| {
                 PathBuf::from(&manifest_data.file_name)
@@ -210,13 +200,10 @@ async fn main() {
                     .to_string()
             });
 
-            let keypair = load_or_create_keypair().unwrap();
-            let client = QuicClient::new().await.expect("client");
-            let addr: SocketAddr = addr.parse().expect("addr");
-            let peer = client
-                .connect_and_handshake(addr, &keypair)
-                .await
-                .expect("connect");
+            let keypair = load_or_create_keypair()?;
+            let client = QuicClient::new().await?;
+            let addr: SocketAddr = addr.parse()?;
+            let peer = client.connect_and_handshake(addr, &keypair).await?;
             let total = manifest_data.chunks.len() as u64;
 
             let pb = ProgressBar::new(total);
@@ -231,42 +218,44 @@ async fn main() {
             let mut received: Vec<Option<Vec<u8>>> = vec![None; total as usize];
 
             for index in 0..total {
-                let (mut send, mut recv) = peer.connection.open_bi().await.expect("open stream");
-                let req = p2rent::protocol::Message::RequestChunk {
+                let (mut send, mut recv) = peer.connection.open_bi().await?;
+                let req = Message::RequestChunk {
                     stem: stem.clone(),
                     index,
                 };
-                quic::send_json_message(&mut send, &req)
-                    .await
-                    .expect("send req");
-                match quic::receive_json_message(&mut recv).await.expect("recv") {
-                    p2rent::protocol::Message::Chunk { index: idx, data } => {
-                        if idx == index {
-                            received[idx as usize] = Some(data);
-                            pb.inc(1);
-                        }
-                    }
-                    _ => {}
+                quic::send_message(&mut send, &req).await?;
+                if let Message::Chunk { index: idx, data } =
+                    quic::receive_message(&mut recv).await?
+                    && idx == index
+                {
+                    received[idx as usize] = Some(data);
+                    pb.inc(1);
                 }
             }
             pb.finish_with_message("downloaded");
 
-            // Assemble to file
-            let mut chunks_vec: Vec<p2rent::chunk::Chunk> = Vec::with_capacity(received.len());
+            let mut chunks_vec: Vec<Chunk> = Vec::with_capacity(received.len());
             for (i, maybe) in received.into_iter().enumerate() {
-                let data = maybe.expect("missing chunk");
+                let data = maybe.ok_or_else(|| anyhow::anyhow!("missing chunk {i} from server"))?;
                 let hash: [u8; 32] = blake3::hash(&data).into();
-                chunks_vec.push(p2rent::chunk::Chunk {
+                let expected = manifest_data.chunks[i];
+                anyhow::ensure!(
+                    hash == expected,
+                    "chunk {i} integrity check failed — hash mismatch"
+                );
+                chunks_vec.push(Chunk {
                     index: i as u64,
                     hash,
                     size: data.len(),
                     data,
                 });
             }
-            p2rent::chunk::combine_chunks(&chunks_vec, &out_path).expect("write out");
+            chunk::combine_chunks(&chunks_vec, &out_path)?;
             println!("Written {}", out_path.display());
         }
     }
+
+    Ok(())
 }
 
 struct ShareInfo {
@@ -292,7 +281,7 @@ fn share_one_file(
         .unwrap_or(&file_name);
 
     let meta = std::fs::metadata(file)?;
-    let approx_total_chunks = ((meta.len() as usize + chunk_size - 1) / chunk_size) as u64;
+    let approx_total_chunks = (meta.len() as usize).div_ceil(chunk_size) as u64;
 
     let pb_spinner = ProgressBar::new_spinner();
     pb_spinner.set_style(ProgressStyle::with_template("{spinner} chunking {msg}").unwrap());
@@ -330,8 +319,11 @@ fn share_one_file(
         Some(bar)
     };
 
+    let dir_str = file_out_dir
+        .to_str()
+        .ok_or_else(|| p2rent::error::SyncError::Other("non-UTF-8 path".into()))?;
     for c in &chunks {
-        storage::save_chunk(file_out_dir.to_str().unwrap(), c)?;
+        storage::save_chunk(dir_str, c)?;
         if let Some(pb) = &save_pb {
             pb.inc(1);
         }
@@ -367,42 +359,34 @@ fn share_one_file(
 }
 
 async fn handle_peer(peer: Peer, storage_dir: PathBuf) {
-    // This is where the logic goes.
-    // Loop and wait for incoming streams/messages from this peer.
-    // e.g., peer.connection.accept_bi().await
     println!("Handling connection with {}", peer.id);
-    loop {
-        match peer.connection.accept_bi().await {
-            Ok((mut send, mut recv)) => match quic::receive_json_message(&mut recv).await {
-                Ok(p2rent::protocol::Message::RequestChunk { stem, index }) => {
-                    let mut dir = storage_dir.clone();
-                    dir.push(stem);
-                    match p2rent::storage::load_chunk(dir.to_str().unwrap(), index) {
-                        Ok(ch) => {
-                            let msg = p2rent::protocol::Message::Chunk {
-                                index: ch.index,
-                                data: ch.data,
-                            };
-                            let _ = quic::send_json_message(&mut send, &msg).await;
-                        }
-                        Err(e) => {
-                            let _ =
-                                quic::send_json_message(&mut send, &p2rent::protocol::Message::Bye)
-                                    .await;
-                            eprintln!("load_chunk error: {}", e);
-                        }
+    while let Ok((mut send, mut recv)) = peer.connection.accept_bi().await {
+        match quic::receive_message(&mut recv).await {
+            Ok(Message::RequestChunk { stem, index }) => {
+                let mut dir = storage_dir.clone();
+                dir.push(stem);
+                let dir_str = dir.to_str().unwrap_or(".");
+                match storage::load_chunk(dir_str, index) {
+                    Ok(ch) => {
+                        let msg = Message::Chunk {
+                            index: ch.index,
+                            data: ch.data,
+                        };
+                        let _ = quic::send_message(&mut send, &msg).await;
+                    }
+                    Err(e) => {
+                        let _ = quic::send_message(&mut send, &Message::Bye).await;
+                        eprintln!("load_chunk error: {}", e);
                     }
                 }
-                Ok(_) => {
-                    let _ =
-                        quic::send_json_message(&mut send, &p2rent::protocol::Message::Bye).await;
-                }
-                Err(e) => {
-                    eprintln!("recv error: {}", e);
-                    break;
-                }
-            },
-            Err(_) => break,
+            }
+            Ok(_) => {
+                let _ = quic::send_message(&mut send, &Message::Bye).await;
+            }
+            Err(e) => {
+                eprintln!("recv error: {}", e);
+                break;
+            }
         }
     }
 }
