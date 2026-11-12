@@ -11,7 +11,7 @@ use std::time::Duration;
 
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_STREAMS_PER_CONNECTION: u32 = 64;
+const MAX_STREAMS_PER_CONNECTION: u32 = 16;
 const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
 const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 

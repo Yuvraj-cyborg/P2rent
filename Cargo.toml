@@ -11,8 +11,11 @@ keywords = ["p2p", "quic", "swarm", "blake3", "file-transfer"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
+anyhow = "1"
 blake3 = "1.8"
+clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
+indicatif = "0.17"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rayon = "1.10"
@@ -23,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
 walkdir = "2.5"
 
 [dev-dependencies]
