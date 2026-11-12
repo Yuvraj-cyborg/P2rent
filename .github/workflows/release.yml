@@ -27,6 +27,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: p2rent-aarch64-darwin
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: p2rent-x86_64-windows
 
     steps:
       - uses: actions/checkout@v4
@@ -47,13 +50,14 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package binary
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.artifact }}.tar.gz p2rent
-          cd ../../..
+          if [ -f p2rent.exe ]; then binary=p2rent.exe; else binary=p2rent; fi
+          tar czf "../../../${{ matrix.artifact }}.tar.gz" "$binary"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
