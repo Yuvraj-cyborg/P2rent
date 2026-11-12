@@ -124,7 +124,9 @@ impl Connection {
     /// The peer's address as seen from this side. Peers dial and listen on
     /// the same socket, so this is also where others can reach it.
     pub fn remote_addr(&self) -> SocketAddr {
-        self.inner.remote_address()
+        let addr = self.inner.remote_address();
+        // A dual-stack socket reports IPv4 peers as IPv4-mapped IPv6.
+        SocketAddr::new(addr.ip().to_canonical(), addr.port())
     }
 
     pub fn close(&self) {
