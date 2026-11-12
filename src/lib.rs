@@ -2,6 +2,7 @@
 
 pub mod artifact;
 pub mod error;
+pub mod store;
 
 mod hex;
 
