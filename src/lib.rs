@@ -1,8 +1,11 @@
-pub mod chunk;
-pub mod crypto;
+//! p2rent: swarm distribution of large artifacts over QUIC.
+
+pub mod artifact;
 pub mod error;
-pub mod manifest;
 pub mod net;
-pub mod scanner;
-pub mod storage;
-pub mod sync;
+pub mod store;
+pub mod swarm;
+
+mod hex;
+
+pub use error::{Error, Result};

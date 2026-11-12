@@ -1,185 +1,148 @@
-# p2rent
+<p align="center">
+  <img src="assets/logo.png" alt="p2rent" width="380">
+</p>
 
-![p2rent logo](assets/logo.png)
+<p align="center">
+  Swarm distribution of large artifacts over QUIC.
+</p>
 
-[![Rust](https://img.shields.io/badge/language-Rust-orange)](https://www.rust-lang.org/)
-[![QUIC](https://img.shields.io/badge/transport-QUIC-blue)](https://www.rfc-editor.org/rfc/rfc9000.html)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/Yuvraj-cyborg/P2rent/actions/workflows/ci.yml"><img src="https://github.com/Yuvraj-cyborg/P2rent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT license"></a>
+</p>
 
-Peer-to-peer file transfer over QUIC. Files are split into Blake3-verified chunks; peers exchange data over TLS 1.3 with Ed25519 handshake identity.
+p2rent copies large files and directories (model weights, datasets, build
+outputs, VM images) to many machines at once. Every machine that is
+downloading also serves the parts it already has, so the tenth machine is not
+waiting on the first. It is a single binary with no tracker, scheduler or
+database to run.
 
----
+## Quick start
 
-## Contents
+On the machine that has the data:
 
-- [p2rent](#p2rent)
-  - [Contents](#contents)
-  - [Features](#features)
-  - [Requirements](#requirements)
-  - [Install](#install)
-    - [From source (Cargo)](#from-source-cargo)
-    - [Nix](#nix)
-  - [Usage](#usage)
-  - [Manifests and the wire protocol](#manifests-and-the-wire-protocol)
-  - [CLI](#cli)
-  - [Project layout](#project-layout)
-  - [Security model](#security-model)
-  - [Development](#development)
-  - [Roadmap](#roadmap)
-  - [Contributing](#contributing)
-  - [License](#license)
+```console
+$ p2rent seed ./weights
+seeding  weights  (400.68 MiB, 402 chunks)
+p2rent://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
+```
 
----
+On every machine that needs it:
 
-## Features
+```console
+$ p2rent get 'p2rent://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433' --out /models --seed
+saved    /models/weights  (400.68 MiB)
+fetched  400.68 MiB from 2 peers
+         35964d95  219.68 MiB
+         aec1c5f2  181.00 MiB
+```
 
-- **QUIC (Quinn)** — Multiplexed streams, built-in TLS 1.3.
-- **Chunking & integrity** — Configurable chunk size; Blake3 per chunk; hashes checked on fetch.
-- **Identity** — Ed25519 keypairs, signed handshake with replay window.
-- **Wire format** — Binary messages (bincode), size-capped reads.
-- **Manifests** — Small metadata files on disk (see below).
-- **CLI** — `share`, `serve`, `fetch` with optional parallel directory preparation (Rayon).
+Here the second machine to ask got part of the data from the first one, which
+was still seeding. (Ids are shortened and the timing line is omitted.)
 
----
+The ticket is the only thing a machine needs. `--seed` keeps the machine
+serving after its own download finishes. Interrupted downloads resume: run the
+same command again and only the missing chunks are fetched.
 
-## Requirements
+## How it works
 
-- **Rust** 1.85 or newer (2024 edition)
-- **Cargo** (for building from source)
+- **Content addressed.** `seed` hashes files in place with BLAKE3 and builds a
+  manifest. The ticket carries the hash of that manifest, so a ticket pins
+  exactly which bytes will arrive.
+- **Verified before written.** Each chunk is checked against the manifest
+  before it touches the disk. A peer that sends bad data is dropped and never
+  contacted again.
+- **Many sources.** Chunks are requested from several peers in parallel and
+  offered to others as soon as they land. Peers find each other through the
+  peers they already know.
+- **No copies.** Seeders serve straight from the original files; downloaders
+  write straight into the destination. Memory use does not grow with artifact
+  size.
+- **Authenticated.** Every node has an Ed25519 key. Connections are QUIC with
+  TLS 1.3, authenticated in both directions against those keys.
 
-Optional: **Nix** with flakes enabled, for reproducible builds and dev shells.
-
----
+More detail: [architecture](docs/architecture.md) · [protocol](docs/protocol.md)
 
 ## Install
 
-### From source (Cargo)
-
-```bash
-git clone https://github.com/yourusername/p2rent.git
-cd p2rent
-cargo build --release
-# Binary: target/release/p2rent
+```console
+$ cargo install --git https://github.com/Yuvraj-cyborg/P2rent --locked
 ```
 
-### Nix
+With Nix:
 
-```bash
-nix run github:yourusername/p2rent
-nix profile install github:yourusername/p2rent   # optional: install into profile
-nix develop                                       # dev shell with toolchain
+```console
+$ nix run github:Yuvraj-cyborg/P2rent -- --help
 ```
 
-Replace `yourusername/p2rent` with your fork or organization.
-
----
+From a checkout, `cargo build --release` produces `target/release/p2rent`.
+Building needs Rust 1.88 or newer.
 
 ## Usage
 
-**1. Prepare content (chunk + manifest + store)**
-
-```bash
-p2rent share path/to/file.zip
-p2rent share ./directory --parallel
-p2rent share large.iso --chunk-size 4194304
-```
-
-**2. Serve chunks**
-
-```bash
-p2rent serve
-p2rent serve --addr 0.0.0.0:5000
-```
-
-**3. Fetch using the manifest path**
-
-```bash
-p2rent fetch --addr 192.168.1.10:5000 --manifest manifests/file.manifest.json
-p2rent fetch --addr peer:5000 --manifest ./file.manifest.json --out ./out.zip
-```
-
-Flow in short: **share** writes chunks and a manifest; **serve** exposes chunks; **fetch** reads the manifest locally, pulls chunks over QUIC, verifies hashes, writes the output file.
-
----
-
-## Manifests and the wire protocol
-
-| Layer | Format | Role |
-| ----- | ------ | ---- |
-| **On-disk manifest** | JSON (`.manifest.json`) | Human-readable metadata: filename, size, chunk size, ordered Blake3 digests. Shared out-of-band like a small “torrent descriptor.” |
-| **Peer messages over QUIC** | **Bincode** (binary) | `RequestChunk`, `Chunk` payloads, etc. Not JSON — avoids huge encoding overhead for megabyte-scale chunk bodies. |
-
----
-
-## CLI
-
-Run `p2rent --help` and `p2rent <command> --help` for the full, up-to-date interface.
-
 | Command | Purpose |
-| ------- | ------- |
-| `share <PATH>` | Chunk files, write manifest + chunk store |
-| `serve` | Listen for QUIC peers and serve chunks |
-| `fetch` | Connect to a peer and assemble a file from a manifest |
+| --- | --- |
+| `p2rent seed <PATH>...` | Hash files or directories and serve them. Prints one ticket per path on stdout. |
+| `p2rent get <TICKET>` | Download into `--out` (default: current directory). |
+| `p2rent id` | Print this machine's node id. |
 
-Common flags: `--addr`, `--manifest`, `--out`, `--stem`, `--chunk-size`, `--storage-dir`, `--manifest-dir`, `--parallel`.
+Commonly used options:
 
----
+| Option | Applies to | Meaning |
+| --- | --- | --- |
+| `--listen <ADDR>` | both | Address to bind. `seed` defaults to `0.0.0.0:4433`. |
+| `--advertise <HOST[:PORT]>` | `seed` | Address to put in the ticket when the detected one is wrong, such as behind NAT or with a DNS name. |
+| `--chunk-size <SIZE>` | `seed` | 4K to 16M, default 1M. |
+| `--seed` | `get` | Keep serving after the download completes. |
+| `--peer <NODE@HOST:PORT>` | `get` | Extra peer to try, in addition to those in the ticket. |
+| `--key <FILE>` | all | Node key file. Also `P2RENT_KEY`. |
 
-## Project layout
-
-| Path | Responsibility |
-| ---- | ---------------- |
-| `src/main.rs` | CLI entrypoint |
-| `src/chunk.rs` | Split / combine files |
-| `src/crypto.rs` | Keys, signing, node id |
-| `src/manifest.rs` | Read/write manifest files |
-| `src/storage.rs` | Chunk files on disk |
-| `src/net/protocol.rs` | Message types (serialized with bincode on the wire) |
-| `src/net/quic.rs` | QUIC client/server |
-| `tests/` | Integration tests |
-
----
+Run `p2rent <command> --help` for the full list.
 
 ## Security model
 
-- **Transport:** QUIC over TLS 1.3 (self-signed server cert today; client does not pin that cert to a public CA).
-- **Handshake:** Ed25519 signatures over a canonical payload; timestamps limited to a replay window.
-- **Content:** Chunk Blake3 hashes in the manifest are checked after download.
-- **Reads:** Incoming application messages are bounded (e.g. 16 MB cap) to limit memory use.
-- **Keys:** Default path `~/.config/p2rent/keys.json` with restrictive permissions where supported.
+- A ticket is a capability: anyone who has it, and can reach a peer, can
+  download the artifact. Treat tickets for private data as secrets.
+- Peers are identified by key, not address. A downloader only talks to the
+  node ids named in its ticket or introduced by those nodes.
+- Integrity does not depend on trusting peers: all data is verified against
+  the ticket's hash.
+- Symlinks are not followed when seeding, and manifests received from peers
+  are validated so that no path can leave the destination directory.
 
-This is suitable for controlled or LAN-style sharing; it is not a full public-internet anonymity or trust model.
+## Status
 
----
+Version 0.2 is a rewrite and is not yet production software.
 
-## Development
-
-```bash
-cargo fmt
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
-
-CI runs format, clippy, tests, and builds on push/PR; tagged releases publish cross-compiled binaries (see `.github/workflows/`).
-
----
+- Developed and tested on macOS. CI runs the test suite on Linux, macOS and
+  Windows; Windows has not been used beyond that.
+- Peers must be able to reach each other directly. There is no NAT traversal
+  or relay yet.
+- There are no upload rate limits or access controls beyond possession of
+  the ticket.
+- If a seeded file changes on disk, its chunks stop verifying and downloaders
+  will drop that seeder. Seed again to publish the new contents.
 
 ## Roadmap
 
-- Peer discovery (e.g. DHT)
-- Multi-source / swarm downloads
-- NAT traversal
-- Rate limiting and resumable transfers
-- Selective files from directory manifests
+1. Origin fallback: seed from, and fall back to, an HTTP, S3 or Hugging Face
+   URL, so a swarm is never slower than a direct download.
+2. LAN discovery, so machines on one network need no ticket peers.
+3. Private swarms gated by a shared key or a node allowlist.
+4. A long-running daemon with a disk quota, rate limits and metrics.
 
----
+## Development
 
-## Contributing
+```console
+$ just          # list tasks
+$ just ci       # format check, clippy, tests
+$ just demo     # three nodes on this machine
+```
 
-Issues and pull requests are welcome. Please run `cargo fmt`, `cargo clippy`, and `cargo test` before submitting.
-
----
+`nix develop` provides the toolchain. Without `just`, the same checks are
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test`.
 
 ## License
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
