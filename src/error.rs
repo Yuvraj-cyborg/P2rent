@@ -4,7 +4,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("i/o: {0}")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error("invalid manifest: {0}")]
@@ -16,7 +16,7 @@ pub enum Error {
     #[error("identity: {0}")]
     Identity(String),
 
-    #[error("tls: {0}")]
+    #[error(transparent)]
     Tls(#[from] rustls::Error),
 
     #[error("transport: {0}")]

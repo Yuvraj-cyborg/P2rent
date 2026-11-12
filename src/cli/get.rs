@@ -115,7 +115,11 @@ async fn download_with_progress(
         }
     };
     bar.finish_and_clear();
-    outcome.context("download failed; run the same command again to resume")
+    outcome.with_context(|| match progress.phase() {
+        // Whatever arrived is on disk and verified, so a retry continues.
+        Phase::Downloading => "download interrupted; run the same command again to resume",
+        _ => "download failed",
+    })
 }
 
 fn print_summary(report: &Report) {
