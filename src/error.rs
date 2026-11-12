@@ -1,51 +1,36 @@
 use thiserror::Error;
 
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
 #[derive(Debug, Error)]
-pub enum SyncError {
-    #[error("I/O error: {0}")]
+pub enum Error {
+    #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("WalkDir error: {0}")]
-    WalkDir(#[from] walkdir::Error),
+    #[error("invalid manifest: {0}")]
+    InvalidManifest(String),
 
-    #[error("Serde JSON error: {0}")]
-    Serde(#[from] serde_json::Error),
+    #[error("invalid ticket: {0}")]
+    InvalidTicket(String),
 
-    #[error("Base64 decode error: {0}")]
-    Base64(#[from] base64::DecodeError),
+    #[error("identity: {0}")]
+    Identity(String),
 
-    #[error("Cryptography signature error: {0}")]
-    Key(#[from] ed25519_dalek::SignatureError),
+    #[error("tls: {0}")]
+    Tls(#[from] rustls::Error),
 
-    #[error("Slice conversion error: {0}")]
-    Slice(#[from] std::array::TryFromSliceError),
+    #[error("transport: {0}")]
+    Transport(String),
 
-    #[error("QUIC connection error: {0}")]
-    QuicConnection(#[from] quinn::ConnectionError),
+    #[error("protocol: {0}")]
+    Protocol(String),
 
-    #[error("QUIC connection setup error: {0}")]
-    QuicConnect(#[from] quinn::ConnectError),
+    #[error("peer presented node id {actual}, expected {expected}")]
+    IdentityMismatch { expected: String, actual: String },
 
-    #[error("QUIC stream write error: {0}")]
-    QuicWrite(#[from] quinn::WriteError),
+    #[error("no reachable peer could provide the manifest")]
+    ManifestUnavailable,
 
-    #[error("QUIC stream read-to-end error: {0}")]
-    QuicReadToEnd(#[from] quinn::ReadToEndError),
-
-    #[error("QUIC stream was closed: {0}")]
-    QuicStreamClosed(#[from] quinn::ClosedStream),
-
-    #[error("TLS error: {0}")]
-    Tls(#[from] quinn::rustls::Error),
-
-    #[error("Certificate generation error: {0}")]
-    Rcgen(#[from] rcgen::Error),
-
-    #[error("UTF8 conversion error: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
-
-    #[error("Other error: {0}")]
-    Other(String),
+    #[error("download stalled: no peer made progress for {0:?}")]
+    Stalled(std::time::Duration),
 }
-
-pub type Result<T> = std::result::Result<T, SyncError>;
