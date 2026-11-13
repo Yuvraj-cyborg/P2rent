@@ -200,6 +200,11 @@ impl<'a> Connected<'a> {
 impl Drop for Connected<'_> {
     fn drop(&mut self) {
         self.session.progress.peers.fetch_sub(1, Ordering::Relaxed);
+        debug!(
+            peer = %self.connection.peer().short(),
+            path_mtu = self.connection.path_mtu(),
+            "disconnected from peer"
+        );
         self.connection.close();
     }
 }
