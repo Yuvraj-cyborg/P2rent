@@ -651,6 +651,7 @@ dependencies = [
  "libc",
  "postcard",
  "quinn",
+ "quinn-udp",
  "rayon",
  "rcgen",
  "rustls",
