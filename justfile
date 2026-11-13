@@ -28,6 +28,10 @@ lint:
 ci: lint
     cargo test --locked
 
+# Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
+bench size_mb="1024" seeders="1" runs="3" files="1":
+    P2RENT_BENCH_SIZE_MB={{size_mb}} P2RENT_BENCH_SEEDERS={{seeders}} P2RENT_BENCH_RUNS={{runs}} P2RENT_BENCH_FILES={{files}} cargo bench --locked --bench transfer
+
 # Run p2rent from source, e.g. `just run seed ./model.bin`
 run *args:
     cargo run --release -- {{args}}

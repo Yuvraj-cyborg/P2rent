@@ -10,6 +10,13 @@ repository = "https://github.com/Yuvraj-cyborg/P2rent"
 keywords = ["p2p", "quic", "swarm", "blake3", "file-transfer"]
 categories = ["command-line-utilities", "network-programming"]
 
+[features]
+default = ["fast-apple-datapath"]
+# Send and receive UDP packets in batches on macOS. This uses sendmsg_x and
+# recvmsg_x, which Apple does not document as public API. If a future macOS
+# breaks them, build with `--no-default-features`.
+fast-apple-datapath = ["quinn-udp/fast-apple-datapath"]
+
 [dependencies]
 anyhow = "1"
 blake3 = "1.8"
@@ -18,6 +25,7 @@ dirs = "6"
 indicatif = "0.17"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+quinn-udp = { version = "0.5", default-features = false }
 rayon = "1.10"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -31,6 +39,13 @@ walkdir = "2.5"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "transfer"
+harness = false
 
 [profile.release]
 lto = "thin"

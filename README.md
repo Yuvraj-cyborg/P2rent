@@ -17,6 +17,16 @@ downloading also serves the parts it already has, so the tenth machine is not
 waiting on the first. It is a single binary with no tracker, scheduler or
 database to run.
 
+```
+ direct download                    p2rent
+
+      source                        source ─── A ─── C
+   ┌──┬──┼──┬──┐                       │   ╲   │   ╱ │
+   A  B  C  D  E                       B ───── D ─── E
+
+ five machines share one uplink     every machine is also a source
+```
+
 ## Quick start
 
 On the machine that has the data:
@@ -61,8 +71,8 @@ same command again and only the missing chunks are fetched.
 - **Authenticated.** Every node has an Ed25519 key. Connections are QUIC with
   TLS 1.3, authenticated in both directions against those keys.
 
-More detail: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
-[performance notes](docs/performance.md)
+More detail: [illustrated walk-through](docs/how-it-works.md) ·
+[architecture](docs/architecture.md) · [protocol](docs/protocol.md)
 
 ## Install
 
@@ -138,6 +148,7 @@ Version 0.2 is a rewrite and is not yet production software.
 $ just          # list tasks
 $ just ci       # format check, clippy, tests
 $ just demo     # three nodes on this machine
+$ just bench    # time a loopback transfer
 ```
 
 `nix develop` provides the toolchain. Without `just`, the same checks are
