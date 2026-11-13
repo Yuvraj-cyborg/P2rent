@@ -100,18 +100,21 @@ fn main() {
                 report
             })
             .expect("download failed");
-        let cpu = cpu_time().map(|after| after - cpu_before.unwrap());
+        let cpu = cpu_time()
+            .zip(cpu_before)
+            .map(|(after, before)| (after.0 - before.0, after.1 - before.1));
         assert_eq!(report.fetched_bytes, size, "download was not complete");
 
         let per_second = size as f64 / MIB as f64 / report.elapsed.as_secs_f64();
         rates.push(per_second);
         match cpu {
-            Some(cpu) => {
-                let cost = cpu.as_secs_f64() / gib;
-                cpu_per_gib.push(cost);
+            Some((user, system)) => {
+                let (user, system) = (user.as_secs_f64() / gib, system.as_secs_f64() / gib);
+                cpu_per_gib.push(user + system);
                 println!(
-                    "  run {run}   {}   {cost:.2} cpu-s/GiB",
-                    rate(size, report.elapsed)
+                    "  run {run}   {}   {:.2} cpu-s/GiB  (user {user:.2}, system {system:.2})",
+                    rate(size, report.elapsed),
+                    user + system,
                 );
             }
             None => println!("  run {run}   {}", rate(size, report.elapsed)),
@@ -189,9 +192,9 @@ fn rate(bytes: u64, elapsed: Duration) -> String {
     )
 }
 
-/// User plus system CPU time used by this process so far.
+/// User and system CPU time used by this process so far.
 #[cfg(unix)]
-fn cpu_time() -> Option<Duration> {
+fn cpu_time() -> Option<(Duration, Duration)> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: `getrusage` fills the struct it is given and reports failure
     // through its return value.
@@ -204,10 +207,10 @@ fn cpu_time() -> Option<Duration> {
     let seconds = |time: libc::timeval| {
         Duration::from_secs(time.tv_sec as u64) + Duration::from_micros(time.tv_usec as u64)
     };
-    Some(seconds(usage.ru_utime) + seconds(usage.ru_stime))
+    Some((seconds(usage.ru_utime), seconds(usage.ru_stime)))
 }
 
 #[cfg(not(unix))]
-fn cpu_time() -> Option<Duration> {
+fn cpu_time() -> Option<(Duration, Duration)> {
     None
 }
