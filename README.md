@@ -61,7 +61,8 @@ same command again and only the missing chunks are fetched.
 - **Authenticated.** Every node has an Ed25519 key. Connections are QUIC with
   TLS 1.3, authenticated in both directions against those keys.
 
-More detail: [architecture](docs/architecture.md) · [protocol](docs/protocol.md)
+More detail: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
+[performance notes](docs/performance.md)
 
 ## Install
 
