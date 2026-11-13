@@ -137,6 +137,7 @@ Version 0.2 is a rewrite and is not yet production software.
 $ just          # list tasks
 $ just ci       # format check, clippy, tests
 $ just demo     # three nodes on this machine
+$ just bench    # time a loopback transfer
 ```
 
 `nix develop` provides the toolchain. Without `just`, the same checks are

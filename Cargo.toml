@@ -32,6 +32,13 @@ walkdir = "2.5"
 [dev-dependencies]
 tempfile = "3"
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[[bench]]
+name = "transfer"
+harness = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
