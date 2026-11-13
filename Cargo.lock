@@ -650,6 +650,7 @@ dependencies = [
  "indicatif",
  "postcard",
  "quinn",
+ "quinn-udp",
  "rayon",
  "rcgen",
  "rustls",
