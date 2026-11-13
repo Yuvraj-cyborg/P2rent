@@ -25,6 +25,7 @@
               ./Cargo.lock
               ./src
               ./tests
+              ./benches
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
