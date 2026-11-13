@@ -3,6 +3,7 @@
 use p2rent::Error;
 use p2rent::net::{Endpoint, Identity};
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 fn localhost() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
@@ -52,4 +53,36 @@ async fn connecting_to_the_wrong_node_fails() {
         matches!(error, Error::IdentityMismatch { .. }),
         "unexpected error: {error}"
     );
+}
+
+/// Loopback carries far more than a standard Ethernet frame, so discovery
+/// should move the connection past the 1452 bytes it would otherwise stop at.
+#[tokio::test]
+async fn datagrams_grow_when_the_route_allows() {
+    let server_identity = Identity::generate().unwrap();
+    let server = Endpoint::bind(&server_identity, localhost()).unwrap();
+    let client = Endpoint::bind(&Identity::generate().unwrap(), localhost()).unwrap();
+    let addr = server.local_addr().unwrap();
+
+    let accept = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept().await.unwrap().establish().await.unwrap() }
+    });
+    let outbound = client
+        .connect(addr, server_identity.node_id())
+        .await
+        .unwrap();
+    let inbound = accept.await.unwrap();
+    assert!(outbound.path_mtu() <= 1452, "connections must start small");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while outbound.path_mtu() <= 1452 || inbound.path_mtu() <= 1452 {
+        assert!(
+            Instant::now() < deadline,
+            "path MTU stayed at {} and {}",
+            outbound.path_mtu(),
+            inbound.path_mtu()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

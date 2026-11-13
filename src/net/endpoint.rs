@@ -15,6 +15,15 @@ const MAX_STREAMS_PER_CONNECTION: u32 = 16;
 const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
 const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 
+/// Largest datagram to send or accept: what fits in a 9000-byte jumbo frame
+/// after the IPv6 and UDP headers.
+///
+/// Most of the CPU cost of a transfer is paid per packet, so bigger packets
+/// are the cheapest speed-up there is. Connections still start at QUIC's safe
+/// minimum and only grow as far as path MTU discovery proves the route can
+/// carry, so this changes nothing on a standard 1500-byte network.
+const MAX_DATAGRAM: u16 = 9000 - 40 - 8;
+
 /// A QUIC socket that both dials and accepts, authenticated as one node.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
@@ -27,6 +36,9 @@ impl Endpoint {
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self> {
         let (mut server, mut client) = tls::configs(identity)?;
 
+        let mut mtu_discovery = quinn::MtuDiscoveryConfig::default();
+        mtu_discovery.upper_bound(MAX_DATAGRAM);
+
         let mut transport = quinn::TransportConfig::default();
         transport
             .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_PER_CONNECTION))
@@ -37,12 +49,19 @@ impl Endpoint {
             ))
             .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
             .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
-            .send_window(u64::from(CONNECTION_WINDOW));
+            .send_window(u64::from(CONNECTION_WINDOW))
+            .mtu_discovery_config(Some(mtu_discovery));
         let transport = Arc::new(transport);
         server.transport_config(transport.clone());
         client.transport_config(transport);
 
-        let mut inner = quinn::Endpoint::server(server, addr)?;
+        let mut config = quinn::EndpointConfig::default();
+        config
+            .max_udp_payload_size(MAX_DATAGRAM)
+            .map_err(|e| Error::Transport(e.to_string()))?;
+        let socket = std::net::UdpSocket::bind(addr)?;
+        let mut inner =
+            quinn::Endpoint::new(config, Some(server), socket, Arc::new(quinn::TokioRuntime))?;
         inner.set_default_client_config(client);
         Ok(Self {
             inner,
@@ -127,6 +146,12 @@ impl Connection {
         let addr = self.inner.remote_address();
         // A dual-stack socket reports IPv4 peers as IPv4-mapped IPv6.
         SocketAddr::new(addr.ip().to_canonical(), addr.port())
+    }
+
+    /// The largest datagram the route to the peer is currently known to
+    /// carry. Starts at QUIC's minimum and grows as discovery probes succeed.
+    pub fn path_mtu(&self) -> u16 {
+        self.inner.stats().path.current_mtu
     }
 
     pub fn close(&self) {

@@ -23,6 +23,11 @@ verify under that key; no other property of the certificate is checked. The
 dialling side closes the connection if the peer's key is not the node id it
 expected.
 
+Nodes accept datagrams of up to 8952 bytes, which is what a 9000-byte jumbo
+frame holds after the IPv6 and UDP headers. Connections start at QUIC's
+1200-byte minimum and grow only as far as path MTU discovery confirms, so a
+standard 1500-byte route behaves as before.
+
 ## Framing
 
 Every request uses its own bidirectional stream.
