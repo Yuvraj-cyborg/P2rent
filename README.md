@@ -72,9 +72,25 @@ same command again and only the missing chunks are fetched.
   TLS 1.3, authenticated in both directions against those keys.
 
 More detail: [illustrated walk-through](docs/how-it-works.md) ·
-[architecture](docs/architecture.md) · [protocol](docs/protocol.md)
+[architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
+[performance notes](docs/performance.md)
 
 ## Install
+
+Binaries for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows
+are attached to each [release](https://github.com/Yuvraj-cyborg/P2rent/releases/latest),
+with SHA-256 checksums. On Linux:
+
+```console
+$ curl -sSfL https://github.com/Yuvraj-cyborg/P2rent/releases/latest/download/p2rent-x86_64-linux.tar.gz | tar xz p2rent
+$ sudo install p2rent /usr/local/bin/
+```
+
+The Linux binaries need glibc 2.17 or newer, which covers mainstream
+distributions from the last ten years. The macOS binaries are not notarized:
+if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
+
+From source:
 
 ```console
 $ cargo install --git https://github.com/Yuvraj-cyborg/P2rent --locked
