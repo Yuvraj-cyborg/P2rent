@@ -45,6 +45,14 @@ structure artifact.layout.Layout where
   chunk_count : Std.U64
   total_size : Std.U64
 
+/-- [model::assembly::Assembly]
+    Source: 'crates/model/src/assembly.rs', lines 15:0-20:1
+    Visibility: public -/
+structure assembly.Assembly where
+  layout : artifact.layout.Layout
+  held : artifact.bitfield.Bitfield
+  missing : alloc.vec.Vec Std.U64
+
 /-- [model::schedule::ChunkState]
     Source: 'crates/model/src/schedule.rs', lines 11:0-18:1
     Visibility: public -/

@@ -79,6 +79,12 @@ Paths use `/` separators and are relative to the artifact root. A file of
 `size` bytes contributes `ceil(size / chunk_size)` digests; the last chunk of
 a file may be short. Chunk digests are plain BLAKE3 hashes of chunk data.
 
+Each component of a path, and the artifact's name, is at most 246 bytes, is
+not empty, `.` or `..`, and contains no `/`, `\`, `:` or NUL. It also does not
+end in `.mux-part`, in any letter case: that suffix names a file that is
+still being downloaded, and 246 bytes leaves room for it within the 255 that
+most file systems allow.
+
 Receivers verify that the manifest bytes hash to the artifact id before
 decoding them, and validate the decoded manifest before using it.
 
@@ -86,3 +92,6 @@ decoding them, and validate the decoded manifest before using it.
 
 A downloader must hash every chunk and compare it with the manifest before
 writing it. On a mismatch it discards the data and stops using that peer.
+
+A downloader gives a file its final name only when every chunk of the file
+has passed that check.

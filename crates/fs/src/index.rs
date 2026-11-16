@@ -1,6 +1,6 @@
 use super::io;
 use crate::error::{Error, Result};
-use model::artifact::{Artifact, FileEntry, Hash, Kind, Manifest, to_usize};
+use model::artifact::{Artifact, FileEntry, Hash, Kind, Manifest, is_part_name, to_usize};
 use rayon::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,9 @@ pub struct Indexed {
     pub artifact: Artifact,
     /// Canonical path of the file or directory that was indexed.
     pub root: PathBuf,
-    /// Entries that are neither regular files nor directories (symlinks,
-    /// sockets, devices) and were left out.
+    /// Entries that were left out: those that are neither regular files nor
+    /// directories (symlinks, sockets, devices), and part files left by a
+    /// download that has not finished.
     pub skipped: usize,
 }
 
@@ -92,9 +93,19 @@ pub fn measure(path: &Path) -> Result<u64> {
 fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
     let mut sources = Vec::new();
     let mut skipped = 0;
-    for entry in WalkDir::new(root).min_depth(1) {
+    let mut entries = WalkDir::new(root).min_depth(1).into_iter();
+    while let Some(entry) = entries.next() {
         let entry = entry.map_err(std::io::Error::from)?;
         let file_type = entry.file_type();
+        // A part file is this program's own unfinished work, and no manifest
+        // may name one.
+        if entry.file_name().to_str().is_some_and(is_part_name) {
+            skipped += 1;
+            if file_type.is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
         if file_type.is_dir() {
             continue;
         }

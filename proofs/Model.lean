@@ -7,4 +7,5 @@ public import Model.Funs
 public import Model.Basics
 public import Model.Bitfield
 public import Model.Layout
+public import Model.Assembly
 public import Model.Schedule

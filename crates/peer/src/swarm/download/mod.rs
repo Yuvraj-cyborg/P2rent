@@ -3,7 +3,8 @@
 //! A download fetches the manifest from any bootstrap peer, checks what is
 //! already on disk, then pulls the missing chunks from as many peers as it
 //! can find. Every chunk is verified against the manifest before it is
-//! written, and is offered to other peers as soon as it lands.
+//! written, and is offered to other peers as soon as it lands. A file gets
+//! its final name only when every one of its chunks is in place.
 
 mod claims;
 mod peer;
@@ -67,7 +68,7 @@ pub enum Phase {
     Scanning = 1,
     /// Fetching chunks.
     Downloading = 2,
-    /// Every chunk is on disk and verified.
+    /// Every chunk is on disk and verified, and every file has its name.
     Done = 3,
 }
 
@@ -179,17 +180,16 @@ pub async fn download(
         .store(artifact.total_size(), Ordering::Relaxed);
 
     progress.set_phase(Phase::Scanning);
-    let store = DiskStore::inside(artifact.clone(), out_dir);
     let scan_progress = progress.clone();
-    let (store, have) = tokio::task::spawn_blocking(move || {
-        let have = store.scan(&|bytes| {
+    let (wanted, dir) = (artifact.clone(), out_dir.to_owned());
+    let store = tokio::task::spawn_blocking(move || {
+        DiskStore::resume(wanted, &dir, &|bytes| {
             scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
-        })?;
-        store.allocate()?;
-        Ok::<_, std::io::Error>((store, have))
+        })
     })
     .await
     .map_err(|e| Error::Transport(e.to_string()))??;
+    let have = store.held();
 
     let resumed: u64 = (0..artifact.chunk_count())
         .filter(|&index| have.get(index))
@@ -198,7 +198,7 @@ pub async fn download(
         .sum();
     progress.resumed.store(resumed, Ordering::Relaxed);
 
-    let share = node.register(Arc::new(Share::new(store, have)));
+    let share = node.register(Arc::new(Share::new(store)));
     progress.set_phase(Phase::Downloading);
 
     let (discovered_tx, discovered_rx) = mpsc::unbounded_channel();
@@ -209,10 +209,11 @@ pub async fn download(
         progress.clone(),
         discovered_tx,
     );
+    // Each file was flushed and renamed into place as its last chunk
+    // arrived. What is left is to make the renames themselves last.
     let peers = manage(&session, bootstrap, discovered_rx).await?;
-
-    let finalize = share.clone();
-    tokio::task::spawn_blocking(move || finalize.store().finalize())
+    let renamed = share.clone();
+    tokio::task::spawn_blocking(move || renamed.store().flush())
         .await
         .map_err(|e| Error::Transport(e.to_string()))??;
     progress.set_phase(Phase::Done);

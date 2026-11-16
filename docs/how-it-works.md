@@ -77,7 +77,7 @@ eight-chunk artifact.
 ## 4. Nothing unverified reaches the disk
 
 ```
-                                           ┌─ equal ────▶ write at its offset,
+                                           ┌─ equal ────▶ write to the part file,
  peer ── chunk 17 ──▶ BLAKE3 ──▶ compare ──┤              offer it to others
                                  with the  │
                                  manifest  └─ different ▶ discard, ban the peer,
@@ -87,18 +87,32 @@ eight-chunk artifact.
 Integrity does not depend on trusting peers. A peer that lies wastes one
 request and is never contacted again.
 
+A file is written as `<name>.mux-part` and gets its real name only when every
+chunk of it has been verified:
+
+```
+ downloading   model.bin.mux-part   ██████░░██░░░░░░
+ last chunk    model.bin.mux-part   ████████████████   flush to disk
+ whole         model.bin            ████████████████   renamed in one step
+```
+
+So a file under its real name is always complete and correct, however the
+download ended. A file that was already there is replaced by that one rename
+or left alone, never changed in place.
+
 ## 5. Resume is a re-hash
 
 There is no state file. On start, `get` hashes whatever is already in the
 destination and requests only what does not match.
 
 ```
- after a crash     ██████░░██░░░░░░     re-hash what is on disk
+ after a crash     ██████░░██░░░░░░     re-hash the part file
  run `get` again   ██████▒▒██▒▒▒▒▒▒     fetch only the gaps
 ```
 
-The same mechanism repairs a damaged copy: point `get` at it and only the bad
-chunks are replaced.
+The same mechanism repairs a damaged copy or updates an old one: point `get`
+at it, and the chunks that are already right are copied from it instead of
+being fetched. The old file stays as it is until the new one is whole.
 
 ## What this buys as the fleet grows
 

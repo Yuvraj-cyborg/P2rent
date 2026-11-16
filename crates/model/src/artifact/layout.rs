@@ -75,6 +75,11 @@ impl Layout {
         })
     }
 
+    /// Number of files.
+    pub fn file_count(&self) -> usize {
+        self.sizes.len()
+    }
+
     /// Number of chunks across all files.
     pub fn chunk_count(&self) -> u64 {
         self.chunk_count
@@ -139,6 +144,7 @@ mod tests {
     #[test]
     fn lays_out_files_including_empty_ones() {
         let layout = Layout::new(&[25, 0, 10, 0], 10).unwrap();
+        assert_eq!(layout.file_count(), 4);
         assert_eq!(layout.chunk_count(), 4);
         assert_eq!(layout.total_size(), 35);
         assert_eq!(layout.file_chunks(0), (0, 3));

@@ -60,7 +60,7 @@ fn encoded(files: u64, chunks_each: u64) -> (Hash, Vec<u8>) {
     (artifact.id(), artifact.encoded().to_vec())
 }
 
-/// A store of one file with every chunk on disk, and one chunk's bytes.
+/// A store of one file, and one chunk's bytes.
 struct OnDisk {
     store: DiskStore,
     chunk: Vec<u8>,
@@ -69,7 +69,10 @@ struct OnDisk {
     _dir: TempDir,
 }
 
-fn on_disk(chunks: u64) -> OnDisk {
+/// A file of `chunks` chunks that are all the same. With `written`, every
+/// chunk is on disk and the file has its final name. Without, the file is an
+/// empty part file waiting for its chunks.
+fn on_disk(chunks: u64, written: bool) -> OnDisk {
     let chunk = chunk_bytes();
     let manifest = Manifest {
         name: "bench.bin".to_owned(),
@@ -84,10 +87,11 @@ fn on_disk(chunks: u64) -> OnDisk {
     };
     let artifact = Arc::new(Artifact::new(manifest).expect("the manifest is valid"));
     let dir = tempfile::tempdir().expect("cannot create a working directory");
-    let store = DiskStore::inside(artifact, dir.path());
-    store.allocate().expect("cannot create the file");
-    for index in 0..chunks {
-        store.write_chunk(index, &chunk).expect("cannot write");
+    let store = DiskStore::resume(artifact, dir.path(), &|_| {}).expect("cannot create the file");
+    if written {
+        for index in 0..chunks {
+            assert!(store.write_chunk(index, &chunk).expect("cannot write"));
+        }
     }
     OnDisk {
         store,
@@ -164,7 +168,7 @@ fn claim_every_chunk(chunks: u64) -> (u64, Schedule) {
 
 // Reading every chunk of a file: what a seeder does to serve it.
 #[library_benchmark]
-#[bench::sixteen_chunks(args = (16), setup = on_disk)]
+#[bench::sixteen_chunks(args = (16, true), setup = on_disk)]
 fn read_chunks(disk: OnDisk) -> (usize, OnDisk) {
     let mut read = 0;
     for index in 0..disk.chunks {
@@ -177,14 +181,18 @@ fn read_chunks(disk: OnDisk) -> (usize, OnDisk) {
     (black_box(read), disk)
 }
 
-// Writing every chunk of a file: what a downloader does as chunks arrive.
+// Checking every chunk of a file against the manifest, writing it to the
+// part file, and at the last one flushing the file and renaming it into
+// place: what a downloader does as chunks arrive.
 #[library_benchmark]
-#[bench::sixteen_chunks(args = (16), setup = on_disk)]
-fn write_chunks(disk: OnDisk) -> OnDisk {
+#[bench::sixteen_chunks(args = (16, false), setup = on_disk)]
+fn store_chunks(disk: OnDisk) -> OnDisk {
     for index in 0..disk.chunks {
-        disk.store
+        let kept = disk
+            .store
             .write_chunk(black_box(index), black_box(&disk.chunk))
             .expect("cannot write");
+        assert!(kept);
     }
     disk
 }
@@ -202,7 +210,7 @@ library_benchmark_group!(
 
 library_benchmark_group!(
     name = disk;
-    benchmarks = read_chunks, write_chunks
+    benchmarks = read_chunks, store_chunks
 );
 
 // A benchmark fails when it executes this many percent more instructions

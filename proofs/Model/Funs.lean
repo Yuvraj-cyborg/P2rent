@@ -603,22 +603,29 @@ def artifact.layout.Layout.new
     artifact.layout.Layout.new_loop sizes chunk_size first_chunk 0#u64 0#u64
       0#usize
 
-/-- [model::artifact::layout::{model::artifact::layout::Layout}::chunk_count]:
+/-- [model::artifact::layout::{model::artifact::layout::Layout}::file_count]:
     Source: 'crates/model/src/artifact/layout.rs', lines 79:4-81:5
+    Visibility: public -/
+def artifact.layout.Layout.file_count
+  (self : artifact.layout.Layout) : Result Std.Usize := do
+  ok (alloc.vec.Vec.len self.sizes)
+
+/-- [model::artifact::layout::{model::artifact::layout::Layout}::chunk_count]:
+    Source: 'crates/model/src/artifact/layout.rs', lines 84:4-86:5
     Visibility: public -/
 def artifact.layout.Layout.impl.chunk_count
   (self : artifact.layout.Layout) : Result Std.U64 := do
   ok self.chunk_count
 
 /-- [model::artifact::layout::{model::artifact::layout::Layout}::total_size]:
-    Source: 'crates/model/src/artifact/layout.rs', lines 84:4-86:5
+    Source: 'crates/model/src/artifact/layout.rs', lines 89:4-91:5
     Visibility: public -/
 def artifact.layout.Layout.impl.total_size
   (self : artifact.layout.Layout) : Result Std.U64 := do
   ok self.total_size
 
 /-- [model::artifact::layout::{model::artifact::layout::Layout}::file_chunks]:
-    Source: 'crates/model/src/artifact/layout.rs', lines 90:4-94:5
+    Source: 'crates/model/src/artifact/layout.rs', lines 95:4-99:5
     Visibility: public -/
 def artifact.layout.Layout.file_chunks
   (self : artifact.layout.Layout) (file : Std.Usize) :
@@ -636,13 +643,13 @@ def artifact.layout.Layout.file_chunks
   ok (start, i2)
 
 /-- [model::artifact::layout::to_u32]:
-    Source: 'crates/model/src/artifact/layout.rs', lines 131:0-133:1 -/
+    Source: 'crates/model/src/artifact/layout.rs', lines 136:0-138:1 -/
 def artifact.layout.to_u32 (n : Std.U64) : Result Std.U32 := do
   let r ← U32.Insts.CoreConvertTryFromU64TryFromIntError.try_from n
   ok (core.result.Result.unwrap_or r core.num.U32.MAX)
 
 /-- [model::artifact::layout::{model::artifact::layout::Layout}::locate]: loop body 0:
-    Source: 'crates/model/src/artifact/layout.rs', lines 106:8-113:9
+    Source: 'crates/model/src/artifact/layout.rs', lines 111:8-118:9
     Visibility: public -/
 @[rust_loop_body]
 def artifact.layout.Layout.locate_loop.body
@@ -664,7 +671,7 @@ def artifact.layout.Layout.locate_loop.body
   else ok (done low)
 
 /-- [model::artifact::layout::{model::artifact::layout::Layout}::locate]: loop 0:
-    Source: 'crates/model/src/artifact/layout.rs', lines 106:8-113:9
+    Source: 'crates/model/src/artifact/layout.rs', lines 111:8-118:9
     Visibility: public -/
 @[rust_loop]
 def artifact.layout.Layout.locate_loop
@@ -678,7 +685,7 @@ def artifact.layout.Layout.locate_loop
     (low, high)
 
 /-- [model::artifact::layout::{model::artifact::layout::Layout}::locate]:
-    Source: 'crates/model/src/artifact/layout.rs', lines 97:4-126:5
+    Source: 'crates/model/src/artifact/layout.rs', lines 102:4-131:5
     Visibility: public -/
 def artifact.layout.Layout.locate
   (self : artifact.layout.Layout) (index : Std.U64) :
@@ -705,6 +712,248 @@ def artifact.layout.Layout.locate
       let len ← artifact.layout.to_u32 remaining
       ok (some { file, offset, len })
     else ok (some { file, offset, len := self.chunk_size })
+
+/-- [model::assembly::{impl core::clone::Clone for model::assembly::Assembly}::clone]:
+    Source: 'crates/model/src/assembly.rs', lines 14:9-14:14
+    Visibility: public -/
+def assembly.Assembly.Insts.CoreCloneClone.clone
+  (self : assembly.Assembly) : Result assembly.Assembly := do
+  let l ← artifact.layout.Layout.Insts.CoreCloneClone.clone self.layout
+  let b ← artifact.bitfield.Bitfield.Insts.CoreCloneClone.clone self.held
+  let v ← alloc.vec.CloneVec.clone core.clone.CloneU64 self.missing
+  ok { layout := l, held := b, missing := v }
+
+/-- Trait implementation: [model::assembly::{impl core::clone::Clone for model::assembly::Assembly}]
+    Source: 'crates/model/src/assembly.rs', lines 14:9-14:14 -/
+@[reducible]
+def assembly.Assembly.Insts.CoreCloneClone : core.clone.Clone assembly.Assembly
+  := {
+  clone := assembly.Assembly.Insts.CoreCloneClone.clone
+}
+
+/-- [model::assembly::{impl core::fmt::Debug for model::assembly::Assembly}::fmt]:
+    Source: 'crates/model/src/assembly.rs', lines 14:16-14:21
+    Visibility: public -/
+def assembly.Assembly.Insts.CoreFmtDebug.fmt
+  (self : assembly.Assembly) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn := Dyn.mk _ artifact.layout.Layout.Insts.CoreFmtDebug self.layout
+  let dyn1 := Dyn.mk _ artifact.bitfield.Bitfield.Insts.CoreFmtDebug self.held
+  let dyn2 :=
+    Dyn.mk _ (core.fmt.DebugShared (core.fmt.DebugVec core.fmt.DebugU64))
+      self.missing
+  core.fmt.Formatter.debug_struct_field3_finish f (toStr "Assembly") (toStr
+    "layout") dyn (toStr "held") dyn1 (toStr "missing") dyn2
+
+/-- Trait implementation: [model::assembly::{impl core::fmt::Debug for model::assembly::Assembly}]
+    Source: 'crates/model/src/assembly.rs', lines 14:16-14:21 -/
+@[reducible]
+def assembly.Assembly.Insts.CoreFmtDebug : core.fmt.Debug assembly.Assembly
+  := {
+  fmt := assembly.Assembly.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::assembly::{impl core::marker::StructuralPartialEq for model::assembly::Assembly}]
+    Source: 'crates/model/src/assembly.rs', lines 14:23-14:32 -/
+@[reducible]
+def assembly.Assembly.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq assembly.Assembly := {
+}
+
+/-- [model::assembly::{impl core::cmp::PartialEq<model::assembly::Assembly> for model::assembly::Assembly}::eq]:
+    Source: 'crates/model/src/assembly.rs', lines 14:23-14:32
+    Visibility: public -/
+def assembly.Assembly.Insts.CoreCmpPartialEqAssembly.eq
+  (self : assembly.Assembly) (other : assembly.Assembly) : Result Bool := do
+  let b ←
+    artifact.layout.Layout.Insts.CoreCmpPartialEqLayout.eq self.layout
+      other.layout
+  if b
+  then
+    let b1 ←
+      artifact.bitfield.Bitfield.Insts.CoreCmpPartialEqBitfield.eq self.held
+        other.held
+    if b1
+    then
+      alloc.vec.partial_eq.PartialEqVec.eq core.cmp.PartialEqU64 self.missing
+        other.missing
+    else ok false
+  else ok false
+
+/-- Trait implementation: [model::assembly::{impl core::cmp::PartialEq<model::assembly::Assembly> for model::assembly::Assembly}]
+    Source: 'crates/model/src/assembly.rs', lines 14:23-14:32 -/
+@[reducible]
+def assembly.Assembly.Insts.CoreCmpPartialEqAssembly : core.cmp.PartialEq
+  assembly.Assembly assembly.Assembly := {
+  eq := assembly.Assembly.Insts.CoreCmpPartialEqAssembly.eq
+}
+
+/-- [model::assembly::{impl core::cmp::Eq for model::assembly::Assembly}::assert_fields_are_eq]:
+    Source: 'crates/model/src/assembly.rs', lines 14:34-14:36
+    Visibility: public -/
+def assembly.Assembly.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : assembly.Assembly) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [model::assembly::{impl core::cmp::Eq for model::assembly::Assembly}]
+    Source: 'crates/model/src/assembly.rs', lines 14:34-14:36 -/
+@[reducible]
+def assembly.Assembly.Insts.CoreCmpEq : core.cmp.Eq assembly.Assembly := {
+  partialEqInst := assembly.Assembly.Insts.CoreCmpPartialEqAssembly
+  assert_fields_are_eq :=
+    assembly.Assembly.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [model::assembly::{model::assembly::Assembly}::new]: loop body 1:
+    Source: 'crates/model/src/assembly.rs', lines 38:12-43:13
+    Visibility: public -/
+@[rust_loop_body]
+def assembly.Assembly.new_loop0_loop0.body
+  (held : artifact.bitfield.Bitfield) («end» : Std.U64) (lacking : Std.U64)
+  (index : Std.U64) :
+  Result (ControlFlow (Std.U64 × Std.U64) Std.U64)
+  := do
+  if index < «end»
+  then
+    let b ← artifact.bitfield.Bitfield.get held index
+    let lacking1 ← if b
+                     then ok lacking
+                     else lacking + 1#u64
+    let index1 ← index + 1#u64
+    ok (cont (lacking1, index1))
+  else ok (done lacking)
+
+/-- [model::assembly::{model::assembly::Assembly}::new]: loop 1:
+    Source: 'crates/model/src/assembly.rs', lines 38:12-43:13
+    Visibility: public -/
+@[rust_loop]
+def assembly.Assembly.new_loop0_loop0
+  (held : artifact.bitfield.Bitfield) («end» : Std.U64) (lacking : Std.U64)
+  (index : Std.U64) :
+  Result Std.U64
+  := do
+  loop
+    (fun (lacking1, index1) => assembly.Assembly.new_loop0_loop0.body held
+      «end» lacking1 index1)
+    (lacking, index)
+
+/-- [model::assembly::{model::assembly::Assembly}::new]: loop body 0:
+    Source: 'crates/model/src/assembly.rs', lines 34:8-46:9
+    Visibility: public -/
+@[rust_loop_body]
+def assembly.Assembly.new_loop0.body
+  (layout : artifact.layout.Layout) (held : artifact.bitfield.Bitfield)
+  (missing : alloc.vec.Vec Std.U64) (file : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.U64) × Std.Usize) (alloc.vec.Vec
+    Std.U64))
+  := do
+  let i ← artifact.layout.Layout.file_count layout
+  if file < i
+  then
+    let (start, «end») ← artifact.layout.Layout.file_chunks layout file
+    let lacking ← assembly.Assembly.new_loop0_loop0 held «end» 0#u64 start
+    let missing1 ← alloc.vec.Vec.push missing lacking
+    let file1 ← file + 1#usize
+    ok (cont (missing1, file1))
+  else ok (done missing)
+
+/-- [model::assembly::{model::assembly::Assembly}::new]: loop 0:
+    Source: 'crates/model/src/assembly.rs', lines 34:8-46:9
+    Visibility: public -/
+@[rust_loop]
+def assembly.Assembly.new_loop0
+  (layout : artifact.layout.Layout) (held : artifact.bitfield.Bitfield)
+  (missing : alloc.vec.Vec Std.U64) (file : Std.Usize) :
+  Result (alloc.vec.Vec Std.U64)
+  := do
+  loop
+    (fun (missing1, file1) => assembly.Assembly.new_loop0.body layout held
+      missing1 file1)
+    (missing, file)
+
+/-- [model::assembly::{model::assembly::Assembly}::new]:
+    Source: 'crates/model/src/assembly.rs', lines 26:4-52:5
+    Visibility: public -/
+def assembly.Assembly.new
+  (layout : artifact.layout.Layout) (held : artifact.bitfield.Bitfield) :
+  Result assembly.Assembly
+  := do
+  let i ← artifact.bitfield.Bitfield.impl.len held
+  let i1 ← artifact.layout.Layout.impl.chunk_count layout
+  let held1 ← if i = i1
+                then ok held
+                else artifact.bitfield.Bitfield.new i1
+  let i2 ← artifact.layout.Layout.file_count layout
+  let missing := alloc.vec.Vec.with_capacity Std.U64 i2
+  let missing1 ← assembly.Assembly.new_loop0 layout held1 missing 0#usize
+  ok { layout, held := held1, missing := missing1 }
+
+/-- [model::assembly::{model::assembly::Assembly}::held]:
+    Source: 'crates/model/src/assembly.rs', lines 55:4-57:5
+    Visibility: public -/
+def assembly.Assembly.impl.held
+  (self : assembly.Assembly) : Result artifact.bitfield.Bitfield := do
+  ok self.held
+
+/-- [model::assembly::{model::assembly::Assembly}::has]:
+    Source: 'crates/model/src/assembly.rs', lines 60:4-62:5
+    Visibility: public -/
+def assembly.Assembly.has
+  (self : assembly.Assembly) (index : Std.U64) : Result Bool := do
+  artifact.bitfield.Bitfield.get self.held index
+
+/-- [model::assembly::{model::assembly::Assembly}::is_complete]:
+    Source: 'crates/model/src/assembly.rs', lines 65:4-67:5
+    Visibility: public -/
+def assembly.Assembly.is_complete
+  (self : assembly.Assembly) : Result Bool := do
+  artifact.bitfield.Bitfield.is_full self.held
+
+/-- [model::assembly::{model::assembly::Assembly}::is_whole]:
+    Source: 'crates/model/src/assembly.rs', lines 71:4-73:5
+    Visibility: public -/
+def assembly.Assembly.is_whole
+  (self : assembly.Assembly) (file : Std.Usize) : Result Bool := do
+  let i := alloc.vec.Vec.len self.missing
+  if file < i
+  then
+    let i1 ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+        self.missing file
+    ok (i1 = 0#u64)
+  else ok false
+
+/-- [model::assembly::{model::assembly::Assembly}::add]:
+    Source: 'crates/model/src/assembly.rs', lines 81:4-94:5
+    Visibility: public -/
+def assembly.Assembly.add
+  (self : assembly.Assembly) (index : Std.U64) :
+  Result ((Option Std.Usize) × assembly.Assembly)
+  := do
+  let b ← artifact.bitfield.Bitfield.get self.held index
+  if b
+  then ok (none, self)
+  else
+    let o ← artifact.layout.Layout.locate self.layout index
+    match o with
+    | none => ok (none, self)
+    | some chunk =>
+      let b1 ← artifact.bitfield.Bitfield.set self.held index
+      let i ←
+        alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice Std.U64)
+          self.missing chunk.file
+      let left ← i - 1#u64
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice Std.U64)
+          self.missing chunk.file
+      if left = 0#u64
+      then
+        let v := index_mut_back left
+        ok (some chunk.file, { self with held := b1, missing := v })
+      else
+        let v := index_mut_back left
+        ok (none, { self with held := b1, missing := v })
 
 /-- [model::schedule::{impl core::clone::Clone for model::schedule::ChunkState}::clone]:
     Source: 'crates/model/src/schedule.rs', lines 10:9-10:14

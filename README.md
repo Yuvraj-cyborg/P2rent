@@ -52,7 +52,9 @@ was still seeding. (Ids are shortened and the timing line is omitted.)
 
 The ticket is the only thing a machine needs. `--seed` keeps the machine
 serving after its own download finishes. Interrupted downloads resume: run the
-same command again and only the missing chunks are fetched.
+same command again and only the missing chunks are fetched. A file appears
+under its own name only when it is complete; until then it is
+`<name>.mux-part`.
 
 ## How it works
 
@@ -66,8 +68,8 @@ same command again and only the missing chunks are fetched.
   offered to others as soon as they land. Peers find each other through the
   peers they already know.
 - **No copies.** Seeders serve straight from the original files; downloaders
-  write straight into the destination. Memory use does not grow with artifact
-  size.
+  write each file once, beside its destination, and rename it into place.
+  Memory use does not grow with artifact size.
 - **Authenticated.** Every node has an Ed25519 key. Connections are QUIC with
   TLS 1.3, authenticated in both directions against those keys.
 

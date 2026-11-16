@@ -4,7 +4,7 @@ use super::session::Session;
 use crate::error::Error;
 use crate::net::{Connection, PeerInfo};
 use crate::sync;
-use model::artifact::{Bitfield, Hash};
+use model::artifact::Bitfield;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -109,7 +109,7 @@ async fn refresh(
     Ok(())
 }
 
-/// One request pipeline: claim a chunk, fetch it, verify it, write it.
+/// One request pipeline: claim a chunk, fetch it, and hand it to the store.
 async fn work(
     session: Arc<Session>,
     connection: Connection,
@@ -133,8 +133,7 @@ async fn work(
         };
 
         let index = claim.index;
-        let (Some(location), Some(expected)) = (artifact.locate(index), artifact.chunk_hash(index))
-        else {
+        let Some(location) = artifact.locate(index) else {
             return Err(Outcome::Fatal(Error::Protocol(
                 "chunk index out of range".into(),
             )));
@@ -152,13 +151,9 @@ async fn work(
         };
 
         let share = session.share.clone();
-        let stored = tokio::task::spawn_blocking(move || {
-            if Hash::of(&data) != expected {
-                return Ok(false);
-            }
-            share.store().write_chunk(index, &data).map(|()| true)
-        })
-        .await;
+        // The store checks the bytes against the manifest before it keeps them.
+        let stored =
+            tokio::task::spawn_blocking(move || share.store().write_chunk(index, &data)).await;
         match stored {
             Ok(Ok(true)) => session.complete(claim, connection.peer(), u64::from(location.len)),
             Ok(Ok(false)) => {
