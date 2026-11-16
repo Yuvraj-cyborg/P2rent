@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yuvraj-cyborg/mux/actions/workflows/ci.yml"><img src="https://github.com/Yuvraj-cyborg/mux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/yuvichh/mux/actions/workflows/ci.yml"><img src="https://github.com/yuvichh/mux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT license"></a>
 </p>
 
@@ -87,26 +87,26 @@ mux was called p2rent up to release 0.2.0. The first release under the new
 name will be 0.3. Until then, build from source to get `mux`:
 
 ```console
-$ cargo install --git https://github.com/Yuvraj-cyborg/mux --locked cli
+$ cargo install --git https://github.com/yuvichh/mux --locked cli
 ```
 
 With Nix:
 
 ```console
-$ nix run github:Yuvraj-cyborg/mux -- --help
+$ nix run github:yuvichh/mux -- --help
 ```
 
 From a checkout, `cargo build --release` produces `target/release/mux`.
 Building needs Rust 1.88 or newer.
 
 The binaries attached to
-[release 0.2.0](https://github.com/Yuvraj-cyborg/mux/releases/tag/v0.2.0),
+[release 0.2.0](https://github.com/yuvichh/mux/releases/tag/v0.2.0),
 and the command inside them, still carry the old name. They do not talk to a
 build from this source: the protocol identifier and the ticket format changed
 with the name. To install them on Linux:
 
 ```console
-$ curl -sSfL https://github.com/Yuvraj-cyborg/mux/releases/download/v0.2.0/p2rent-x86_64-linux.tar.gz | tar xz p2rent
+$ curl -sSfL https://github.com/yuvichh/mux/releases/download/v0.2.0/p2rent-x86_64-linux.tar.gz | tar xz p2rent
 $ sudo install p2rent /usr/local/bin/
 ```
 
@@ -169,7 +169,7 @@ This is a rewrite and is not yet production software.
 mux is growing from a swarm distributor into a general tool and library
 for moving and syncing data between any two places: folders, web URLs, other
 machines and cloud storage. [docs/scope.md](docs/scope.md) describes where it
-is going, the [milestones](https://github.com/Yuvraj-cyborg/mux/milestones)
+is going, the [milestones](https://github.com/yuvichh/mux/milestones)
 track the work, and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules a change
 follows.
 
