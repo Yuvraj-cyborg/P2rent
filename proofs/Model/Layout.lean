@@ -210,6 +210,19 @@ theorem bytesBefore_mono (sizes : List U64) {n m : Nat} (h : n ≤ m) :
     bytesBefore sizes n ≤ bytesBefore sizes m :=
   sumBefore_mono _ sizes h
 
+/-- A chunk belongs to one file only. -/
+theorem file_of_chunk_unique (sizes : List U64) (chunk f g index : Nat)
+    (hf : chunksBefore sizes chunk f ≤ index) (hf' : index < chunksBefore sizes chunk (f + 1))
+    (hg : chunksBefore sizes chunk g ≤ index) (hg' : index < chunksBefore sizes chunk (g + 1)) :
+    f = g := by
+  by_cases hbefore : f < g
+  · have := chunksBefore_mono sizes chunk (n := f + 1) (m := g) (by omega)
+    omega
+  · by_cases hafter : g < f
+    · have := chunksBefore_mono sizes chunk (n := g + 1) (m := f) (by omega)
+      omega
+    · omega
+
 /-- Files have no more chunks than bytes, so if the bytes fit in a `u64`
 the chunks do. -/
 theorem chunksBefore_le_bytesBefore (sizes : List U64) (chunk n : Nat) (hc : 0 < chunk) :
@@ -414,6 +427,14 @@ theorem artifact.layout.Layout.new.spec (sizes : Slice U64) (chunk_size : U32) :
     cases r with
     | none => exact Or.inr hr
     | some l => exact hr
+
+/-- `file_count` is the number of files. -/
+@[step]
+theorem artifact.layout.Layout.file_count.spec (l : Layout) :
+    artifact.layout.Layout.file_count l ⦃ r => r.val = l.sizes.val.length ⦄ := by
+  unfold artifact.layout.Layout.file_count
+  simp only [WP.spec_ok]
+  scalar_tac
 
 /-- `file_chunks` returns the number of the file's first chunk and the
 number after its last. -/
@@ -704,16 +725,9 @@ theorem artifact.layout.Layout.every_byte_in_one_chunk (l : Layout) (hl : l.Well
       omega
     · intro hat
       -- Two files cannot both hold the same chunk.
-      have hfile : chunk.file.val = f := by
-        by_cases hbefore : chunk.file.val < f
-        · have := chunksBefore_mono l.sizes.val l.chunk_size.val (n := chunk.file.val + 1)
-            (m := f) (by omega)
-          omega
-        · by_cases hafter : f < chunk.file.val
-          · have := chunksBefore_mono l.sizes.val l.chunk_size.val (n := f + 1)
-              (m := chunk.file.val) (by omega)
-            omega
-          · omega
+      have hfile : chunk.file.val = f :=
+        file_of_chunk_unique l.sizes.val l.chunk_size.val chunk.file.val f index.val
+          hlo hhi (by omega) (by omega)
       subst hfile
       rw [hsize] at hsize'
       have hsame : size = size' := Option.some.inj hsize'

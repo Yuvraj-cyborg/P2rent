@@ -6,12 +6,13 @@ test covers only the inputs someone tried.
 
 ## What is proven
 
-Three modules of `crates/model` are translated:
+Four modules of `crates/model` are translated:
 
 | Module | Holds |
 | --- | --- |
 | `artifact::bitfield` | The set of chunks a node holds. |
 | `artifact::layout` | Which file, offset and length each chunk has. |
+| `assembly` | Which files are whole, and so may take their final names. |
 | `schedule` | Which chunk to fetch next, and what state each is in. |
 
 The theorems are in `Model/`, one file per module, each beginning with a
@@ -52,7 +53,7 @@ by tests, fuzzing and simulation.
 
 ## Writing code that can be proven
 
-The translator accepts a plain subset of Rust. In the three modules above:
+The translator accepts a plain subset of Rust. In the four modules above:
 
 - loops and indexing, not iterators and closures;
 - no strings, hashing, I/O or `unsafe`;
