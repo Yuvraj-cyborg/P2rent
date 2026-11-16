@@ -1006,8 +1006,25 @@ def artifact.path.parent_len (path : Slice Std.U8) : Result Std.Usize := do
   let «at» := Slice.len path
   artifact.path.parent_len_loop path «at»
 
+/-- [model::artifact::path::follow]:
+    Source: 'crates/model/src/artifact/path.rs', lines 157:0-168:1 -/
+def artifact.path.follow
+  («name» : Slice Std.U8) (level : Std.U64) : Result (Option Std.U64) := do
+  let b ← artifact.path.is_parent «name»
+  if b
+  then if level = 0#u64
+       then ok none
+       else let i ← level - 1#u64
+            ok (some i)
+  else
+    let b1 ← artifact.path.is_safe_name «name»
+    if b1
+    then let i ← level + 1#u64
+         ok (some i)
+    else ok none
+
 /-- [model::artifact::path::is_safe_target]: loop body 0:
-    Source: 'crates/model/src/artifact/path.rs', lines 166:4-184:1
+    Source: 'crates/model/src/artifact/path.rs', lines 188:4-199:1
     Visibility: public -/
 @[rust_loop_body]
 def artifact.path.is_safe_target_loop.body
@@ -1016,63 +1033,34 @@ def artifact.path.is_safe_target_loop.body
   Result (ControlFlow (Std.U64 × Std.Usize × Std.Usize) Bool)
   := do
   let i := Slice.len target
-  if «at» <= i
+  if «at» < i
   then
-    let i1 := Slice.len target
-    if «at» = i1
+    let i1 ← Slice.index_usize target «at»
+    if i1 = 47#u8
     then
-      let «name» ←
+      let s ←
         core.slice.index.Slice.index
           (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) target
           { start, «end» := «at» }
-      let b ← artifact.path.is_parent «name»
-      if b
-      then
-        if level = 0#u64
-        then ok (done false)
-        else
-          let level1 ← level - 1#u64
-          let start1 ← «at» + 1#usize
-          ok (cont (level1, start1, start1))
-      else
-        let b1 ← artifact.path.is_safe_name «name»
-        if b1
-        then
-          let level1 ← level + 1#u64
-          let start1 ← «at» + 1#usize
-          ok (cont (level1, start1, start1))
-        else ok (done false)
-    else
-      let i2 ← Slice.index_usize target «at»
-      if i2 = 47#u8
-      then
-        let «name» ←
-          core.slice.index.Slice.index
-            (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) target
-            { start, «end» := «at» }
-        let b ← artifact.path.is_parent «name»
-        if b
-        then
-          if level = 0#u64
-          then ok (done false)
-          else
-            let level1 ← level - 1#u64
-            let start1 ← «at» + 1#usize
-            ok (cont (level1, start1, start1))
-        else
-          let b1 ← artifact.path.is_safe_name «name»
-          if b1
-          then
-            let level1 ← level + 1#u64
-            let start1 ← «at» + 1#usize
-            ok (cont (level1, start1, start1))
-          else ok (done false)
-      else let at1 ← «at» + 1#usize
-           ok (cont (level, start, at1))
-  else ok (done true)
+      let o ← artifact.path.follow s level
+      match o with
+      | none => ok (done false)
+      | some next =>
+        let start1 ← «at» + 1#usize
+        ok (cont (next, start1, start1))
+    else let at1 ← «at» + 1#usize
+         ok (cont (level, start, at1))
+  else
+    let s ←
+      core.slice.index.Slice.index
+        (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8) target
+        { start }
+    let o ← artifact.path.follow s level
+    let b := core.option.Option.is_some o
+    ok (done b)
 
 /-- [model::artifact::path::is_safe_target]: loop 0:
-    Source: 'crates/model/src/artifact/path.rs', lines 166:4-184:1
+    Source: 'crates/model/src/artifact/path.rs', lines 188:4-199:1
     Visibility: public -/
 @[rust_loop]
 def artifact.path.is_safe_target_loop
@@ -1086,7 +1074,7 @@ def artifact.path.is_safe_target_loop
     (level, start, «at»)
 
 /-- [model::artifact::path::is_safe_target]:
-    Source: 'crates/model/src/artifact/path.rs', lines 158:0-184:1
+    Source: 'crates/model/src/artifact/path.rs', lines 174:0-199:1
     Visibility: public -/
 def artifact.path.is_safe_target
   (target : Slice Std.U8) (depth : Std.U32) : Result Bool := do
@@ -1106,7 +1094,7 @@ def artifact.path.is_safe_target
         artifact.path.is_safe_target_loop target level 0#usize 0#usize
 
 /-- [model::artifact::path::precedes]: loop body 0:
-    Source: 'crates/model/src/artifact/path.rs', lines 191:4-198:1
+    Source: 'crates/model/src/artifact/path.rs', lines 206:4-213:1
     Visibility: public -/
 @[rust_loop_body]
 def artifact.path.precedes_loop.body
@@ -1133,7 +1121,7 @@ def artifact.path.precedes_loop.body
        ok (done (i1 < i2))
 
 /-- [model::artifact::path::precedes]: loop 0:
-    Source: 'crates/model/src/artifact/path.rs', lines 191:4-198:1
+    Source: 'crates/model/src/artifact/path.rs', lines 206:4-213:1
     Visibility: public -/
 @[rust_loop]
 def artifact.path.precedes_loop
@@ -1145,7 +1133,7 @@ def artifact.path.precedes_loop
     «at»
 
 /-- [model::artifact::path::precedes]:
-    Source: 'crates/model/src/artifact/path.rs', lines 189:0-198:1
+    Source: 'crates/model/src/artifact/path.rs', lines 204:0-213:1
     Visibility: public -/
 @[reducible]
 def artifact.path.precedes

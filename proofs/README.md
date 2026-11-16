@@ -12,7 +12,7 @@ Five modules of `crates/model` are translated:
 | --- | --- |
 | `artifact::bitfield` | The set of chunks a node holds. |
 | `artifact::layout` | Which file, offset and length each chunk has. |
-| `artifact::path` | Which names and paths a manifest may use. Proven so far: the check on a single name, and the order that keeps paths distinct. |
+| `artifact::path` | Which names, paths and link targets a manifest may use. |
 | `assembly` | Which files are whole, and so may take their final names. |
 | `schedule` | Which chunk to fetch next, and what state each is in. |
 
