@@ -16,6 +16,7 @@
 extern crate alloc;
 
 pub mod artifact;
+pub mod assembly;
 mod error;
 pub mod hex;
 pub mod schedule;

@@ -18,7 +18,14 @@ pub const DEFAULT_CHUNK_SIZE: u32 = 1024 * 1024;
 /// artifacts of roughly two petabytes.
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
-const MAX_COMPONENT_BYTES: usize = 255;
+/// What is added to a file's name while it is being written. No name in a
+/// manifest may end with it, in any letter case, so a part file can never be
+/// mistaken for a file of the artifact or collide with one.
+pub const PART_SUFFIX: &str = ".mux-part";
+
+/// Longest name a file or directory may have. Most file systems allow 255
+/// bytes, and a file's part file needs room for its suffix.
+pub const MAX_COMPONENT_BYTES: usize = 255 - PART_SUFFIX.len();
 
 /// Whether an artifact is a single file or a directory tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,15 +242,28 @@ impl Artifact {
     pub fn locate(&self, index: u64) -> Option<ChunkLocation> {
         self.layout.locate(index)
     }
+
+    /// How the files are cut into chunks.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
 }
 
-/// A path component that cannot escape the destination directory or be
-/// reinterpreted on any supported platform.
+/// Whether `name` is the kind of name given to a file that is still being
+/// written.
+pub fn is_part_name(name: &str) -> bool {
+    let (name, suffix) = (name.as_bytes(), PART_SUFFIX.as_bytes());
+    name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
+
+/// A path component that cannot escape the destination directory, be
+/// reinterpreted on any supported platform, or be taken for a part file.
 pub fn is_safe_component(component: &str) -> bool {
     !component.is_empty()
         && component.len() <= MAX_COMPONENT_BYTES
         && component != "."
         && component != ".."
+        && !is_part_name(component)
         && !component
             .chars()
             .any(|c| matches!(c, '/' | '\\' | ':' | '\0'))
@@ -339,6 +359,33 @@ mod tests {
         assert_eq!(DEFAULT_CHUNK_SIZE, 1_048_576);
         assert_eq!(MAX_CHUNK_SIZE, 16_777_216);
         assert_eq!(MAX_MANIFEST_BYTES, 67_108_864);
+        assert_eq!(MAX_COMPONENT_BYTES, 246);
+        assert_eq!(PART_SUFFIX, ".mux-part");
+    }
+
+    #[test]
+    fn a_name_is_at_most_as_long_as_leaves_room_for_the_part_suffix() {
+        assert!(is_safe_component(&"a".repeat(MAX_COMPONENT_BYTES)));
+        assert!(!is_safe_component(&"a".repeat(MAX_COMPONENT_BYTES + 1)));
+        assert_eq!(MAX_COMPONENT_BYTES + PART_SUFFIX.len(), 255);
+    }
+
+    #[test]
+    fn a_name_may_not_look_like_a_part_file() {
+        for name in ["a.mux-part", "a.MUX-Part", ".mux-part"] {
+            assert!(is_part_name(name), "{name:?}");
+            assert!(!is_safe_component(name), "{name:?}");
+            assert!(tree(vec![entry(name, 1)]).validate().is_err(), "{name:?}");
+            let nested = format!("{name}/b");
+            assert!(
+                tree(vec![entry(&nested, 1)]).validate().is_err(),
+                "{nested:?}"
+            );
+        }
+        for name in ["a.mux-part.bin", "mux-part", "a.part", "é"] {
+            assert!(!is_part_name(name), "{name:?}");
+            assert!(is_safe_component(name), "{name:?}");
+        }
     }
 
     #[test]
