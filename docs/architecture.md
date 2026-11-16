@@ -10,10 +10,10 @@ in this table.
 | `p2rent-peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | core, fs |
 | `p2rent` | The library other programs depend on, which re-exports the three above, and the CLI: argument parsing, progress bars, output | all of the above |
 
-`p2rent-core` touches no disk, network or clock and does not use `std`. CI
-builds it for a target that has no standard library and checks that it
-depends only on an allowed list of crates (`just pure`). That is what keeps
-its logic small enough to prove.
+`p2rent-core` touches no disk, network or clock and does not use `std`.
+`just pure` builds it for a target that has no standard library and checks
+that it depends only on an allowed list of crates. That is what keeps its
+logic small enough to prove.
 
 ```
 crates/

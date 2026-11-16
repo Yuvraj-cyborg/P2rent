@@ -13,59 +13,90 @@ release:
 
 # Run the test suite (extra arguments go to cargo test)
 test *args:
-    cargo test {{args}}
+    cargo test --locked --workspace {{args}}
 
 # Format the code
 fmt:
     cargo fmt --all
 
-# Formatting, lints and documentation, with warnings as errors
+# ---- What CI runs. Keep these in step with .github/workflows/ci.yml ----
+
+# Everything CI runs
+ci: lint test msrv audit features miri
+
+# Formatting, lints, documentation and spelling, with warnings as errors
 lint:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
-
-# Licences, known vulnerabilities, duplicate versions and unused dependencies
-deps:
-    cargo deny check
-    cargo machete --with-metadata
-
-# Spelling in code and documentation
-spelling:
+    cargo clippy --locked --workspace --all-targets -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items
     typos
 
-# Fail on functions that are near copies of each other. The detector compares
-# shapes: a pasted function with small edits scores about 0.94, and unrelated
-# functions that merely look alike score up to about 0.90, so 0.92 sits
-# between them. It does not catch a copy in which every name was changed.
-# Functions shorter than 8 lines are too small to judge.
-dupes:
-    similarity-rs crates xtask --threshold 0.92 --min-lines 8 --skip-test --fail-on-duplicates
+# Needs the 1.88 toolchain: `rustup toolchain install 1.88`.
+
+# Check that the code builds with the oldest supported compiler
+msrv:
+    cargo +1.88 check --locked --workspace --all-targets
+
+# Licences, known vulnerabilities and duplicate versions of dependencies
+audit:
+    cargo deny check
 
 # Check that every combination of features builds
 features:
-    cargo hack check --feature-powerset --all-targets --locked
+    cargo hack check --locked --feature-powerset --all-targets
 
-# Run the tests that touch neither disk nor network under Miri, which
-# detects undefined behaviour (needs a nightly toolchain with miri)
+# Miri detects undefined behaviour. Needs a nightly toolchain with miri.
+
+# Run the tests that touch neither disk nor network under Miri
 miri:
     cargo +nightly miri test --locked -p p2rent-core
     cargo +nightly miri test --locked -p p2rent-peer --lib -- swarm::ticket::
 
+# ---- Our own analysis. Not part of CI: run it before opening a pull request ----
+
+# Every local analysis check
+analysis: workflows unused dupes pure deps size
+
+# Check the CI workflow files for mistakes GitHub would reject
+workflows:
+    actionlint
+
+# Dependencies that are declared but never used
+unused:
+    cargo machete --with-metadata
+
+# The detector compares shapes: a pasted function with small edits scores
+# about 0.94, and unrelated functions that merely look alike score up to
+# about 0.90, so 0.92 sits between them. It does not catch a copy in which
+# every name was changed. Functions shorter than 8 lines are too small to
+# judge.
+
+# Fail on functions that are near copies of each other
+dupes:
+    similarity-rs crates xtask --threshold 0.92 --min-lines 8 --skip-test --fail-on-duplicates
+
 # The core crate holds the logic that gets proven. It must build with no
-# standard library at all, and may depend only on the crates listed in xtask
-# (needs the thumbv7em-none-eabihf target)
+# standard library at all, and may depend only on the crates listed in xtask.
+# Needs the thumbv7em-none-eabihf target.
+
+# Check that the core crate has no I/O and no unexpected dependency
 pure:
     cargo check --locked -p p2rent-core --no-default-features --target thumbv7em-none-eabihf
     cargo xtask layers
 
-# Report binary size and dependency count, and fail if either is over budget
+# After adding or dropping a dependency, run `cargo xtask deps --write`, so
+# that the change shows the crate's name in its diff.
+
+# Check the committed list of crates that ship in the released binaries
+deps:
+    cargo xtask deps
+
+# Report the size of the release binary and fail if it is over budget
 size:
     cargo xtask size
 
-# Everything CI runs
-ci: lint deps spelling dupes features miri pure size
-    cargo test --workspace --locked
+# CI's checks and our own analysis together
+all: ci analysis
 
 # Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
 bench size_mb="1024" seeders="1" runs="3" files="1":

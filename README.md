@@ -164,6 +164,7 @@ follows.
 ```console
 $ just          # list tasks
 $ just ci       # every check CI runs
+$ just all      # CI's checks plus the project's own analysis
 $ just bench    # time a loopback transfer
 ```
 
