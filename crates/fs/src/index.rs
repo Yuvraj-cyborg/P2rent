@@ -151,8 +151,12 @@ fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
             .collect::<Option<_>>()
             .ok_or_else(|| unsupported(entry.path(), "has a non-UTF-8 name"))?;
         let path = names.join("/");
-        // Not followed: for a link this describes the link itself.
-        let found = entry.metadata().map_err(std::io::Error::from)?;
+        // Asked of the file system directly, not taken from the walk. On
+        // Windows the walk hands back what the parent directory has on
+        // record for the entry, which can be out of date for a moment after
+        // the entry changes. A link is not followed: this describes the link
+        // itself.
+        let found = std::fs::symlink_metadata(entry.path())?;
 
         let kind = if file_type.is_dir() {
             EntryKind::Directory
