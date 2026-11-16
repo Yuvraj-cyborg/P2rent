@@ -16,5 +16,6 @@ extern crate alloc;
 pub mod artifact;
 mod error;
 pub mod hex;
+pub mod schedule;
 
 pub use error::{Error, Result};

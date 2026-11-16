@@ -49,7 +49,8 @@ pub(super) async fn run(session: Arc<Session>, peer: PeerInfo) -> Outcome {
 
     let mut workers = JoinSet::new();
     let total = session.artifact.chunk_count().max(1);
-    let origin = stagger(&session, &peer);
+    // Reduced first, so that adding a worker's share cannot overflow.
+    let origin = stagger(&session, &peer) % total;
     for worker in 0..session.options.requests_per_peer.max(1) as u64 {
         let cursor =
             (origin + worker * total / session.options.requests_per_peer.max(1) as u64) % total;

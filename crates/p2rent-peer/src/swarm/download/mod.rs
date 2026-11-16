@@ -5,6 +5,7 @@
 //! can find. Every chunk is verified against the manifest before it is
 //! written, and is offered to other peers as soon as it lands.
 
+mod claims;
 mod peer;
 mod session;
 
