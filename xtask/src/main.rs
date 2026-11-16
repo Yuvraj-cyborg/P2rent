@@ -236,13 +236,13 @@ fn fuzz(seconds: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `cargo +nightly fuzz`, run in the fuzz workspace.
+/// `cargo fuzz` on the nightly toolchain, run in the fuzz workspace.
 fn nightly_fuzz() -> Command {
-    // Through `cargo` on the path, not `$CARGO`: only rustup's wrapper
-    // understands `+nightly`.
-    let mut command = Command::new("cargo");
+    // Through rustup, not `cargo +nightly`: inside `cargo run` the `cargo`
+    // on the path can be the real one, which does not understand `+nightly`.
+    let mut command = Command::new("rustup");
     command
-        .args(["+nightly", "fuzz"])
+        .args(["run", "nightly", "cargo", "fuzz"])
         .current_dir(workspace_root().join("fuzz"));
     command
 }
@@ -274,7 +274,11 @@ fn output(command: &mut Command) -> Result<String, String> {
         .output()
         .map_err(|e| format!("cannot start {command:?}: {e}"))?;
     if !output.status.success() {
-        return Err(format!("{command:?} failed with {}", output.status));
+        return Err(format!(
+            "{command:?} failed with {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("{command:?} printed invalid UTF-8: {e}"))
 }
