@@ -61,6 +61,12 @@ theorem artifact.to_usize.spec (n : U64) :
     simp [hr]
     omega
 
+/-- Widening a `u32` to a `u64` keeps the number. -/
+@[step]
+theorem core.convert.num.FromU64U32.from.spec (x : U32) :
+    lift (core.convert.num.FromU64U32.from x) ⦃ r => r.val = x.val ⦄ := by
+  simp only [WP.spec_ok, lift, core.convert.num.FromU64U32.from_val_eq]
+
 /-- A `usize` is never wider than a `u64`. -/
 theorem usize_max_le_u64_max : Usize.max ≤ U64.max := by
   have := Usize.bounds_eq

@@ -94,7 +94,7 @@ Each issue says which tiers apply to it.
 
 | Tier | Tool | Run with | Used for |
 | --- | --- | --- | --- |
-| Proven | Lean 4, through Aeneas | `just proofs` | The logic that decides what happens to files. Today: the bitfield and the schedule, for inputs of any size. |
+| Proven | Lean 4, through Aeneas | `just proofs` | The logic that decides what happens to files. Today: the bitfield, the chunk layout and the schedule, for inputs of any size. |
 | Bounded | Kani | `just kani` | Arithmetic and state machines that must never overflow, panic or leave their bounds, for every input up to a size limit. |
 | Model-checked | `loom` | `just loom` | Shared state under every interleaving. |
 | Empirical | Property tests | `just test` | Round trips, and behaviour compared with a simple model. |
