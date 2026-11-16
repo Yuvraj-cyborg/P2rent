@@ -52,14 +52,14 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - uses: actions/setup-python@v5
+      # cargo-zigbuild links with zig, which can target an old glibc.
+      - uses: mlugg/setup-zig@v2
+        if: matrix.glibc
+
+      - uses: taiki-e/install-action@v2
         if: matrix.glibc
         with:
-          python-version: "3.12"
-
-      - name: Install cargo-zigbuild
-        if: matrix.glibc
-        run: pip install cargo-zigbuild
+          tool: cargo-zigbuild
 
       - name: Build
         shell: bash
