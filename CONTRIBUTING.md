@@ -94,7 +94,7 @@ Each issue says which tiers apply to it.
 
 | Tier | Tool | Run with | Used for |
 | --- | --- | --- | --- |
-| Proven | Lean 4, through Aeneas | [#12](https://github.com/Yuvraj-cyborg/P2rent/issues/12) | The logic that decides what happens to files: chunk layout, scheduling, sync planning. |
+| Proven | Lean 4, through Aeneas | `just proofs` | The logic that decides what happens to files. Today: the bitfield and the schedule, for inputs of any size. |
 | Bounded | Kani | `just kani` | Arithmetic and state machines that must never overflow, panic or leave their bounds, for every input up to a size limit. |
 | Model-checked | `loom` | `just loom` | Shared state under every interleaving. |
 | Empirical | Property tests | `just test` | Round trips, and behaviour compared with a simple model. |
@@ -106,8 +106,12 @@ A property is written once, at the strongest tier that can express it. A
 bug found by any tier is fixed at its cause, and the input that found it is
 kept as a test.
 
-Decision logic lives in `p2rent-core` as safe, synchronous Rust, so that it
-stays provable.
+Decision logic lives in `p2rent-core`, in modules that hold nothing else and
+are written plainly: loops and indexing, no iterators, closures or strings.
+That is what lets them be translated to Lean and proven.
+[proofs/README.md](proofs/README.md) says how, and what the proofs rest on.
+`just proofs` needs Lean and Aeneas, which take several gigabytes, so it is
+not part of `just all`: run it whenever one of those modules changes.
 
 ## 7. Safe by default, with a fenced fast path
 

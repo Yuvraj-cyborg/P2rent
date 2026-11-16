@@ -18,6 +18,19 @@ const SHIPPED_CRATES: &str = "xtask/shipped-crates.txt";
 /// what "shipped" means.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 
+/// The modules of `p2rent-core` that are translated to Lean and proven.
+/// Each holds decision logic and nothing else, written in the plain style
+/// the translator accepts: loops and indexing, no iterators or closures.
+const PROVEN_MODULES: &[&str] = &[
+    "crate::artifact::bitfield",
+    "crate::artifact::layout",
+    "crate::schedule",
+];
+
+/// The Aeneas release whose `charon` and `aeneas` produce the Lean code. It
+/// is also the revision of the Aeneas Lean library in `proofs/lakefile.toml`.
+const AENEAS_RELEASE: &str = "nightly-2026.11.16-1dc8ad3";
+
 /// Every crate `p2rent-core` may depend on directly. The core holds the
 /// logic that gets proven, so each addition here is a decision: it must not
 /// bring in a disk, a network, a clock or an async runtime.
@@ -32,8 +45,11 @@ fn main() -> ExitCode {
         ["deps"] => finish(deps(false)),
         ["deps", "--write"] => finish(deps(true)),
         ["fuzz", seconds] => finish(fuzz(seconds)),
+        ["proofs"] => finish(proofs()),
         _ => {
-            eprintln!("usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS>");
+            eprintln!(
+                "usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS | proofs>"
+            );
             ExitCode::from(2)
         }
     }
@@ -234,6 +250,73 @@ fn fuzz(seconds: &str) -> Result<(), String> {
             .arg(format!("-max_total_time={seconds}")))?;
     }
     Ok(())
+}
+
+/// Translates the proven modules of `p2rent-core` to Lean again and checks
+/// every proof against the result.
+///
+/// The translation overwrites `proofs/P2rentCore/Types.lean` and
+/// `Funs.lean`, which are committed. If they change, the Rust code changed:
+/// commit them with it, so the proofs are always about the current code.
+fn proofs() -> Result<(), String> {
+    let root = workspace_root();
+    let core = root.join("crates").join("p2rent-core");
+    let lean = root.join("proofs").join("P2rentCore");
+    let llbc = root.join("target").join("p2rent_core.llbc");
+    let missing = |tool: &str| {
+        format!(
+            "cannot run `{tool}`. Install the Aeneas release {AENEAS_RELEASE} and put it on \
+             the path: see proofs/README.md"
+        )
+    };
+
+    // Rust to Charon's intermediate form.
+    let mut charon = Command::new("charon");
+    charon
+        .current_dir(&core)
+        .args(["cargo", "--preset=aeneas", "--dest-file"])
+        .arg(&llbc);
+    for module in PROVEN_MODULES {
+        charon.args(["--start-from", module]);
+    }
+    // The core's own code is the same with or without its one feature.
+    charon.args(["--", "--no-default-features"]);
+    run(&mut charon).map_err(|_| missing("charon"))?;
+
+    // That to Lean.
+    run(Command::new("aeneas")
+        .args(["-backend", "lean", "-split-files", "-dest"])
+        .arg(&lean)
+        .arg(&llbc))
+    .map_err(|_| missing("aeneas"))?;
+
+    // A standard-library function that neither Aeneas nor FunsExternal.lean
+    // defines would be an unproven assumption. Refuse it.
+    let template = lean.join("FunsExternal_Template.lean");
+    if let Ok(needed) = std::fs::read_to_string(&template) {
+        let models = std::fs::read_to_string(lean.join("FunsExternal.lean"))
+            .map_err(|e| format!("cannot read FunsExternal.lean: {e}"))?;
+        let unmodelled: Vec<&str> = needed
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("@[rust_fun \""))
+            .filter_map(|rest| rest.split('"').next())
+            .filter(|name| !models.contains(name))
+            .collect();
+        std::fs::remove_file(&template)
+            .map_err(|e| format!("cannot remove {}: {e}", template.display()))?;
+        if !unmodelled.is_empty() {
+            return Err(format!(
+                "the translated code calls functions with no model in FunsExternal.lean: {}",
+                unmodelled.join(", ")
+            ));
+        }
+    }
+
+    // Check every proof.
+    run(Command::new("lake")
+        .arg("build")
+        .current_dir(root.join("proofs")))
+    .map_err(|_| "the proofs do not check, or `lake` is not installed".to_owned())
 }
 
 /// `cargo fuzz` on the nightly toolchain, run in the fuzz workspace.

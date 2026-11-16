@@ -120,6 +120,14 @@ size:
 # CI's checks and our own analysis together
 all: ci analysis
 
+# Needs Lean and Aeneas: see proofs/README.md. Not part of `just all`,
+# because the tools take several gigabytes. Run it whenever a proven module
+# of the core changes.
+
+# Translate the core's proven modules to Lean again and check every proof
+proofs:
+    cargo xtask proofs
+
 # Slow: every mutant rebuilds and reruns the tests. A mutant that survives is
 # either a missing test or code that nothing needs. Not part of `just all`;
 # run it before a release. Needs cargo-mutants.
