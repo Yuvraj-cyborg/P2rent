@@ -173,7 +173,7 @@ follows.
 $ just          # list tasks
 $ just ci       # every check CI runs
 $ just all      # CI's checks plus the project's own analysis
-$ just bench    # time a loopback transfer
+$ just transfer # time a loopback transfer
 ```
 
 `nix develop` provides the toolchain. [CONTRIBUTING.md](CONTRIBUTING.md)
