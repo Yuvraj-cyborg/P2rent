@@ -34,10 +34,13 @@ deps:
 spelling:
     typos
 
-# Fail on functions that are near copies of each other. 0.93 catches a copy
-# with small edits; functions shorter than 8 lines are too small to judge.
+# Fail on functions that are near copies of each other. The detector compares
+# shapes: a pasted function with small edits scores about 0.94, and unrelated
+# functions that merely look alike score up to about 0.90, so 0.92 sits
+# between them. It does not catch a copy in which every name was changed.
+# Functions shorter than 8 lines are too small to judge.
 dupes:
-    similarity-rs src xtask --threshold 0.93 --min-lines 8 --skip-test --fail-on-duplicates
+    similarity-rs src xtask --threshold 0.92 --min-lines 8 --skip-test --fail-on-duplicates
 
 # Check that every combination of features builds
 features:
