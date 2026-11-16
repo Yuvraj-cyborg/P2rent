@@ -164,7 +164,7 @@ Each was built and measured, then dropped.
 
 Downloads used to be written straight into files under their final names.
 They now go to a part file that is flushed and renamed into place when whole
-([#14](https://github.com/Yuvraj-cyborg/mux/issues/14)). Measured on Linux
+([#14](https://github.com/yuvichh/mux/issues/14)). Measured on Linux
 (Intel Core i5-10200H), before and after:
 
 | Measurement | Before | After |
@@ -200,7 +200,7 @@ earlier, so the figure is nearly all hashing: 16 times `hash_chunk`.
 
 The manifest gained a format version, entries for directories and links,
 permissions and times, and a content id kept apart from the artifact id
-([#15](https://github.com/Yuvraj-cyborg/mux/issues/15)). Instructions,
+([#15](https://github.com/yuvichh/mux/issues/15)). Instructions,
 before and after:
 
 | Benchmark | Before | After |

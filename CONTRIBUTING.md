@@ -154,7 +154,7 @@ same ground is not covered twice.
 A command works out what to do from the places it is given. There is no
 configuration file, every error says what to do next, and `--json` gives
 programs the same information people get. The commands arrive in
-[#21](https://github.com/Yuvraj-cyborg/mux/issues/21), with tests that fix
+[#21](https://github.com/yuvichh/mux/issues/21), with tests that fix
 their output.
 
 ## 10. Library first

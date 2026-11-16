@@ -93,18 +93,18 @@ Shared logic has one home, `model`. A backend is a thin adapter: it
 does no scheduling, retrying or verifying of its own.
 
 The names the crates are published under are decided when publishing
-happens ([#25](https://github.com/Yuvraj-cyborg/mux/issues/25)): `mux` is
+happens ([#25](https://github.com/yuvichh/mux/issues/25)): `mux` is
 taken on crates.io, and a name as plain as `fs` cannot be published either.
 
 ## Milestones
 
 | | Goal | Release |
 | --- | --- | --- |
-| [0](https://github.com/Yuvraj-cyborg/mux/milestone/1) | Foundations: analysis, verification, proofs, performance baseline, workspace. No visible change. | |
-| [1](https://github.com/Yuvraj-cyborg/mux/milestone/2) | `cp` between a folder, a URL and another machine. | 0.3 |
-| [2](https://github.com/Yuvraj-cyborg/mux/milestone/3) | One-way `sync`. | 0.4 |
-| [3](https://github.com/Yuvraj-cyborg/mux/milestone/4) | More places. | 0.5 |
-| [4](https://github.com/Yuvraj-cyborg/mux/milestone/5) | Pluggable anywhere: a stable library, a C API, bindings. | 0.6 |
-| [5](https://github.com/Yuvraj-cyborg/mux/milestone/6) | Two-way `sync`. | towards 1.0 |
+| [0](https://github.com/yuvichh/mux/milestone/1) | Foundations: analysis, verification, proofs, performance baseline, workspace. No visible change. | |
+| [1](https://github.com/yuvichh/mux/milestone/2) | `cp` between a folder, a URL and another machine. | 0.3 |
+| [2](https://github.com/yuvichh/mux/milestone/3) | One-way `sync`. | 0.4 |
+| [3](https://github.com/yuvichh/mux/milestone/4) | More places. | 0.5 |
+| [4](https://github.com/yuvichh/mux/milestone/5) | Pluggable anywhere: a stable library, a C API, bindings. | 0.6 |
+| [5](https://github.com/yuvichh/mux/milestone/6) | Two-way `sync`. | towards 1.0 |
 
 The rules every change follows are in [CONTRIBUTING.md](../CONTRIBUTING.md).

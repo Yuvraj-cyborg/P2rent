@@ -10,7 +10,7 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/Yuvraj-cyborg/mux"
+repository = "https://github.com/yuvichh/mux"
 
 # One place for every version. A crate asks for a dependency with
 # `name.workspace = true`.
