@@ -1,8 +1,8 @@
-name = "p2rent-proofs"
-defaultTargets = ["P2rentCore"]
+name = "mux-proofs"
+defaultTargets = ["Model"]
 
 # The Lean library that Aeneas's output is written against. Its revision is
-# the Aeneas release that produced the code in P2rentCore/: change both
+# the Aeneas release that produced the code in Model/: change both
 # together (see README.md).
 [[require]]
 name = "aeneas"
@@ -11,7 +11,7 @@ rev = "1dc8ad31b1b062a77c50e29144a6c7bba955fa09"
 subDir = "backends/lean"
 
 [[lean_lib]]
-name = "P2rentCore"
+name = "Model"
 # A warning fails the build. In particular a proof left unfinished with
 # `sorry` is only a warning by default.
 moreLeanArgs = ["-DwarningAsError=true"]

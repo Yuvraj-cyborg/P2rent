@@ -1,0 +1,42 @@
+[package]
+name = "cli"
+description = "The mux command-line tool, and the library that gathers the other crates"
+readme = "../../README.md"
+keywords = ["p2p", "quic", "swarm", "blake3", "file-transfer"]
+categories = ["command-line-utilities", "network-programming"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The library and the tool are both called `mux`. Only this package, like
+# its folder, is named for what it holds.
+[lib]
+name = "mux"
+
+[[bin]]
+name = "mux"
+path = "src/main.rs"
+
+[features]
+default = ["fast-apple-datapath"]
+# See `peer` for what this does.
+fast-apple-datapath = ["peer/fast-apple-datapath"]
+
+[dependencies]
+model.workspace = true
+fs.workspace = true
+peer.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

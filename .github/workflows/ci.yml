@@ -88,8 +88,8 @@ jobs:
         with:
           components: miri
       - uses: Swatinem/rust-cache@v2
-      - run: cargo miri test --locked -p p2rent-core --lib
-      - run: cargo miri test --locked -p p2rent-peer --lib -- 'swarm::ticket::'
+      - run: cargo miri test --locked -p model --lib
+      - run: cargo miri test --locked -p peer --lib -- 'swarm::ticket::'
 
   fuzz:
     runs-on: ubuntu-latest
@@ -108,9 +108,9 @@ jobs:
   loom:
     runs-on: ubuntu-latest
     env:
-      RUSTFLAGS: --cfg p2rent_loom
+      RUSTFLAGS: --cfg mux_loom
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p p2rent-peer --lib --release -- 'model::'
+      - run: cargo test --locked -p peer --lib --release -- 'interleavings::'

@@ -18,7 +18,7 @@ const SHIPPED_CRATES: &str = "xtask/shipped-crates.txt";
 /// what "shipped" means.
 const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 
-/// The modules of `p2rent-core` that are translated to Lean and proven.
+/// The modules of `model` that are translated to Lean and proven.
 /// Each holds decision logic and nothing else, written in the plain style
 /// the translator accepts: loops and indexing, no iterators or closures.
 const PROVEN_MODULES: &[&str] = &[
@@ -31,10 +31,10 @@ const PROVEN_MODULES: &[&str] = &[
 /// is also the revision of the Aeneas Lean library in `proofs/lakefile.toml`.
 const AENEAS_RELEASE: &str = "nightly-2026.11.16-1dc8ad3";
 
-/// Every crate `p2rent-core` may depend on directly. The core holds the
-/// logic that gets proven, so each addition here is a decision: it must not
-/// bring in a disk, a network, a clock or an async runtime.
-const CORE_DEPENDENCIES: &[&str] = &["blake3", "postcard", "serde", "thiserror"];
+/// Every crate `model` may depend on directly. It holds the logic that gets
+/// proven, so each addition here is a decision: it must not bring in a
+/// disk, a network, a clock or an async runtime.
+const MODEL_DEPENDENCIES: &[&str] = &["blake3", "postcard", "serde", "thiserror"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -68,12 +68,12 @@ fn finish(outcome: Result<(), String>) -> ExitCode {
 /// Builds the release binary and reports its size, failing if it is over
 /// budget.
 fn size() -> Result<(), String> {
-    run(cargo().args(["build", "--release", "--locked", "--bin", "p2rent"]))?;
+    run(cargo().args(["build", "--release", "--locked", "--bin", "mux"]))?;
 
     let binary = workspace_root()
         .join("target")
         .join("release")
-        .join(format!("p2rent{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("mux{}", std::env::consts::EXE_SUFFIX));
     let bytes = std::fs::metadata(&binary)
         .map_err(|e| format!("cannot read {}: {e}", binary.display()))?
         .len();
@@ -146,16 +146,11 @@ fn shipped_crates() -> Result<String, String> {
             "--format",
             "{p}",
             "--package",
-            "p2rent",
+            "cli",
             "--target",
             target,
         ]))?;
-        let names: BTreeSet<&str> = tree
-            .lines()
-            .filter_map(|line| line.split_whitespace().next())
-            // This workspace's own crates are not third-party.
-            .filter(|name| !name.starts_with("p2rent"))
-            .collect();
+        let names: BTreeSet<&str> = tree.lines().filter_map(third_party).collect();
         for name in names {
             users.entry(name.to_owned()).or_default().push(target);
         }
@@ -177,6 +172,15 @@ fn shipped_crates() -> Result<String, String> {
     Ok(list)
 }
 
+/// The name of the crate on one line of `cargo tree`, unless it is one of
+/// this workspace's own, which are printed with the folder they live in.
+fn third_party(line: &str) -> Option<&str> {
+    let mut words = line.split_whitespace();
+    let name = words.next()?;
+    let local = words.any(|word| word.starts_with('(') && word != "(proc-macro)" && word != "(*)");
+    (!local).then_some(name)
+}
+
 /// The targets the release workflow builds, read from the workflow itself so
 /// that there is one list of them.
 fn release_targets() -> Result<Vec<String>, String> {
@@ -194,7 +198,7 @@ fn release_targets() -> Result<Vec<String>, String> {
     Ok(targets)
 }
 
-/// Checks that `p2rent-core` depends only on the crates it is allowed to.
+/// Checks that `model` depends only on the crates it is allowed to.
 fn layers() -> Result<(), String> {
     let tree = output(cargo().args([
         "tree",
@@ -206,23 +210,20 @@ fn layers() -> Result<(), String> {
         "--prefix",
         "none",
         "--package",
-        "p2rent-core",
+        "model",
     ]))?;
     let unexpected: Vec<&str> = tree
         .lines()
         .skip(1)
         .filter_map(|line| line.split_whitespace().next())
-        .filter(|name| !CORE_DEPENDENCIES.contains(name))
+        .filter(|name| !MODEL_DEPENDENCIES.contains(name))
         .collect();
     if unexpected.is_empty() {
-        println!(
-            "p2rent-core depends only on: {}",
-            CORE_DEPENDENCIES.join(", ")
-        );
+        println!("model depends only on: {}", MODEL_DEPENDENCIES.join(", "));
         Ok(())
     } else {
         Err(format!(
-            "p2rent-core may not depend on {}; see CORE_DEPENDENCIES in xtask/src/main.rs",
+            "model may not depend on {}; see MODEL_DEPENDENCIES in xtask/src/main.rs",
             unexpected.join(", ")
         ))
     }
@@ -252,17 +253,17 @@ fn fuzz(seconds: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Translates the proven modules of `p2rent-core` to Lean again and checks
+/// Translates the proven modules of `model` to Lean again and checks
 /// every proof against the result.
 ///
-/// The translation overwrites `proofs/P2rentCore/Types.lean` and
+/// The translation overwrites `proofs/Model/Types.lean` and
 /// `Funs.lean`, which are committed. If they change, the Rust code changed:
 /// commit them with it, so the proofs are always about the current code.
 fn proofs() -> Result<(), String> {
     let root = workspace_root();
-    let core = root.join("crates").join("p2rent-core");
-    let lean = root.join("proofs").join("P2rentCore");
-    let llbc = root.join("target").join("p2rent_core.llbc");
+    let core = root.join("crates").join("model");
+    let lean = root.join("proofs").join("Model");
+    let llbc = root.join("target").join("model.llbc");
     let missing = |tool: &str| {
         format!(
             "cannot run `{tool}`. Install the Aeneas release {AENEAS_RELEASE} and put it on \

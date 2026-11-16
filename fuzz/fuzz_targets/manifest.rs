@@ -5,7 +5,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use p2rent_core::artifact::{Artifact, Manifest, is_safe_component};
+use model::artifact::{Artifact, Manifest, is_safe_component};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(manifest) = postcard::from_bytes::<Manifest>(data) else {

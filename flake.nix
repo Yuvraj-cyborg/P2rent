@@ -1,5 +1,5 @@
 {
-  description = "p2rent - swarm distribution of large artifacts over QUIC";
+  description = "mux - swarm distribution of large artifacts over QUIC";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -11,10 +11,10 @@
       let
         pkgs = import nixpkgs { inherit system; };
         workspace = (pkgs.lib.importTOML ./Cargo.toml).workspace.package;
-        manifest = (pkgs.lib.importTOML ./crates/p2rent/Cargo.toml).package;
+        manifest = (pkgs.lib.importTOML ./crates/cli/Cargo.toml).package;
 
-        p2rent = pkgs.rustPlatform.buildRustPackage {
-          pname = manifest.name;
+        mux = pkgs.rustPlatform.buildRustPackage {
+          pname = "mux";
           version = workspace.version;
 
           # Only the files that affect the build, so editing docs does not
@@ -34,23 +34,23 @@
             description = manifest.description;
             homepage = workspace.repository;
             license = pkgs.lib.licenses.mit;
-            mainProgram = "p2rent";
+            mainProgram = "mux";
           };
         };
       in
       {
         packages = {
-          inherit p2rent;
-          default = p2rent;
+          inherit mux;
+          default = mux;
         };
 
-        apps.default = flake-utils.lib.mkApp { drv = p2rent; };
+        apps.default = flake-utils.lib.mkApp { drv = mux; };
 
         # `nix flake check` builds the package, which runs the test suite.
-        checks = { inherit p2rent; };
+        checks = { inherit mux; };
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ p2rent ];
+          inputsFrom = [ mux ];
           packages = with pkgs; [
             clippy
             rustfmt

@@ -1,37 +1,40 @@
 # Architecture
 
-p2rent is a workspace of four crates. Each depends only on the ones above it
+mux is a workspace of four crates. Each depends only on the ones above it
 in this table.
 
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
-| `p2rent-core` | The data model: hashes, manifests, chunk layout, bitfields | nothing else |
-| `p2rent-fs` | Local folders: hashing files into artifacts; reading and writing chunks in place | core |
-| `p2rent-peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | core, fs |
-| `p2rent` | The library other programs depend on, which re-exports the three above, and the CLI: argument parsing, progress bars, output | all of the above |
+| `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, and the schedule of which chunk to fetch next | nothing else |
+| `fs` | Local folders: hashing files into artifacts; reading and writing chunks in place | model |
+| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, fs |
+| `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the three above | all of the above |
 
-`p2rent-core` touches no disk, network or clock and does not use `std`.
+`model` touches no disk, network or clock and does not use `std`.
 `just pure` builds it for a target that has no standard library and checks
 that it depends only on an allowed list of crates. That is what keeps its
 logic small enough to prove.
 
 ```
 crates/
-├── p2rent-core/src/
-│   ├── artifact/      hash.rs  manifest.rs  bitfield.rs
+├── model/src/
+│   ├── artifact/      hash.rs  manifest.rs  layout.rs  bitfield.rs  wire.rs
+│   ├── schedule.rs
 │   └── hex.rs
-├── p2rent-fs/src/     index.rs  disk.rs  io.rs
-├── p2rent-peer/
+├── fs/src/            index.rs  disk.rs  io.rs
+├── peer/
 │   ├── src/
 │   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
 │   │   ├── swarm/     node.rs  share.rs  server.rs  ticket.rs
-│   │   │   └── download/  mod.rs  session.rs  peer.rs
+│   │   │   └── download/  mod.rs  session.rs  claims.rs  peer.rs
 │   │   └── sync.rs    locks that recover from poisoning
-│   ├── tests/         connection.rs  download.rs  swarm.rs
+│   ├── tests/         connection.rs  download.rs  swarm.rs  properties.rs
 │   └── benches/       transfer.rs
-└── p2rent/
+└── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
+fuzz/                  fuzz targets, a workspace of their own
+proofs/                Lean proofs of the logic in `model`
 xtask/                 development tasks written in Rust (`cargo xtask`)
 ```
 
@@ -67,7 +70,7 @@ fetched again. This also repairs files that were corrupted after a download.
 
 ## Network
 
-Each node has an Ed25519 key pair stored at `<config dir>/p2rent/node.key`.
+Each node has an Ed25519 key pair stored at `<config dir>/mux/node.key`.
 The public key is the node id.
 
 Connections are QUIC with TLS 1.3. There is no certificate authority: each

@@ -279,6 +279,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "fs"
+version = "0.2.0"
+dependencies = [
+ "model",
+ "rayon",
+ "thiserror",
+ "walkdir",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -300,6 +310,16 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "model",
+ "peer",
+ "postcard",
 ]
 
 [[package]]
@@ -453,6 +473,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "model"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "postcard",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -527,43 +557,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "p2rent-core"
-version = "0.2.0"
-dependencies = [
- "blake3",
- "postcard",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "p2rent-fs"
-version = "0.2.0"
-dependencies = [
- "p2rent-core",
- "rayon",
- "thiserror",
- "walkdir",
-]
-
-[[package]]
-name = "p2rent-fuzz"
-version = "0.0.0"
-dependencies = [
- "libfuzzer-sys",
- "p2rent-core",
- "p2rent-peer",
- "postcard",
-]
-
-[[package]]
-name = "p2rent-peer"
+name = "peer"
 version = "0.2.0"
 dependencies = [
  "dirs",
+ "fs",
  "loom",
- "p2rent-core",
- "p2rent-fs",
+ "model",
  "postcard",
  "quinn",
  "quinn-udp",

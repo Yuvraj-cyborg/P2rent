@@ -7,7 +7,7 @@ default:
 build:
     cargo build
 
-# Build an optimised binary at target/release/p2rent
+# Build an optimised binary at target/release/mux
 release:
     cargo build --release --locked
 
@@ -53,8 +53,8 @@ features:
 
 # Run the tests that touch neither disk nor network under Miri
 miri:
-    cargo +nightly miri test --locked -p p2rent-core --lib
-    cargo +nightly miri test --locked -p p2rent-peer --lib -- swarm::ticket::
+    cargo +nightly miri test --locked -p model --lib
+    cargo +nightly miri test --locked -p peer --lib -- swarm::ticket::
 
 # Needs a nightly toolchain and cargo-fuzz.
 
@@ -66,7 +66,7 @@ fuzz seconds="10":
 
 # Check the download's shared state under every interleaving of two fetchers
 loom:
-    RUSTFLAGS="--cfg p2rent_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p p2rent-peer --lib --release -- model::
+    RUSTFLAGS="--cfg mux_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p peer --lib --release -- interleavings::
 
 # ---- Our own analysis. Not part of CI: run it before opening a pull request ----
 
@@ -77,7 +77,7 @@ analysis: workflows unused dupes pure deps size kani
 
 # Prove the core's arithmetic and state machines for every input up to a bound
 kani:
-    cargo kani -p p2rent-core
+    cargo kani -p model
 
 # Check the CI workflow files for mistakes GitHub would reject
 workflows:
@@ -103,7 +103,7 @@ dupes:
 
 # Check that the core crate has no I/O and no unexpected dependency
 pure:
-    cargo check --locked -p p2rent-core --no-default-features --target thumbv7em-none-eabihf
+    cargo check --locked -p model --no-default-features --target thumbv7em-none-eabihf
     cargo xtask layers
 
 # After adding or dropping a dependency, run `cargo xtask deps --write`, so
@@ -134,19 +134,19 @@ proofs:
 
 # Change the core's code in small ways and check that some test notices
 mutants:
-    cargo mutants --package p2rent-core
+    cargo mutants --package model
 
 # Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
 bench size_mb="1024" seeders="1" runs="3" files="1":
-    P2RENT_BENCH_SIZE_MB={{size_mb}} P2RENT_BENCH_SEEDERS={{seeders}} P2RENT_BENCH_RUNS={{runs}} P2RENT_BENCH_FILES={{files}} cargo bench --locked -p p2rent-peer --bench transfer
+    MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_SEEDERS={{seeders}} MUX_BENCH_RUNS={{runs}} MUX_BENCH_FILES={{files}} cargo bench --locked -p peer --bench transfer
 
-# Run p2rent from source, e.g. `just run seed ./model.bin`
+# Run mux from source, e.g. `just run seed ./model.bin`
 run *args:
-    cargo run --release -p p2rent -- {{args}}
+    cargo run --release -p cli -- {{args}}
 
-# Install p2rent into ~/.cargo/bin
+# Install mux into ~/.cargo/bin
 install:
-    cargo install --path crates/p2rent --locked
+    cargo install --path crates/cli --locked
 
 # Build with Nix and run the flake checks
 nix:

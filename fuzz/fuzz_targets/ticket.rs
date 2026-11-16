@@ -5,10 +5,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use p2rent_core::artifact::Hash;
-use p2rent_core::hex;
-use p2rent_peer::net::NodeId;
-use p2rent_peer::swarm::Ticket;
+use model::artifact::Hash;
+use model::hex;
+use peer::net::NodeId;
+use peer::swarm::Ticket;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = core::str::from_utf8(data) else {

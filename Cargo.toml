@@ -10,14 +10,14 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/Yuvraj-cyborg/P2rent"
+repository = "https://github.com/Yuvraj-cyborg/mux"
 
 # One place for every version. A crate asks for a dependency with
 # `name.workspace = true`.
 [workspace.dependencies]
-p2rent-core = { path = "crates/p2rent-core", version = "0.2.0" }
-p2rent-fs = { path = "crates/p2rent-fs", version = "0.2.0" }
-p2rent-peer = { path = "crates/p2rent-peer", version = "0.2.0", default-features = false }
+model = { path = "crates/model", version = "0.2.0" }
+fs = { path = "crates/fs", version = "0.2.0" }
+peer = { path = "crates/peer", version = "0.2.0", default-features = false }
 
 anyhow = "1"
 blake3 = { version = "1.8", default-features = false }
@@ -50,8 +50,8 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 unused = { level = "warn", priority = -1 }
-# `kani` is set by the Kani model checker, `p2rent_loom` by `just loom`.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(p2rent_loom)'] }
+# `kani` is set by the Kani model checker, `mux_loom` by `just loom`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(mux_loom)'] }
 rust_2018_idioms = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]

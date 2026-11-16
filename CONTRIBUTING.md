@@ -1,6 +1,6 @@
 # Contributing
 
-p2rent aims to be infrastructure that other software depends on. These rules
+mux aims to be infrastructure that other software depends on. These rules
 keep it small, correct and fast. [docs/scope.md](docs/scope.md) says what the
 project is and is not.
 
@@ -22,7 +22,7 @@ Every line has to be read, tested, proven and maintained, so each one has to
 earn its place.
 
 - Before writing a function, look for one that already does the job.
-- Shared logic has one home, `p2rent-core`. A backend is a thin adapter and
+- Shared logic has one home, `model`. A backend is a thin adapter and
   does no scheduling, retrying or verifying of its own.
 - A dependency is added only with a stated reason.
 - Code that no test notices is deleted.
@@ -78,7 +78,7 @@ The checks that are this project's own analysis run locally, with
 | `just workflows` | The CI workflow files are valid. |
 | `just unused` | No dependency is declared and never used. |
 | `just dupes` | No function is a near copy of another. |
-| `just pure` | `p2rent-core` builds with no standard library and depends only on the crates it is allowed to. |
+| `just pure` | `model` builds with no standard library and depends only on the crates it is allowed to. |
 | `just deps` | The committed list of shipped crates is up to date. |
 | `just size` | The release binary is within its size budget. |
 | `just kani` | The core's arithmetic and state machines, proven for every input up to a bound. |
@@ -106,7 +106,7 @@ A property is written once, at the strongest tier that can express it. A
 bug found by any tier is fixed at its cause, and the input that found it is
 kept as a test.
 
-Decision logic lives in `p2rent-core`, in modules that hold nothing else and
+Decision logic lives in `model`, in modules that hold nothing else and
 are written plainly: loops and indexing, no iterators, closures or strings.
 That is what lets them be translated to Lean and proven.
 [proofs/README.md](proofs/README.md) says how, and what the proofs rest on.
@@ -116,7 +116,7 @@ not part of `just all`: run it whenever one of those modules changes.
 ## 7. Safe by default, with a fenced fast path
 
 `unsafe`, SIMD intrinsics and assembly are allowed in one crate,
-`p2rent-accel`. Every other crate forbids `unsafe`. In that crate:
+`accel`. Every other crate forbids `unsafe`. In that crate:
 
 - every fast function has a safe reference version with the same signature;
 - a comparison test runs both on random inputs, for every CPU feature level
@@ -126,7 +126,7 @@ not part of `just all`: run it whenever one of those modules changes.
   fallback.
 
 The fence and the comparison tests are set up in
-[#13](https://github.com/Yuvraj-cyborg/P2rent/issues/13).
+[#13](https://github.com/Yuvraj-cyborg/mux/issues/13).
 
 ## 8. Measure before optimising
 
@@ -135,14 +135,14 @@ No optimisation is merged without figures.
 helped and what did not, so the same ground is not covered twice. One change
 per pull request. A benchmark comparison against `main` will make a
 regression visible before a change merges
-([#13](https://github.com/Yuvraj-cyborg/P2rent/issues/13)).
+([#13](https://github.com/Yuvraj-cyborg/mux/issues/13)).
 
 ## 9. Easy to guess
 
 A command works out what to do from the places it is given. There is no
 configuration file, every error says what to do next, and `--json` gives
 programs the same information people get. The commands arrive in
-[#21](https://github.com/Yuvraj-cyborg/P2rent/issues/21), with tests that fix
+[#21](https://github.com/Yuvraj-cyborg/mux/issues/21), with tests that fix
 their output.
 
 ## 10. Library first
