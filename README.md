@@ -70,6 +70,10 @@ under its own name only when it is complete; until then it is
 - **No copies.** Seeders serve straight from the original files; downloaders
   write each file once, beside its destination, and rename it into place.
   Memory use does not grow with artifact size.
+- **The whole tree.** Empty directories, symbolic links that stay inside the
+  tree, permissions and modification times arrive as they were. The same
+  bytes are one swarm whatever they are called: names, permissions and times
+  are kept apart from the content.
 - **Authenticated.** Every node has an Ed25519 key. Connections are QUIC with
   TLS 1.3, authenticated in both directions against those keys.
 

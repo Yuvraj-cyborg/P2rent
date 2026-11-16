@@ -25,13 +25,13 @@ counted, and neither is time in the kernel.
 | Benchmark | Hot path | Instructions |
 | --- | --- | ---: |
 | `hash_chunk` | Hash one 1 MiB chunk | 2,619,342 |
-| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,191,641 |
-| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 6,040,211 |
-| `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,493,228 |
+| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,422,858 |
+| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 5,009,843 |
+| `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,493,611 |
 | `mark_and_count` | Set every third bit of a 10,000-bit bitfield, then count them | 67,093 |
 | `claim_every_chunk` | Claim and complete each of 10,000 chunks | 580,971 |
-| `read_chunks` | Read 16 chunks of 1 MiB from a file | 909,772 |
-| `store_chunks` | Check 16 chunks of 1 MiB against the manifest, write them to a part file, then flush it and rename it into place | 41,930,897 |
+| `read_chunks` | Read 16 chunks of 1 MiB from a file | 909,183 |
+| `store_chunks` | Check 16 chunks of 1 MiB against the manifest, write them to a part file, then flush it and rename it into place | 41,931,238 |
 
 These figures are from one build: Linux on x86-64, Rust 1.100, 17 November
 2026. Another compiler or processor gives other figures, so only compare two
@@ -195,6 +195,29 @@ One version was built, measured and dropped:
 write of 7,701 instructions for 16 chunks. Storing a chunk now includes
 checking it against the manifest, which a download always did, one step
 earlier, so the figure is nearly all hashing: 16 times `hash_chunk`.
+
+## Manifest format 1
+
+The manifest gained a format version, entries for directories and links,
+permissions and times, and a content id kept apart from the artifact id
+([#15](https://github.com/Yuvraj-cyborg/mux/issues/15)). Instructions,
+before and after:
+
+| Benchmark | Before | After |
+| --- | ---: | ---: |
+| `build_artifact` | 5,191,641 | 5,422,858 (+4.5%) |
+| `decode_artifact` | 6,040,211 | 5,009,843 (-17.1%) |
+
+Building checks more than it did: every entry's directory has to be listed,
+and there are two identifiers to derive. Decoding got cheaper, although it
+checks more too, because of one choice that was measured first.
+
+| Change | Result |
+| --- | --- |
+| Derive the artifact id from the whole encoded manifest, and the content id from the content | Tried first. The content, which is nearly all of a manifest, is hashed twice. |
+| Derive the artifact id from the content id and the metadata | Kept. The content is hashed once, and the artifact id still pins it. |
+
+No other benchmark moved.
 
 ## The fast path
 
