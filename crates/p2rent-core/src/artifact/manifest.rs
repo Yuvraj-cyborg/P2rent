@@ -414,6 +414,7 @@ mod tests {
     /// The size check comes first, and allows a manifest of exactly the
     /// limit.
     #[test]
+    #[cfg_attr(miri, ignore = "hashes 64 MiB, which takes hours when interpreted")]
     fn decode_enforces_the_size_limit_at_its_edge() {
         let too_large = |bytes: Vec<u8>| {
             let reason = Artifact::decode(Hash::of(b"any"), bytes)
