@@ -4,8 +4,10 @@ p2rent aims to be infrastructure that other software depends on. These rules
 keep it small, correct and fast. [docs/scope.md](docs/scope.md) says what the
 project is and is not.
 
-Rules 1 and 3 are enforced in review. The others are enforced by CI, and
-where CI does not do that yet, the rule names the issue that will add it.
+Rules 1 and 3 are enforced in review. The others are checked by a command,
+either in CI or locally before a pull request is opened, and each rule names
+its command. Run `just all` before opening a pull request: it runs
+everything CI runs and everything that is checked only locally.
 
 ## 1. One issue, one pull request
 
@@ -25,11 +27,17 @@ earn its place.
 - A dependency is added only with a stated reason.
 - Code that no test notices is deleted.
 
-CI fails on near-duplicate functions (`just dupes`), unused dependencies and
-duplicate dependency versions (`just deps`), and dead code (`just lint`). It
-also reports the size of the binary and the number of dependencies on every
-pull request and fails when either is over the budget set in
-`xtask/src/main.rs` (`just size`). A scheduled mutation run will list code
+`just analysis` checks this locally:
+
+- `just dupes` fails on functions that are near copies of each other;
+- `just unused` fails on dependencies that are declared but never used;
+- `just deps` fails if the committed list of crates that ship in the released
+  binaries, `xtask/shipped-crates.txt`, is out of date. Adding a dependency
+  therefore shows its name in the diff;
+- `just size` reports the size of the release binary and fails if it is over
+  the budget set in `xtask/src/main.rs`.
+
+Dead code is an error in `just lint`. A scheduled mutation run will list code
 that no test notices
 ([#11](https://github.com/Yuvraj-cyborg/P2rent/issues/11)).
 
@@ -48,22 +56,28 @@ case around it.
 
 ## 5. Static analysis is required
 
-Every CI job runs a `just` recipe, so `just ci` runs the same checks
-locally:
+CI runs the checks that any project of this kind runs. `just ci` runs the
+same ones locally.
+
+| CI job | Recipe | Checks |
+| --- | --- | --- |
+| `test` | `just test` | Builds every target and runs the tests, on Linux, macOS and Windows with the stable compiler and on Linux with beta. |
+| `msrv` | `just msrv` | The code builds with the oldest supported compiler. |
+| `lint` | `just lint` | Formatting, `clippy` with its pedantic lints, the documentation build and spelling, all with warnings as errors. Every public item is documented. |
+| `audit` | `just audit` | Licences, known vulnerabilities and duplicate versions of dependencies. |
+| `features` | `just features` | Every combination of features builds. |
+| `miri` | `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
+
+The checks that are this project's own analysis run locally, with
+`just analysis`:
 
 | Recipe | Checks |
 | --- | --- |
-| `just lint` | Formatting, `clippy` with its pedantic lints, and the documentation build, all with warnings as errors. Every public item is documented. |
-| `just deps` | Licences, known vulnerabilities, duplicate versions and unused dependencies. |
-| `just spelling` | Spelling in code and documentation. |
-| `just dupes` | Functions that are near copies of each other. |
-| `just features` | Every combination of features builds. |
-| `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
+| `just unused` | No dependency is declared and never used. |
+| `just dupes` | No function is a near copy of another. |
 | `just pure` | `p2rent-core` builds with no standard library and depends only on the crates it is allowed to. |
-| `just size` | Binary size and dependency count against their budgets. |
-
-CI also checks that the code builds with the minimum supported Rust version
-and runs the tests on Linux, macOS and Windows.
+| `just deps` | The committed list of shipped crates is up to date. |
+| `just size` | The release binary is within its size budget. |
 
 Library code may not panic on bad input: `unwrap`, `expect` and `panic!` are
 errors outside tests. A lint that produces noise without value is switched
@@ -107,8 +121,9 @@ The fence and the comparison tests are set up in
 No optimisation is merged without figures.
 [docs/performance.md](docs/performance.md) records what was measured, what
 helped and what did not, so the same ground is not covered twice. One change
-per pull request. CI will compare every pull request with `main` and fail on
-a regression ([#13](https://github.com/Yuvraj-cyborg/P2rent/issues/13)).
+per pull request. A benchmark comparison against `main` will make a
+regression visible before a change merges
+([#13](https://github.com/Yuvraj-cyborg/P2rent/issues/13)).
 
 ## 9. Easy to guess
 
