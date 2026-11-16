@@ -1,6 +1,10 @@
 use super::io;
 use crate::error::{Error, Result};
-use model::artifact::{Artifact, FileEntry, Hash, Kind, Manifest, is_part_name, to_usize};
+use model::artifact::path::{depth, is_safe_target};
+use model::artifact::{
+    Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, is_part_name,
+    to_usize,
+};
 use rayon::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -13,18 +17,49 @@ pub struct Indexed {
     pub artifact: Artifact,
     /// Canonical path of the file or directory that was indexed.
     pub root: PathBuf,
-    /// Entries that were left out: those that are neither regular files nor
-    /// directories (symlinks, sockets, devices), and part files left by a
-    /// download that has not finished.
+    /// Entries that were left out: sockets, devices and the like, links that
+    /// point outside the tree, and part files left by a download that has
+    /// not finished.
     pub skipped: usize,
 }
 
+/// Something found on disk, and how the manifest will describe it.
 struct Source {
     path: PathBuf,
-    entry: FileEntry,
+    entry: Entry,
+    metadata: EntryMetadata,
+}
+
+impl Source {
+    fn new(path: PathBuf, entry_path: String, kind: EntryKind, found: &std::fs::Metadata) -> Self {
+        // A link's own permissions and time mean nothing and are not
+        // restored, so they are recorded the same everywhere.
+        let metadata = match kind {
+            EntryKind::Symlink { .. } => EntryMetadata {
+                mode: PERMISSION_BITS,
+                modified: None,
+            },
+            EntryKind::File { .. } | EntryKind::Directory => EntryMetadata {
+                mode: io::mode_of(found),
+                modified: io::modified_of(found),
+            },
+        };
+        Self {
+            path,
+            entry: Entry {
+                path: entry_path,
+                kind,
+            },
+            metadata,
+        }
+    }
 }
 
 /// Hashes `path` into an artifact without copying any data.
+///
+/// Files, directories and links are recorded, with their permissions and
+/// the time each was last changed. A link is recorded as a link and is not
+/// followed.
 ///
 /// `on_bytes` is called from worker threads with the size of each chunk as it
 /// is hashed.
@@ -32,7 +67,7 @@ struct Source {
 /// # Errors
 ///
 /// Returns an error if the path cannot be read, is neither a file nor a directory, or contains
-/// a name that is not UTF-8.
+/// a name that a manifest cannot hold, such as one that is not UTF-8.
 pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Indexed> {
     let root = path.canonicalize()?;
     let name = root
@@ -40,35 +75,25 @@ pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> R
         .and_then(|n| n.to_str())
         .ok_or_else(|| unsupported(&root, "has no usable UTF-8 name"))?
         .to_owned();
-
-    let metadata = std::fs::metadata(&root)?;
-    let (kind, sources, skipped) = if metadata.is_dir() {
-        let (sources, skipped) = walk(&root)?;
-        (Kind::Directory, sources, skipped)
-    } else if metadata.is_file() {
-        let entry = FileEntry {
-            path: name.clone(),
-            size: metadata.len(),
-            executable: io::is_executable(&metadata),
-        };
-        let path = root.clone();
-        (Kind::File, vec![Source { path, entry }], 0)
-    } else {
-        return Err(unsupported(&root, "is not a regular file or directory"));
-    };
+    let (sources, skipped) = walk(&root)?;
 
     let per_file: Vec<Vec<Hash>> = sources
         .par_iter()
-        .map(|source| hash_file(&source.path, source.entry.size, chunk_size, on_bytes))
+        .map(|source| match source.entry.kind {
+            EntryKind::File { size } => hash_file(&source.path, size, chunk_size, on_bytes),
+            EntryKind::Directory | EntryKind::Symlink { .. } => Ok(Vec::new()),
+        })
         .collect::<Result<_>>()?;
 
-    let manifest = Manifest {
+    let manifest = Manifest::new(
         name,
-        kind,
         chunk_size,
-        files: sources.into_iter().map(|s| s.entry).collect(),
-        chunks: per_file.into_iter().flatten().collect(),
-    };
+        sources
+            .into_iter()
+            .map(|source| (source.entry, source.metadata))
+            .collect(),
+        per_file.into_iter().flatten().collect(),
+    );
     Ok(Indexed {
         artifact: Artifact::new(manifest)?,
         root,
@@ -82,17 +107,27 @@ pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> R
 ///
 /// Returns an error if the path, or anything under it, cannot be read.
 pub fn measure(path: &Path) -> Result<u64> {
-    let metadata = std::fs::metadata(path)?;
-    if !metadata.is_dir() {
-        return Ok(metadata.len());
-    }
     let (sources, _) = walk(&path.canonicalize()?)?;
-    Ok(sources.iter().map(|s| s.entry.size).sum())
+    Ok(sources.iter().map(|source| source.entry.size()).sum())
 }
 
+/// Everything at and under `root` that a manifest records, the root first
+/// and the rest in path order, and the number of things left out.
 fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
-    let mut sources = Vec::new();
+    let found = std::fs::metadata(root)?;
+    let kind = if found.is_dir() {
+        EntryKind::Directory
+    } else if found.is_file() {
+        EntryKind::File { size: found.len() }
+    } else {
+        return Err(unsupported(root, "is not a regular file or directory"));
+    };
+    let mut sources = vec![Source::new(root.to_owned(), String::new(), kind, &found)];
     let mut skipped = 0;
+    if !found.is_dir() {
+        return Ok((sources, skipped));
+    }
+
     let mut entries = WalkDir::new(root).min_depth(1).into_iter();
     while let Some(entry) = entries.next() {
         let entry = entry.map_err(std::io::Error::from)?;
@@ -106,34 +141,44 @@ fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
             }
             continue;
         }
-        if file_type.is_dir() {
-            continue;
-        }
-        if !file_type.is_file() {
-            skipped += 1;
-            continue;
-        }
         let relative = entry
             .path()
             .strip_prefix(root)
             .map_err(|_| unsupported(entry.path(), "is outside the indexed directory"))?;
-        let components: Vec<&str> = relative
+        let names: Vec<&str> = relative
             .iter()
             .map(|c| c.to_str())
             .collect::<Option<_>>()
             .ok_or_else(|| unsupported(entry.path(), "has a non-UTF-8 name"))?;
-        let metadata = entry.metadata().map_err(std::io::Error::from)?;
-        sources.push(Source {
-            path: entry.path().to_owned(),
-            entry: FileEntry {
-                path: components.join("/"),
-                size: metadata.len(),
-                executable: io::is_executable(&metadata),
-            },
-        });
+        let path = names.join("/");
+        // Not followed: for a link this describes the link itself.
+        let found = entry.metadata().map_err(std::io::Error::from)?;
+
+        let kind = if file_type.is_dir() {
+            EntryKind::Directory
+        } else if file_type.is_file() {
+            EntryKind::File { size: found.len() }
+        } else if let Some(target) = link_target(entry.path(), &path) {
+            EntryKind::Symlink { target }
+        } else {
+            skipped += 1;
+            continue;
+        };
+        sources.push(Source::new(entry.path().to_owned(), path, kind, &found));
     }
-    sources.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+    sources[1..].sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
     Ok((sources, skipped))
+}
+
+/// Where the link at `on_disk` points, if it is a link whose target stays
+/// inside the tree. `path` is the link's own path in the manifest.
+fn link_target(on_disk: &Path, path: &str) -> Option<String> {
+    let target = std::fs::read_link(on_disk).ok()?;
+    let target = target.to_str()?;
+    // Windows writes a relative target with its own separator.
+    #[cfg(windows)]
+    let target = target.replace('\\', "/");
+    is_safe_target(target.as_bytes(), depth(path.as_bytes())).then(|| target.to_owned())
 }
 
 fn hash_file(

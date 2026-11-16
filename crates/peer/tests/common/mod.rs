@@ -5,6 +5,7 @@ use ::fs as store;
 use model::artifact::{Artifact, MIN_CHUNK_SIZE};
 use peer::net::{Identity, PeerInfo};
 use peer::swarm::{DownloadOptions, Node, Progress, Report, Ticket};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -69,37 +70,68 @@ pub(crate) async fn get(node: &Arc<Node>, ticket: &Ticket, out: &Path) -> peer::
     peer::swarm::download(node, ticket, out, options(), Arc::new(Progress::default())).await
 }
 
-/// Asserts that two directory trees hold the same files with the same bytes.
-pub(crate) fn assert_same_tree(expected: &Path, actual: &Path) {
-    let list = |root: &Path| -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = walk(root)
-            .into_iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_owned())
-            .collect();
-        files.sort();
-        files
-    };
-    let files = list(expected);
-    assert_eq!(files, list(actual), "file lists differ");
-    for file in files {
-        assert_eq!(
-            std::fs::read(expected.join(&file)).unwrap(),
-            std::fs::read(actual.join(&file)).unwrap(),
-            "{} differs",
-            file.display()
-        );
-    }
+/// What is at one path of a tree.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Seen {
+    Directory,
+    File(Vec<u8>),
+    Link(PathBuf),
 }
 
-fn walk(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            files.extend(walk(&path));
+/// What is at a path, its permission bits, and when it was last modified.
+/// What a platform cannot restore is left out: permissions and directory
+/// times on Windows, and a link's own time everywhere.
+pub(crate) type Described = (Seen, u32, Option<std::time::SystemTime>);
+
+/// Everything at and under `root`, by path relative to it.
+pub(crate) fn listing(root: &Path) -> BTreeMap<PathBuf, Described> {
+    fn describe(path: &Path) -> Described {
+        let found = std::fs::symlink_metadata(path).unwrap();
+        #[cfg(unix)]
+        let mode = std::os::unix::fs::PermissionsExt::mode(&found.permissions()) & 0o777;
+        #[cfg(not(unix))]
+        let mode = 0;
+        let modified = found.modified().ok();
+        if found.is_symlink() {
+            (Seen::Link(std::fs::read_link(path).unwrap()), 0, None)
+        } else if found.is_dir() {
+            (Seen::Directory, mode, modified.filter(|_| cfg!(unix)))
         } else {
-            files.push(path);
+            (Seen::File(std::fs::read(path).unwrap()), mode, modified)
         }
     }
-    files
+    fn visit(root: &Path, path: &Path, found: &mut BTreeMap<PathBuf, Described>) {
+        let described = describe(path);
+        let is_directory = described.0 == Seen::Directory;
+        found.insert(path.strip_prefix(root).unwrap().to_owned(), described);
+        if is_directory {
+            for entry in std::fs::read_dir(path).unwrap() {
+                visit(root, &entry.unwrap().path(), found);
+            }
+        }
+    }
+    let mut found = BTreeMap::new();
+    visit(root, root, &mut found);
+    found
+}
+
+/// Asserts that two trees are the same: the same files with the same bytes,
+/// the same directories, empty ones included, the same links, and the same
+/// permissions and times wherever this platform keeps them.
+pub(crate) fn assert_same_tree(expected: &Path, actual: &Path) {
+    let (expected, actual) = (listing(expected), listing(actual));
+    let paths = |tree: &BTreeMap<PathBuf, Described>| tree.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(
+        paths(&expected),
+        paths(&actual),
+        "the trees hold different paths"
+    );
+    for (path, described) in &expected {
+        assert_eq!(
+            Some(described),
+            actual.get(path),
+            "{} differs",
+            path.display()
+        );
+    }
 }

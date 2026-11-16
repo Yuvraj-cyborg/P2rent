@@ -60,7 +60,8 @@ proptest! {
         for chunk in sequence {
             prop_assert!(destination.write_chunk(chunk, &source.read_chunk(chunk).unwrap()).unwrap());
             for (number, contents) in files.iter().enumerate() {
-                let whole = artifact.file_chunks(number).all(|index| destination.has(index));
+                // Entry 0 is the root, and the files follow it in order.
+                let whole = artifact.file_chunks(number + 1).all(|index| destination.has(index));
                 match written(number) {
                     Ok(bytes) => {
                         prop_assert!(whole, "file{} has its name before it is whole", number);

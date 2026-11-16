@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug)]
 pub struct Node {
     endpoint: Endpoint,
+    /// By content id, which is what a swarm exchanges chunks under.
     shares: RwLock<HashMap<Hash, Arc<Share>>>,
 }
 
@@ -59,17 +60,27 @@ impl Node {
         self.register(Arc::new(Share::new(DiskStore::whole(artifact, root))))
     }
 
-    /// Adds a share, or returns the one already registered for its artifact.
+    /// Adds a share, or returns the one already registered for its content.
     pub(crate) fn register(&self, share: Arc<Share>) -> Arc<Share> {
         sync::write(&self.shares)
-            .entry(share.artifact().id())
+            .entry(share.artifact().content_id())
             .or_insert(share)
             .clone()
     }
 
-    /// The share registered for `artifact`, if any.
-    pub fn share(&self, artifact: Hash) -> Option<Arc<Share>> {
-        sync::read(&self.shares).get(&artifact).cloned()
+    /// The share that holds `content`, if any.
+    pub fn share(&self, content: Hash) -> Option<Arc<Share>> {
+        sync::read(&self.shares).get(&content).cloned()
+    }
+
+    /// The share whose manifest has the id `artifact`, if any. A node can
+    /// hold an artifact's content and still not have this manifest, when its
+    /// own copy has other names, permissions or times.
+    pub(crate) fn share_of_artifact(&self, artifact: Hash) -> Option<Arc<Share>> {
+        sync::read(&self.shares)
+            .values()
+            .find(|share| share.artifact().id() == artifact)
+            .cloned()
     }
 
     /// A ticket naming this node as the peer to contact, reachable at each of

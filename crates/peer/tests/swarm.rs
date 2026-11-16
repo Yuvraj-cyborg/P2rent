@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{CHUNK, get, index, node, options, pattern, peer_info, seed, ticket_for};
+use common::{CHUNK, get, index, listing, node, options, pattern, peer_info, seed, ticket_for};
 use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
@@ -36,7 +36,7 @@ async fn a_downloader_becomes_a_source() {
     assert_eq!(fs::read(tmp.path().join("second/model.bin")).unwrap(), data);
     assert_eq!(report.sources, [(first.node_id(), data.len() as u64)]);
     assert_eq!(
-        first.share(artifact.id()).unwrap().uploaded_bytes(),
+        first.share(artifact.content_id()).unwrap().uploaded_bytes(),
         data.len() as u64
     );
 }
@@ -59,11 +59,19 @@ async fn status_lists_other_participants() {
         .connect(origin.local_addr().unwrap(), origin.node_id())
         .await
         .unwrap();
-    let status = connection.status(artifact.id()).await.unwrap().unwrap();
+    let status = connection
+        .status(artifact.content_id())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(status.peers, [peer_info(&downloader)]);
 
     // The observer is now a participant too, but is never listed to itself.
-    let again = connection.status(artifact.id()).await.unwrap().unwrap();
+    let again = connection
+        .status(artifact.content_id())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(again.peers, [peer_info(&downloader)]);
 }
 
@@ -86,7 +94,7 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     honest.seed(artifact.clone(), root);
     let announcer = tokio::spawn(announce(
         honest.clone(),
-        artifact.id(),
+        artifact.content_id(),
         vec![peer_info(&liar)],
     ));
 
@@ -98,7 +106,11 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let status = connection.status(artifact.id()).await.unwrap().unwrap();
+            let status = connection
+                .status(artifact.content_id())
+                .await
+                .unwrap()
+                .unwrap();
             if status.peers.contains(&peer_info(&honest)) {
                 break;
             }
@@ -188,4 +200,65 @@ async fn many_downloaders_share_one_origin() {
         total_fetched += report.fetched_bytes;
     }
     assert_eq!(total_fetched, 6 * data.len() as u64);
+}
+
+/// Two nodes hold the same bytes under different names, permissions and
+/// times. Their manifests differ, so their tickets differ, but the content
+/// is one swarm: a download that asked for the first node's artifact is fed
+/// by the second.
+#[tokio::test]
+async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tree = |root: &std::path::Path, seconds: u64| {
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("a.bin"), pattern(CHUNK * 12 + 3, 7)).unwrap();
+        fs::write(root.join("sub/b.bin"), pattern(CHUNK * 5, 8)).unwrap();
+        let time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(seconds);
+        for path in ["a.bin", "sub/b.bin", "sub", ""] {
+            // Windows cannot open a directory like this, nor change a
+            // file's time through a handle opened for reading.
+            if let Ok(opened) = fs::File::open(root.join(path)) {
+                let _ = opened.set_modified(time);
+            }
+        }
+    };
+    let (first_root, second_root) = (tmp.path().join("one/tree"), tmp.path().join("two/renamed"));
+    tree(&first_root, 1_000_000_000);
+    tree(&second_root, 1_500_000_000);
+
+    let (first, second) = (node(), node());
+    let (wanted, ticket) = seed(&first, &first_root);
+    let (other, _) = seed(&second, &second_root);
+    assert_ne!(wanted.id(), other.id());
+    assert_eq!(wanted.content_id(), other.content_id());
+
+    // The second node holds the content, but not the first node's manifest.
+    let observer = Endpoint::bind(&Identity::generate().unwrap(), common::localhost()).unwrap();
+    let connection = observer
+        .connect(second.local_addr().unwrap(), second.node_id())
+        .await
+        .unwrap();
+    assert!(connection.manifest(wanted.id()).await.unwrap().is_none());
+    assert!(connection.manifest(other.id()).await.unwrap().is_some());
+    assert!(
+        connection
+            .status(wanted.content_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Take the first node's files away. It can still say what the artifact
+    // is, and every chunk has to come from the second node.
+    let expected = listing(&first_root);
+    fs::remove_dir_all(&first_root).unwrap();
+    let mut ticket = ticket;
+    ticket.peers.extend(ticket_for(&second, &other).peers);
+
+    let out = tmp.path().join("out");
+    let report = get(&node(), &ticket, &out).await.unwrap();
+    assert_eq!(report.sources, [(second.node_id(), wanted.total_size())]);
+    // What arrives is the artifact that was asked for: the first node's
+    // name and times, not the second's.
+    assert_eq!(listing(&out.join("tree")), expected);
 }

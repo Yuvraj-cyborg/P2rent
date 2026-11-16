@@ -1,5 +1,5 @@
 use super::io;
-use model::artifact::{Artifact, Bitfield, Hash, Kind, PART_SUFFIX};
+use model::artifact::{Artifact, Bitfield, EntryKind, Hash, PART_SUFFIX};
 use model::assembly::Assembly;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -29,8 +29,10 @@ pub struct DiskStore {
     assembly: RwLock<Assembly>,
     files: Vec<FileState>,
     /// Directories that have had a file renamed into them since they were
-    /// last flushed. See [`DiskStore::flush`].
+    /// last flushed. See [`DiskStore::seal`].
     unflushed: Mutex<BTreeSet<PathBuf>>,
+    /// Links the artifact holds that this system cannot create.
+    skipped_links: usize,
 }
 
 #[derive(Debug)]
@@ -60,17 +62,23 @@ impl DiskStore {
     /// holds the tree for a directory artifact.
     pub fn whole(artifact: Arc<Artifact>, root: PathBuf) -> Self {
         let held = Bitfield::full(artifact.chunk_count());
-        let files = artifact.manifest().files.len();
+        let entries = artifact.entries().len();
         Self {
             assembly: RwLock::new(Assembly::new(artifact.layout().clone(), held)),
-            files: (0..files).map(|_| FileState::new(true)).collect(),
+            files: (0..entries).map(|_| FileState::new(true)).collect(),
             unflushed: Mutex::default(),
+            skipped_links: 0,
             artifact,
             root,
         }
     }
 
     /// Opens the artifact inside `dir`, under its own name, to be filled in.
+    ///
+    /// Its directories are created, and so are its links, which are small
+    /// enough to need no download. A directory must be a real directory: a
+    /// link standing where one belongs is refused, so nothing is ever
+    /// written through a link to somewhere else.
     ///
     /// Whatever is already there is hashed. A file under its final name
     /// stays as it is if every chunk of it is right. If not, it is left
@@ -84,15 +92,16 @@ impl DiskStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if a file cannot be read or created, or if something
-    /// other than a regular file is in the way.
+    /// Returns an error if a file cannot be read or created, if something of
+    /// another kind is in the way, or if this file system treats two of the
+    /// artifact's names as one.
     pub fn resume(
         artifact: Arc<Artifact>,
         dir: &Path,
         on_bytes: &(dyn Fn(u64) + Sync),
     ) -> Result<Self> {
-        let root = dir.join(&artifact.manifest().name);
-        let files = artifact.manifest().files.len();
+        let root = dir.join(artifact.name());
+        let entries = artifact.entries().len();
         let mut store = Self {
             assembly: RwLock::new(Assembly::new(
                 artifact.layout().clone(),
@@ -100,16 +109,23 @@ impl DiskStore {
             )),
             files: Vec::new(),
             unflushed: Mutex::default(),
+            skipped_links: 0,
             artifact,
             root,
         };
-        if store.artifact.manifest().kind == Kind::Directory {
-            std::fs::create_dir_all(&store.root)?;
+
+        // Directories first. Paths are in order, so each comes after the
+        // directory that holds it.
+        std::fs::create_dir_all(dir)?;
+        for (entry, described) in store.artifact.entries().iter().enumerate() {
+            if described.kind == EntryKind::Directory {
+                ensure_directory(&store.final_path(entry))?;
+            }
         }
 
-        let found: Vec<Found> = (0..files)
+        let found: Vec<Found> = (0..entries)
             .into_par_iter()
-            .map(|file| store.survey(file, on_bytes))
+            .map(|entry| store.survey(entry, on_bytes))
             .collect::<Result<_>>()?;
 
         let mut held = Bitfield::new(store.artifact.chunk_count());
@@ -123,12 +139,19 @@ impl DiskStore {
             .map(|file| FileState::new(file.in_place))
             .collect();
         store.assembly = RwLock::new(Assembly::new(store.artifact.layout().clone(), held));
+        store.check_distinct()?;
 
         // A part file with every chunk right is a download that stopped just
         // before its rename. A file with no chunks has nothing to wait for.
-        for file in 0..files {
-            if !store.is_in_place(file) && store.is_whole(file) {
-                store.finish(file)?;
+        for entry in 0..entries {
+            if !store.is_in_place(entry) && store.is_whole(entry) {
+                store.finish(entry)?;
+            }
+        }
+        for entry in 0..entries {
+            if let EntryKind::Symlink { target } = &store.artifact.entries()[entry].kind {
+                let target = target.clone();
+                store.skipped_links += usize::from(!store.place_link(entry, &target)?);
             }
         }
         Ok(store)
@@ -160,6 +183,12 @@ impl DiskStore {
         self.assembly().is_complete()
     }
 
+    /// How many links of the artifact were left out because this system
+    /// cannot create them.
+    pub fn skipped_links(&self) -> usize {
+        self.skipped_links
+    }
+
     /// Reads one chunk from disk.
     ///
     /// # Errors
@@ -178,8 +207,8 @@ impl DiskStore {
 
     /// Checks `data` against the manifest and, if it is chunk `index`, writes
     /// it to its file. When that makes the file whole, the file is flushed
-    /// and renamed into place. Call [`DiskStore::flush`] once the last chunk
-    /// is in, to make the renames last.
+    /// and renamed into place. Call [`DiskStore::seal`] once the last chunk
+    /// is in.
     ///
     /// Returns `false`, having written nothing, if `data` is not the chunk.
     ///
@@ -215,8 +244,9 @@ impl DiskStore {
         Ok(true)
     }
 
-    /// Flushes every directory that has had a file renamed into it, so that
-    /// the renames survive a power cut.
+    /// Finishes the tree once the last chunk is in: gives each directory its
+    /// recorded time and permissions, then flushes every directory that has
+    /// had a file renamed into it, so that the renames survive a power cut.
     ///
     /// A file's bytes are flushed before it is renamed, so a power cut never
     /// leaves a file with holes under a final name. What it can do, until
@@ -225,10 +255,23 @@ impl DiskStore {
     /// again. Flushing a directory is slow, which is why it is done once
     /// here and not once for each file.
     ///
+    /// While chunks are still missing, only the flush is done.
+    ///
     /// # Errors
     ///
-    /// Returns an error if a directory cannot be flushed.
-    pub fn flush(&self) -> Result<()> {
+    /// Returns an error if a directory cannot be changed or flushed.
+    pub fn seal(&self) -> Result<()> {
+        if self.is_complete() {
+            // Children before parents: filling a directory changes its
+            // time, and one that may not be written cannot be filled.
+            for (entry, described) in self.artifact.entries().iter().enumerate().rev() {
+                if described.kind == EntryKind::Directory
+                    && let Some(metadata) = self.artifact.metadata(entry)
+                {
+                    io::restore_directory(&self.final_path(entry), metadata)?;
+                }
+            }
+        }
         let renamed_into = std::mem::take(
             &mut *self
                 .unflushed
@@ -241,33 +284,117 @@ impl DiskStore {
         Ok(())
     }
 
-    /// Gives a whole file its final name: flushes it, then renames it over
-    /// whatever is there.
+    /// Gives a whole file its final name: sets its time and permissions,
+    /// flushes it, then renames it over whatever is there.
     fn finish(&self, file: usize) -> Result<()> {
         let part = self.part_path(file);
         let written = OpenOptions::new().write(true).open(&part)?;
-        if self.artifact.manifest().files[file].executable {
-            io::make_executable(&written)?;
+        if let Some(metadata) = self.artifact.metadata(file) {
+            if let Some(time) = metadata.modified.and_then(io::system_time) {
+                written.set_modified(time)?;
+            }
+            io::set_mode(&written, metadata.mode)?;
         }
         written.sync_all()?;
         drop(written);
+        self.rename_into_place(file, &part)
+    }
 
-        let path = self.final_path(file);
-        std::fs::rename(&part, &path)?;
+    /// Creates the link `entry` if this system can, replacing whatever has
+    /// its name in one step. Returns `false` if this system cannot.
+    #[cfg(unix)]
+    fn place_link(&self, entry: usize, target: &str) -> Result<bool> {
+        let path = self.final_path(entry);
+        if std::fs::read_link(&path).is_ok_and(|existing| existing == Path::new(target)) {
+            return Ok(true);
+        }
+        let part = self.part_path(entry);
+        remove_if_present(&part)?;
+        io::symlink(target, &part)?;
+        self.rename_into_place(entry, &part)?;
+        Ok(true)
+    }
+
+    /// Creating a link on Windows needs a privilege most accounts lack.
+    #[cfg(not(unix))]
+    fn place_link(&self, _entry: usize, _target: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn rename_into_place(&self, entry: usize, part: &Path) -> Result<()> {
+        let path = self.final_path(entry);
+        std::fs::rename(part, &path)?;
         if let Some(parent) = path.parent() {
             self.unflushed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(parent.to_owned());
         }
-        self.files[file].in_place.store(true, Ordering::Release);
+        self.files[entry].in_place.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// Refuses a destination where two of the artifact's names are one file
+    /// or one directory. That happens on a file system that ignores letter
+    /// case or the form of accented letters, and two downloads writing into
+    /// one file would both be wrong.
+    fn check_distinct(&self) -> Result<()> {
+        let mut seen = std::collections::HashMap::new();
+        for entry in 0..self.artifact.entries().len() {
+            if let Some(identity) = self.identity(entry)?
+                && let Some(other) = seen.insert(identity, entry)
+            {
+                return Err(self.clash(other, entry));
+            }
+        }
+        Ok(())
+    }
+
+    /// What the file system itself tells one file or directory from another
+    /// by: the device and the number it has there. `None` for an entry that
+    /// needs no check.
+    #[cfg(unix)]
+    fn identity(&self, entry: usize) -> Result<Option<(u64, u64)>> {
+        use std::os::unix::fs::MetadataExt;
+        let on_disk = match self.artifact.entries()[entry].kind {
+            EntryKind::Directory => self.final_path(entry),
+            // A part file is always this store's own. A whole file that was
+            // already there may be a hard link, which is harmless.
+            EntryKind::File { .. } if !self.is_in_place(entry) => self.part_path(entry),
+            EntryKind::File { .. } | EntryKind::Symlink { .. } => return Ok(None),
+        };
+        let found = std::fs::symlink_metadata(&on_disk)?;
+        Ok(Some((found.dev(), found.ino())))
+    }
+
+    /// Windows ignores letter case, so there a path in small letters stands
+    /// for every way of writing it.
+    #[cfg(not(unix))]
+    fn identity(&self, entry: usize) -> Result<Option<String>> {
+        Ok(Some(self.artifact.entries()[entry].path.to_lowercase()))
+    }
+
+    fn clash(&self, one: usize, other: usize) -> Error {
+        let entries = self.artifact.entries();
+        Error::new(
+            ErrorKind::AlreadyExists,
+            format!(
+                "{:?} and {:?} are the same name on this file system, which cannot hold both",
+                entries[one].path, entries[other].path
+            ),
+        )
     }
 
     /// Finds out what is already on disk for one file, and makes sure there
     /// is a file to write the rest into.
     fn survey(&self, file: usize, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Found> {
-        let size = self.artifact.manifest().files[file].size;
+        let EntryKind::File { size } = self.artifact.entries()[file].kind else {
+            // A directory is already there, and a link is made afterwards.
+            return Ok(Found {
+                valid: Vec::new(),
+                in_place: true,
+            });
+        };
         let chunks = self.artifact.file_chunks(file);
         let path = self.final_path(file);
         let part = self.part_path(file);
@@ -395,17 +522,16 @@ impl DiskStore {
         self.assembly.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn final_path(&self, file: usize) -> PathBuf {
-        match self.artifact.manifest().kind {
-            Kind::File => self.root.clone(),
-            // Paths were validated with the manifest: every component is a
-            // plain name, so the result stays inside `root`.
-            Kind::Directory => {
-                let mut path = self.root.clone();
-                path.extend(self.artifact.manifest().files[file].path.split('/'));
-                path
-            }
+    fn final_path(&self, entry: usize) -> PathBuf {
+        let mut path = self.root.clone();
+        // Paths were validated with the manifest: every name is a plain
+        // name, so the result stays inside `root`. The root's own path is
+        // empty.
+        let relative = &self.artifact.entries()[entry].path;
+        if !relative.is_empty() {
+            path.extend(relative.split('/'));
         }
+        path
     }
 
     /// Where `file` is written until it is whole: beside its final place, so
@@ -424,6 +550,21 @@ struct Found {
     valid: Vec<u64>,
     /// Whether that was the file under its final name.
     in_place: bool,
+}
+
+/// Makes sure `path` is a directory, creating it if nothing is there. A link
+/// to a directory does not count: what is written under it would land
+/// somewhere else.
+fn ensure_directory(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(found) if found.is_dir() => Ok(()),
+        Ok(_) => Err(Error::new(
+            ErrorKind::AlreadyExists,
+            format!("{} exists and is not a directory", path.display()),
+        )),
+        Err(e) if e.kind() == ErrorKind::NotFound => std::fs::create_dir(path),
+        Err(e) => Err(e),
+    }
 }
 
 /// Opens `path` for reading, or returns `None` if nothing is there.

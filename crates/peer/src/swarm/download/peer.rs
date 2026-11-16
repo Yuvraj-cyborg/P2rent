@@ -91,7 +91,8 @@ async fn refresh(
     connection: &Connection,
     view: &RwLock<Bitfield>,
 ) -> Result<(), Outcome> {
-    let status = match timeout(STATUS_TIMEOUT, connection.status(session.artifact.id())).await {
+    let content = session.artifact.content_id();
+    let status = match timeout(STATUS_TIMEOUT, connection.status(content)).await {
         Ok(Ok(Some(status))) => status,
         Ok(Ok(None)) => return Err(Outcome::Failed("peer does not serve this artifact".into())),
         Ok(Err(e)) => return Err(Outcome::Failed(e.to_string())),
@@ -139,7 +140,7 @@ async fn work(
             )));
         };
 
-        let request = connection.chunk(artifact.id(), index, location.len);
+        let request = connection.chunk(artifact.content_id(), index, location.len);
         let data = match timeout(CHUNK_TIMEOUT, request).await {
             Ok(Ok(Some(data))) => data,
             Ok(Ok(None)) => {

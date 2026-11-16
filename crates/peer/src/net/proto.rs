@@ -29,20 +29,22 @@ pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub enum Request {
     /// The encoded manifest of an artifact.
     Manifest {
-        /// The artifact whose manifest is wanted.
+        /// The id of the artifact whose manifest is wanted.
         artifact: Hash,
     },
     /// Which chunks the peer holds and which other peers it knows. Sending
     /// this also registers the requester as a participant.
     Status {
-        /// The artifact being asked about.
-        artifact: Hash,
+        /// The content id being asked about. Peers that hold the same
+        /// content under different names, permissions or times are one
+        /// swarm.
+        content: Hash,
     },
     /// One chunk.
     Chunk {
-        /// The artifact the chunk belongs to.
-        artifact: Hash,
-        /// Position of the chunk in the artifact.
+        /// The content id the chunk belongs to.
+        content: Hash,
+        /// Position of the chunk in the content.
         index: u64,
     },
 }

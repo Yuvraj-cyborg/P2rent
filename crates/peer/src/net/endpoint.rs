@@ -220,14 +220,14 @@ impl Connection {
         }
     }
 
-    /// Asks which chunks the peer holds and which other peers it knows. `None` means the peer
-    /// does not serve this artifact.
+    /// Asks which chunks of `content` the peer holds and which other peers it knows. `None`
+    /// means the peer does not hold this content.
     ///
     /// # Errors
     ///
     /// Returns an error if the request fails or the answer is not a status.
-    pub async fn status(&self, artifact: Hash) -> Result<Option<Status>> {
-        match self.request(&Request::Status { artifact }).await? {
+    pub async fn status(&self, content: Hash) -> Result<Option<Status>> {
+        match self.request(&Request::Status { content }).await? {
             (Response::Status(status), _) => Ok(Some(status)),
             (Response::NotFound, _) => Ok(None),
             (other, _) => Err(unexpected(&other)),
@@ -243,11 +243,11 @@ impl Connection {
     /// if the request fails.
     pub async fn chunk(
         &self,
-        artifact: Hash,
+        content: Hash,
         index: u64,
         expected_len: u32,
     ) -> Result<Option<Vec<u8>>> {
-        match self.request(&Request::Chunk { artifact, index }).await? {
+        match self.request(&Request::Chunk { content, index }).await? {
             (Response::Chunk { len }, mut recv) if len == expected_len => {
                 Ok(Some(proto::read_payload(&mut recv, len as usize).await?))
             }

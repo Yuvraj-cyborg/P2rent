@@ -27,7 +27,10 @@ async fn downloads_a_file() {
     assert!(report.share.is_complete());
     assert_eq!(report.share.artifact().id(), artifact.id());
     assert_eq!(
-        seeder.share(artifact.id()).unwrap().uploaded_bytes(),
+        seeder
+            .share(artifact.content_id())
+            .unwrap()
+            .uploaded_bytes(),
         data.len() as u64
     );
 }
@@ -37,6 +40,7 @@ async fn downloads_a_directory_tree() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("dataset");
     fs::create_dir_all(source.join("train/shard")).unwrap();
+    fs::create_dir_all(source.join("hollow/inner")).unwrap();
     fs::write(source.join("README"), b"hello").unwrap();
     fs::write(source.join("empty"), b"").unwrap();
     fs::write(source.join("train/a.bin"), pattern(CHUNK * 9 + 1, 2)).unwrap();
@@ -45,27 +49,49 @@ async fn downloads_a_directory_tree() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(source.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let chmod = |path: &str, mode| {
+            fs::set_permissions(source.join(path), fs::Permissions::from_mode(mode)).unwrap();
+        };
+        chmod("run.sh", 0o755);
+        chmod("README", 0o600);
+        chmod("train/shard", 0o750);
+        std::os::unix::fs::symlink("train/a.bin", source.join("latest")).unwrap();
+        std::os::unix::fs::symlink("../README", source.join("train/readme")).unwrap();
+        std::os::unix::fs::symlink("gone", source.join("dangling")).unwrap();
     }
+    // Times in the past, a different one for each, set from the leaves up:
+    // changing what is in a directory changes the directory's time.
+    let old = |path: &str, seconds: u64| {
+        let time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        // Windows cannot open a directory like this, nor change a file's
+        // time through a handle opened for reading.
+        if let Ok(opened) = fs::File::open(source.join(path)) {
+            let _ = opened.set_modified(time);
+        }
+    };
+    old("train/shard/b.bin", 1_100_000_000);
+    old("train/a.bin", 1_200_000_000);
+    old("README", 1_300_000_000);
+    old("empty", 1);
+    old("train/shard", 1_400_000_000);
+    old("train", 1_500_000_000);
+    old("hollow/inner", 1_600_000_000);
+    old("", 1_700_000_000);
 
     let seeder = node();
     let (_, ticket) = seed(&seeder, &source);
     let out = tmp.path().join("out");
-    get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node(), &ticket, &out).await.unwrap();
 
+    // Files, empty directories, links, permissions and times all arrive.
     assert_same_tree(&source, &out.join("dataset"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = |name: &str| {
-            fs::metadata(out.join("dataset").join(name))
-                .unwrap()
-                .permissions()
-                .mode()
-        };
-        assert_ne!(mode("run.sh") & 0o111, 0, "execute bit was lost");
-        assert_eq!(mode("README") & 0o111, 0);
-    }
+    assert_eq!(report.skipped_links, 0);
+    assert!(out.join("dataset/hollow/inner").is_dir());
+
+    // Fetching it again finds everything in place and changes nothing.
+    let again = get(&node(), &ticket, &out).await.unwrap();
+    assert_eq!(again.fetched_bytes, 0);
+    assert_same_tree(&source, &out.join("dataset"));
 }
 
 #[tokio::test]
