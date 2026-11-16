@@ -4,9 +4,17 @@
 
 mod bitfield;
 mod hash;
+mod layout;
 mod manifest;
+mod wire;
 
 pub use bitfield::Bitfield;
+pub use hash::{Hash, InvalidHash};
+pub use layout::{ChunkLocation, Layout};
+pub use manifest::{
+    Artifact, DEFAULT_CHUNK_SIZE, FileEntry, Kind, MAX_CHUNK_SIZE, MAX_MANIFEST_BYTES,
+    MIN_CHUNK_SIZE, Manifest, is_safe_component,
+};
 
 /// Converts a chunk index or count into an in-memory index.
 ///
@@ -16,9 +24,3 @@ pub use bitfield::Bitfield;
 pub fn to_usize(n: u64) -> usize {
     usize::try_from(n).unwrap_or(usize::MAX)
 }
-
-pub use hash::{Hash, InvalidHash};
-pub use manifest::{
-    Artifact, ChunkLocation, DEFAULT_CHUNK_SIZE, FileEntry, Kind, MAX_CHUNK_SIZE,
-    MAX_MANIFEST_BYTES, MIN_CHUNK_SIZE, Manifest, is_safe_component,
-};

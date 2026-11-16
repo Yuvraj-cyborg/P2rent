@@ -1,4 +1,5 @@
 use super::Hash;
+use super::layout::{ChunkLocation, Layout};
 use crate::error::{Error, Result};
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -66,6 +67,11 @@ impl Manifest {
     ///
     /// Returns [`Error::InvalidManifest`] naming the first invariant that fails.
     pub fn validate(&self) -> Result<()> {
+        self.checked_layout().map(drop)
+    }
+
+    /// Validates the manifest and returns the chunk layout it describes.
+    fn checked_layout(&self) -> Result<Layout> {
         if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&self.chunk_size) {
             return Err(invalid(format!(
                 "chunk size {} is outside {MIN_CHUNK_SIZE}..={MAX_CHUNK_SIZE}",
@@ -85,21 +91,17 @@ impl Manifest {
             Kind::Directory => self.validate_tree()?,
         }
 
-        let mut expected: u64 = 0;
-        let mut total: u64 = 0;
-        for file in &self.files {
-            total = total
-                .checked_add(file.size)
-                .ok_or_else(|| invalid("total size overflows"))?;
-            expected += file.size.div_ceil(u64::from(self.chunk_size));
-        }
-        if expected != self.chunks.len() as u64 {
+        let sizes: Vec<u64> = self.files.iter().map(|file| file.size).collect();
+        let layout =
+            Layout::new(&sizes, self.chunk_size).ok_or_else(|| invalid("total size overflows"))?;
+        if layout.chunk_count() != self.chunks.len() as u64 {
             return Err(invalid(format!(
-                "file sizes imply {expected} chunks but {} digests are listed",
+                "file sizes imply {} chunks but {} digests are listed",
+                layout.chunk_count(),
                 self.chunks.len()
             )));
         }
-        Ok(())
+        Ok(layout)
     }
 
     fn validate_tree(&self) -> Result<()> {
@@ -132,26 +134,13 @@ impl Manifest {
     }
 }
 
-/// Where a chunk lives inside an artifact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ChunkLocation {
-    /// Index into `Manifest::files`.
-    pub file: usize,
-    /// Byte offset of the chunk within that file.
-    pub offset: u64,
-    /// Length of the chunk in bytes.
-    pub len: u32,
-}
-
 /// A validated manifest together with its identifier and chunk layout.
 #[derive(Debug)]
 pub struct Artifact {
     id: Hash,
     manifest: Manifest,
     encoded: Vec<u8>,
-    /// Global index of the first chunk of each file.
-    first_chunk: Vec<u64>,
-    total_size: u64,
+    layout: Layout,
 }
 
 const ID_CONTEXT: &str = "p2rent 2026 manifest v1";
@@ -163,7 +152,7 @@ impl Artifact {
     ///
     /// Returns [`Error::InvalidManifest`] if the manifest is invalid or too large to encode.
     pub fn new(manifest: Manifest) -> Result<Self> {
-        manifest.validate()?;
+        let layout = manifest.checked_layout()?;
         let encoded =
             postcard::to_allocvec(&manifest).map_err(|e| invalid(format!("cannot encode: {e}")))?;
         if encoded.len() > MAX_MANIFEST_BYTES {
@@ -171,7 +160,7 @@ impl Artifact {
                 "artifact has too many chunks; use a larger chunk size",
             ));
         }
-        Ok(Self::assemble(manifest, encoded))
+        Ok(Self::assemble(manifest, encoded, layout))
     }
 
     /// Decodes manifest bytes received from a peer, accepting them only if
@@ -190,32 +179,16 @@ impl Artifact {
         }
         let manifest: Manifest =
             postcard::from_bytes(&encoded).map_err(|e| invalid(format!("cannot decode: {e}")))?;
-        manifest.validate()?;
-        Ok(Self::assemble(manifest, encoded))
+        let layout = manifest.checked_layout()?;
+        Ok(Self::assemble(manifest, encoded, layout))
     }
 
-    fn assemble(manifest: Manifest, encoded: Vec<u8>) -> Self {
-        Self::laid_out(Hash::derive(ID_CONTEXT, &encoded), manifest, encoded)
-    }
-
-    /// Works out the chunk layout of a manifest whose id is already known.
-    /// Kept apart from the hashing so the layout can be checked on its own.
-    fn laid_out(id: Hash, manifest: Manifest, encoded: Vec<u8>) -> Self {
-        let chunk_size = u64::from(manifest.chunk_size);
-        let mut first_chunk = Vec::with_capacity(manifest.files.len());
-        let mut next = 0u64;
-        let mut total_size = 0u64;
-        for file in &manifest.files {
-            first_chunk.push(next);
-            next += file.size.div_ceil(chunk_size);
-            total_size += file.size;
-        }
+    fn assemble(manifest: Manifest, encoded: Vec<u8>, layout: Layout) -> Self {
         Self {
-            id,
+            id: Hash::derive(ID_CONTEXT, &encoded),
             manifest,
             encoded,
-            first_chunk,
-            total_size,
+            layout,
         }
     }
 
@@ -236,7 +209,7 @@ impl Artifact {
 
     /// Sum of all file sizes, in bytes.
     pub fn total_size(&self) -> u64 {
-        self.total_size
+        self.layout.total_size()
     }
 
     /// Number of chunks across all files.
@@ -254,29 +227,13 @@ impl Artifact {
 
     /// Global chunk indices belonging to one file.
     pub fn file_chunks(&self, file: usize) -> core::ops::Range<u64> {
-        let start = self.first_chunk[file];
-        let count = self.manifest.files[file]
-            .size
-            .div_ceil(u64::from(self.manifest.chunk_size));
-        start..start + count
+        let (start, end) = self.layout.file_chunks(file);
+        start..end
     }
 
     /// Where chunk `index` lives, or `None` if it is out of range.
     pub fn locate(&self, index: u64) -> Option<ChunkLocation> {
-        if index >= self.chunk_count() {
-            return None;
-        }
-        // Empty files own no chunks and share a start index with the file
-        // after them, so take the last file starting at or before `index`.
-        let file = self.first_chunk.partition_point(|&start| start <= index) - 1;
-        let chunk_size = u64::from(self.manifest.chunk_size);
-        let offset = (index - self.first_chunk[file]) * chunk_size;
-        // A remainder too large for `u32` is longer than any chunk.
-        let remaining = self.manifest.files[file].size - offset;
-        let len = u32::try_from(remaining).map_or(self.manifest.chunk_size, |r| {
-            r.min(self.manifest.chunk_size)
-        });
-        Some(ChunkLocation { file, offset, len })
+        self.layout.locate(index)
     }
 }
 
@@ -460,136 +417,5 @@ mod tests {
         let mut tampered = bytes;
         *tampered.last_mut().unwrap() ^= 1;
         assert!(Artifact::decode(artifact.id(), tampered).is_err());
-    }
-}
-
-/// Bounded proofs, run by `just kani`. They hold for every chunk size a
-/// manifest may use, every file size that gives up to `MAX_FILE_CHUNKS`
-/// chunks, and every chunk index.
-///
-/// Each proof walks through the number of chunks in each file one case at a
-/// time, and leaves the sizes themselves open. The model checker is far
-/// quicker when it knows how long each list is.
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    const FILES: usize = 2;
-    /// Enough for an empty file, a file of one chunk, and a file whose last
-    /// chunk follows a full one.
-    const MAX_FILE_CHUNKS: u64 = 2;
-
-    /// Any size that makes a file of exactly `chunks` chunks.
-    fn any_size(chunks: u64, chunk_size: u32) -> u64 {
-        let chunk_size = u64::from(chunk_size);
-        let size: u64 = kani::any();
-        if chunks == 0 {
-            kani::assume(size == 0);
-        } else {
-            kani::assume(size > (chunks - 1) * chunk_size && size <= chunks * chunk_size);
-        }
-        size
-    }
-
-    /// An artifact whose files have the given numbers of chunks, with any
-    /// chunk size and any sizes that fit.
-    fn any_artifact(file_chunks: [u64; FILES]) -> (Artifact, [u64; FILES], u32) {
-        let chunk_size: u32 =
-            kani::any_where(|size| (MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(size));
-        let mut sizes = [0; FILES];
-        let mut files = Vec::new();
-        let mut chunks = Vec::new();
-        let mut file = 0;
-        while file < FILES {
-            sizes[file] = any_size(file_chunks[file], chunk_size);
-            files.push(FileEntry {
-                path: String::new(),
-                size: sizes[file],
-                executable: false,
-            });
-            let mut chunk = 0;
-            while chunk < file_chunks[file] {
-                chunks.push(Hash::from_bytes([0; 32]));
-                chunk += 1;
-            }
-            file += 1;
-        }
-        let manifest = Manifest {
-            name: String::new(),
-            kind: Kind::Directory,
-            chunk_size,
-            files,
-            chunks,
-        };
-        let artifact = Artifact::laid_out(Hash::from_bytes([0; 32]), manifest, Vec::new());
-        (artifact, sizes, chunk_size)
-    }
-
-    /// Runs `check` on every combination of chunk counts for the files.
-    fn for_every_shape(check: impl Fn([u64; FILES])) {
-        let mut first = 0;
-        while first <= MAX_FILE_CHUNKS {
-            let mut second = 0;
-            while second <= MAX_FILE_CHUNKS {
-                check([first, second]);
-                second += 1;
-            }
-            first += 1;
-        }
-    }
-
-    /// Every index in range names a chunk that lies wholly inside one file,
-    /// starts on a chunk boundary and is full unless it is that file's last.
-    /// Every index out of range names nothing.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn every_chunk_lies_inside_its_file() {
-        for_every_shape(|shape| {
-            let (artifact, sizes, chunk_size) = any_artifact(shape);
-            let index: u64 = kani::any();
-
-            match artifact.locate(index) {
-                None => assert!(index >= artifact.chunk_count()),
-                Some(chunk) => {
-                    assert!(index < artifact.chunk_count());
-                    assert!(chunk.file < FILES);
-                    let size = sizes[chunk.file];
-                    let end = chunk.offset + u64::from(chunk.len);
-
-                    assert!(chunk.len > 0 && chunk.len <= chunk_size);
-                    assert!(end <= size);
-                    assert!(chunk.len == chunk_size || end == size);
-
-                    // It is the right chunk of that file: the one whose
-                    // position in the file matches its offset.
-                    let range = artifact.file_chunks(chunk.file);
-                    assert!(range.contains(&index));
-                    assert!(chunk.offset == (index - range.start) * u64::from(chunk_size));
-                }
-            }
-        });
-    }
-
-    /// The files' chunk ranges follow one another with no gap or overlap and
-    /// together make up every index. The total size is the sum of the files.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn the_files_split_the_chunks_between_them() {
-        for_every_shape(|shape| {
-            let (artifact, sizes, _) = any_artifact(shape);
-            let mut next = 0;
-            let mut total = 0;
-            let mut file = 0;
-            while file < FILES {
-                let range = artifact.file_chunks(file);
-                assert!(range.start == next);
-                assert!(range.end - range.start == shape[file]);
-                next = range.end;
-                total += sizes[file];
-                file += 1;
-            }
-            assert!(next == artifact.chunk_count());
-            assert!(total == artifact.total_size());
-        });
     }
 }

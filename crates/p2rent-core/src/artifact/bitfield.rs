@@ -1,9 +1,16 @@
+//! A set of chunk indices, one bit each.
+//!
+//! This module is translated to Lean and proven (see `proofs/`), so it is
+//! written plainly: loops and indexing, no iterators or closures, and
+//! nothing but the logic itself. How a bitfield is written to the wire is in
+//! [`super::wire`].
+
+use super::to_usize;
 use alloc::vec;
 use alloc::vec::Vec;
-use serde::{Deserialize, Serialize};
 
 /// A fixed-length set of chunk indices.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bitfield {
     len: u64,
     bytes: Vec<u8>,
@@ -21,13 +28,24 @@ impl Bitfield {
     /// A bitfield of `len` bits, all set.
     pub fn full(len: u64) -> Self {
         let mut bytes = vec![0xff; byte_len(len)];
-        let tail = (len % 8) as u32;
-        if tail != 0
-            && let Some(last) = bytes.last_mut()
-        {
-            *last = (1u8 << tail) - 1;
+        let tail = len % 8;
+        let count = bytes.len();
+        if tail != 0 && count > 0 {
+            bytes[count - 1] = (1u8 << tail) - 1;
         }
         Self { len, bytes }
+    }
+
+    /// Rebuilds a bitfield from its two parts, as read from the wire. The
+    /// result is whatever the sender wrote: check it with
+    /// [`Bitfield::is_well_formed`] before relying on it.
+    pub(crate) fn from_parts(len: u64, bytes: Vec<u8>) -> Self {
+        Self { len, bytes }
+    }
+
+    /// The bits, eight to a byte, lowest bit first.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
     /// Number of bits.
@@ -42,26 +60,32 @@ impl Bitfield {
 
     /// Whether bit `index` is set. Out-of-range indices read as unset.
     pub fn get(&self, index: u64) -> bool {
-        index < self.len && self.bytes[(index / 8) as usize] & (1 << (index % 8)) != 0
+        index < self.len && self.bytes[to_usize(index / 8)] & (1 << (index % 8)) != 0
     }
 
     /// Sets a bit. Out-of-range indices are ignored.
     pub fn set(&mut self, index: u64) {
         if index < self.len {
-            self.bytes[(index / 8) as usize] |= 1 << (index % 8);
+            self.bytes[to_usize(index / 8)] |= 1 << (index % 8);
         }
     }
 
     /// Unsets a bit. Out-of-range indices are ignored.
     pub fn clear(&mut self, index: u64) {
         if index < self.len {
-            self.bytes[(index / 8) as usize] &= !(1 << (index % 8));
+            self.bytes[to_usize(index / 8)] &= !(1 << (index % 8));
         }
     }
 
     /// Number of bits that are set.
     pub fn count_ones(&self) -> u64 {
-        self.bytes.iter().map(|b| u64::from(b.count_ones())).sum()
+        let mut total = 0;
+        let mut byte = 0;
+        while byte < self.bytes.len() {
+            total += u64::from(self.bytes[byte].count_ones());
+            byte += 1;
+        }
+        total
     }
 
     /// Whether every bit is set.
@@ -72,24 +96,42 @@ impl Bitfield {
     /// Whether a bitfield decoded from the wire is internally consistent and
     /// describes exactly `expected_len` chunks.
     pub fn is_well_formed(&self, expected_len: u64) -> bool {
-        if self.len != expected_len || self.bytes.len() != byte_len(self.len) {
+        let count = self.bytes.len();
+        if self.len != expected_len || count != byte_len(self.len) {
             return false;
         }
-        let tail = (self.len % 8) as u32;
-        match self.bytes.last() {
-            Some(&last) if tail != 0 => last >> tail == 0,
-            _ => true,
-        }
+        // No bit may be set beyond the end.
+        let tail = self.len % 8;
+        tail == 0 || count == 0 || self.bytes[count - 1] >> tail == 0
     }
 }
 
+/// Bytes needed to hold `bits` bits.
 fn byte_len(bits: u64) -> usize {
-    super::to_usize(bits.div_ceil(8))
+    let whole = bits / 8;
+    let rest = bits % 8;
+    if rest == 0 {
+        to_usize(whole)
+    } else {
+        to_usize(whole + 1)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Other machines read these bytes, so the encoding may not change.
+    #[test]
+    fn the_wire_format_is_fixed() {
+        let mut bits = Bitfield::new(10);
+        bits.set(0);
+        bits.set(9);
+        let wire = postcard::to_allocvec(&bits).unwrap();
+        // The length, the number of bytes, then the bytes.
+        assert_eq!(wire, [10, 2, 0b0000_0001, 0b0000_0010]);
+        assert_eq!(postcard::from_bytes::<Bitfield>(&wire).unwrap(), bits);
+    }
 
     #[test]
     fn set_get_clear() {
