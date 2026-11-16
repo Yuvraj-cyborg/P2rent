@@ -44,8 +44,7 @@ case around it.
 - Tests run under `cargo`, and network tests start real servers from the
   test code.
 - No shell or Python scripts. A development task that needs logic is written
-  as a Rust `xtask` binary. The two scripts left in the repository are
-  removed in [#9](https://github.com/Yuvraj-cyborg/P2rent/issues/9).
+  as a Rust `xtask` binary and run with `cargo xtask`.
 
 ## 5. Static analysis is required
 

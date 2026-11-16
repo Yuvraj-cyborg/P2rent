@@ -164,7 +164,6 @@ follows.
 ```console
 $ just          # list tasks
 $ just ci       # every check CI runs
-$ just demo     # three nodes on this machine
 $ just bench    # time a loopback transfer
 ```
 
