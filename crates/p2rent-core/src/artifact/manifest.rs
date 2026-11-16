@@ -374,6 +374,57 @@ mod tests {
         assert!(manifest.validate().is_err());
     }
 
+    /// These limits decide which manifests every node accepts, so a change
+    /// to any of them is a change to the protocol.
+    #[test]
+    fn the_limits_are_what_the_protocol_says() {
+        assert_eq!(MIN_CHUNK_SIZE, 4096);
+        assert_eq!(DEFAULT_CHUNK_SIZE, 1_048_576);
+        assert_eq!(MAX_CHUNK_SIZE, 16_777_216);
+        assert_eq!(MAX_MANIFEST_BYTES, 67_108_864);
+    }
+
+    #[test]
+    fn a_file_artifact_lists_exactly_its_own_file() {
+        let file = |name: &str, files: Vec<FileEntry>| Manifest {
+            name: name.into(),
+            kind: Kind::File,
+            ..tree(files)
+        };
+        file("a", vec![entry("a", 1)]).validate().unwrap();
+        assert!(file("a", vec![entry("b", 1)]).validate().is_err());
+        assert!(
+            file("a", vec![entry("a", 1), entry("b", 1)])
+                .validate()
+                .is_err()
+        );
+        assert!(file("a", vec![]).validate().is_err());
+    }
+
+    #[test]
+    fn chunk_hashes_come_from_the_manifest() {
+        let manifest = tree(vec![entry("a", 10_000)]);
+        let chunks = manifest.chunks.clone();
+        let artifact = Artifact::new(manifest).unwrap();
+        assert_eq!(artifact.chunk_hash(0), Some(chunks[0]));
+        assert_eq!(artifact.chunk_hash(2), Some(chunks[2]));
+        assert_eq!(artifact.chunk_hash(3), None);
+    }
+
+    /// The size check comes first, and allows a manifest of exactly the
+    /// limit.
+    #[test]
+    fn decode_enforces_the_size_limit_at_its_edge() {
+        let too_large = |bytes: Vec<u8>| {
+            let reason = Artifact::decode(Hash::of(b"any"), bytes)
+                .unwrap_err()
+                .to_string();
+            reason.contains("size limit")
+        };
+        assert!(too_large(vec![0; MAX_MANIFEST_BYTES + 1]));
+        assert!(!too_large(vec![0; MAX_MANIFEST_BYTES]));
+    }
+
     #[test]
     fn locates_chunks_across_files_including_empty_ones() {
         let cs = u64::from(MIN_CHUNK_SIZE);

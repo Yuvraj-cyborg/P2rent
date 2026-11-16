@@ -55,6 +55,13 @@ mod tests {
     }
 
     #[test]
+    fn accepts_either_case() {
+        assert_eq!(decode("0a1B9fF0"), Some(vec![0x0a, 0x1b, 0x9f, 0xf0]));
+        assert_eq!(decode("ABCDEF"), decode("abcdef"));
+        assert_eq!(decode("AF"), Some(vec![0xaf]));
+    }
+
+    #[test]
     fn rejects_malformed_input() {
         assert!(decode("abc").is_none());
         assert!(decode("zz").is_none());

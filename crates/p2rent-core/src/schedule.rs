@@ -156,6 +156,8 @@ mod tests {
         assert_eq!(schedule.remaining(), 2);
         assert!(!schedule.is_complete());
         assert!(Schedule::new(&Bitfield::new(0)).is_complete());
+        assert!(!schedule.is_empty());
+        assert!(Schedule::new(&Bitfield::new(0)).is_empty());
     }
 
     #[test]

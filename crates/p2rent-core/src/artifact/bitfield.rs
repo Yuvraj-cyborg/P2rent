@@ -105,6 +105,28 @@ mod tests {
         assert!(!bits.get(0));
     }
 
+    /// The first index past the end is the one most easily let through.
+    #[test]
+    fn the_index_just_past_the_end_is_ignored() {
+        for len in [0, 1, 7, 8, 9, 16] {
+            let mut bits = Bitfield::full(len);
+            let full = bits.clone();
+            bits.clear(len);
+            assert_eq!(bits, full, "clear({len}) on {len} bits");
+
+            let mut bits = Bitfield::new(len);
+            let empty = bits.clone();
+            bits.set(len);
+            assert_eq!(bits, empty, "set({len}) on {len} bits");
+        }
+    }
+
+    #[test]
+    fn only_a_bitfield_of_no_bits_is_empty() {
+        assert!(Bitfield::new(0).is_empty());
+        assert!(!Bitfield::new(1).is_empty());
+    }
+
     #[test]
     fn full_masks_trailing_bits() {
         for len in [0, 1, 7, 8, 9, 64, 65] {
