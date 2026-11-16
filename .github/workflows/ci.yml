@@ -31,8 +31,10 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - run: cargo build --locked --workspace --all-targets
-      - run: cargo test --locked --workspace
+      - run: cargo nextest run --locked --workspace
+      - run: cargo test --locked --workspace --doc
 
   msrv:
     runs-on: ubuntu-latest
@@ -53,6 +55,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: lint fuzz
+        run: |
+          cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path fuzz/Cargo.toml -- -D warnings
       - name: doc
         run: cargo doc --locked --workspace --no-deps --document-private-items
         env:
@@ -82,5 +88,29 @@ jobs:
         with:
           components: miri
       - uses: Swatinem/rust-cache@v2
-      - run: cargo miri test --locked -p p2rent-core
+      - run: cargo miri test --locked -p p2rent-core --lib
       - run: cargo miri test --locked -p p2rent-peer --lib -- 'swarm::ticket::'
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # A smoke test: each target runs for ten seconds.
+      - run: cargo xtask fuzz 10
+
+  loom:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg p2rent_loom
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p p2rent-peer --lib --release -- 'model::'

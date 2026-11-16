@@ -37,9 +37,9 @@ earn its place.
 - `just size` reports the size of the release binary and fails if it is over
   the budget set in `xtask/src/main.rs`.
 
-Dead code is an error in `just lint`. A scheduled mutation run will list code
-that no test notices
-([#11](https://github.com/Yuvraj-cyborg/P2rent/issues/11)).
+Dead code is an error in `just lint`. `just mutants`, run before a release,
+changes the core's code in small ways and lists every change that no test
+noticed: each one is a missing test or code that nothing needs.
 
 ## 3. Foundations before features
 
@@ -49,8 +49,8 @@ case around it.
 
 ## 4. Tests are Rust
 
-- Tests run under `cargo`, and network tests start real servers from the
-  test code.
+- Tests run under `cargo` (with `cargo-nextest` as the runner), and network
+  tests start real servers from the test code.
 - No shell or Python scripts. A development task that needs logic is written
   as a Rust `xtask` binary and run with `cargo xtask`.
 
@@ -67,6 +67,8 @@ same ones locally.
 | `audit` | `just audit` | Licences, known vulnerabilities and duplicate versions of dependencies. |
 | `features` | `just features` | Every combination of features builds. |
 | `miri` | `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
+| `fuzz` | `just fuzz` | Every parser of bytes from other machines, fed random input for ten seconds each as a smoke test. |
+| `loom` | `just loom` | The download's shared state, under every interleaving of two fetchers. |
 
 The checks that are this project's own analysis run locally, with
 `just analysis`:
@@ -79,6 +81,7 @@ The checks that are this project's own analysis run locally, with
 | `just pure` | `p2rent-core` builds with no standard library and depends only on the crates it is allowed to. |
 | `just deps` | The committed list of shipped crates is up to date. |
 | `just size` | The release binary is within its size budget. |
+| `just kani` | The core's arithmetic and state machines, proven for every input up to a bound. |
 
 Library code may not panic on bad input: `unwrap`, `expect` and `panic!` are
 errors outside tests. A lint that produces noise without value is switched
@@ -89,18 +92,22 @@ code.
 
 Each issue says which tiers apply to it.
 
-| Tier | Tool | Used for |
-| --- | --- | --- |
-| Proven | Lean 4, through Aeneas | The logic that decides what happens to files: chunk layout, scheduling, sync planning. |
-| Bounded | Kani | Arithmetic that must never overflow, panic or leave its bounds. |
-| Model-checked | `loom` | Shared state under every interleaving. |
-| Empirical | Property tests, fuzzing, a simulated network, mutation testing | Parsers of untrusted bytes, and anything that does I/O. |
-| Runtime | Hash checks | Every chunk before it is kept, and every file before it is renamed into place. |
+| Tier | Tool | Run with | Used for |
+| --- | --- | --- | --- |
+| Proven | Lean 4, through Aeneas | [#12](https://github.com/Yuvraj-cyborg/P2rent/issues/12) | The logic that decides what happens to files: chunk layout, scheduling, sync planning. |
+| Bounded | Kani | `just kani` | Arithmetic and state machines that must never overflow, panic or leave their bounds, for every input up to a size limit. |
+| Model-checked | `loom` | `just loom` | Shared state under every interleaving. |
+| Empirical | Property tests | `just test` | Round trips, and behaviour compared with a simple model. |
+| | Fuzzing | `just fuzz` | Parsers of untrusted bytes. A long run is `just fuzz 600`. |
+| | Mutation testing | `just mutants` | Whether the tests would notice a wrong change. |
+| Runtime | Hash checks | always on | Every chunk before it is kept, and every file before it is renamed into place. |
+
+A property is written once, at the strongest tier that can express it. A
+bug found by any tier is fixed at its cause, and the input that found it is
+kept as a test.
 
 Decision logic lives in `p2rent-core` as safe, synchronous Rust, so that it
-stays provable. The tiers are set up in
-[#11](https://github.com/Yuvraj-cyborg/P2rent/issues/11) and
-[#12](https://github.com/Yuvraj-cyborg/P2rent/issues/12).
+stays provable.
 
 ## 7. Safe by default, with a fenced fast path
 

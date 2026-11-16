@@ -1,0 +1,41 @@
+[package]
+name = "p2rent-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Fuzz targets for everything that parses bytes from other machines"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+p2rent-core = { path = "../crates/p2rent-core" }
+p2rent-peer = { path = "../crates/p2rent-peer", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+
+# This crate is its own workspace, because fuzzing needs a nightly compiler
+# and the rest of the project builds on stable.
+[workspace]
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ticket"
+path = "fuzz_targets/ticket.rs"
+test = false
+doc = false
+bench = false

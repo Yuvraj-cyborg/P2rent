@@ -34,8 +34,14 @@ thiserror = { workspace = true, features = ["std"] }
 tokio.workspace = true
 tracing.workspace = true
 
+# The model test of the download's shared state swaps in loom's locks. Run
+# it with `just loom`.
+[target.'cfg(p2rent_loom)'.dependencies]
+loom = "0.7"
+
 [dev-dependencies]
 blake3.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 
 # A safe wrapper around `getrusage`, so the benchmark needs no `unsafe`.

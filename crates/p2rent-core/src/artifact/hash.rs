@@ -77,6 +77,15 @@ mod tests {
     }
 
     #[test]
+    fn prints_as_hex() {
+        let hash = Hash::from_bytes([0xab; 32]);
+        assert_eq!(hash.to_string(), "ab".repeat(32));
+        assert_eq!(hash.to_string(), hash.to_hex());
+        assert_eq!(hash.short(), "abababab");
+        assert_eq!(format!("{hash:?}"), "Hash(abababab)");
+    }
+
+    #[test]
     fn derive_is_domain_separated() {
         assert_ne!(Hash::of(b"x"), Hash::derive("p2rent test", b"x"));
     }

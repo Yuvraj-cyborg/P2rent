@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 11e451acfaad294e7d58e8deaf32ebd638e081b0915fc675629ac987fd40a075 # shrinks to response = Status(Status { have: All, peers: [PeerInfo { node: NodeId(00000000), addr: [::ffff:0.0.0.0%1]:0 }] })

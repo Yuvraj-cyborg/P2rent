@@ -31,8 +31,9 @@ fn main() -> ExitCode {
         ["layers"] => finish(layers()),
         ["deps"] => finish(deps(false)),
         ["deps", "--write"] => finish(deps(true)),
+        ["fuzz", seconds] => finish(fuzz(seconds)),
         _ => {
-            eprintln!("usage: cargo xtask <size | layers | deps [--write]>");
+            eprintln!("usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS>");
             ExitCode::from(2)
         }
     }
@@ -211,6 +212,41 @@ fn layers() -> Result<(), String> {
     }
 }
 
+/// Runs every fuzz target for `seconds` each, on a nightly toolchain.
+fn fuzz(seconds: &str) -> Result<(), String> {
+    seconds
+        .parse::<u32>()
+        .map_err(|_| format!("{seconds:?} is not a number of seconds"))?;
+
+    // cargo-fuzz assumes the platform it was built for, which is not always
+    // the one it runs on, so name the target outright.
+    let version = output(Command::new("rustc").arg("-vV"))?;
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .ok_or("`rustc -vV` did not report a host")?;
+
+    let targets = output(nightly_fuzz().arg("list"))?;
+    for target in targets.lines().filter(|line| !line.is_empty()) {
+        eprintln!("fuzzing {target} for {seconds}s");
+        run(nightly_fuzz()
+            .args(["run", "--target", host, target, "--"])
+            .arg(format!("-max_total_time={seconds}")))?;
+    }
+    Ok(())
+}
+
+/// `cargo fuzz` on the nightly toolchain, run in the fuzz workspace.
+fn nightly_fuzz() -> Command {
+    // Through rustup, not `cargo +nightly`: inside `cargo run` the `cargo`
+    // on the path can be the real one, which does not understand `+nightly`.
+    let mut command = Command::new("rustup");
+    command
+        .args(["run", "nightly", "cargo", "fuzz"])
+        .current_dir(workspace_root().join("fuzz"));
+    command
+}
+
 fn cargo() -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     command.current_dir(workspace_root());
@@ -238,7 +274,11 @@ fn output(command: &mut Command) -> Result<String, String> {
         .output()
         .map_err(|e| format!("cannot start {command:?}: {e}"))?;
     if !output.status.success() {
-        return Err(format!("{command:?} failed with {}", output.status));
+        return Err(format!(
+            "{command:?} failed with {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("{command:?} printed invalid UTF-8: {e}"))
 }

@@ -1,0 +1,13 @@
+# Settings for `just mutants`.
+
+exclude_re = [
+    # Kani proofs are not compiled by `cargo test`, so no test can notice a
+    # change to one. `just kani` checks them.
+    "proofs::",
+    # Changes that leave behaviour the same, so no test could notice them:
+    # two hex digits never share a bit, so or-ing and xor-ing them agree.
+    "replace \\| with \\^ in decode",
+    # One more step of the claim search looks again at the chunk it started
+    # from, which it has already ruled out.
+    "replace < with <= in Schedule::claim",
+]
