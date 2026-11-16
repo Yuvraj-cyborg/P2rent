@@ -195,6 +195,12 @@ impl Artifact {
     }
 
     fn assemble(manifest: Manifest, encoded: Vec<u8>) -> Self {
+        Self::laid_out(Hash::derive(ID_CONTEXT, &encoded), manifest, encoded)
+    }
+
+    /// Works out the chunk layout of a manifest whose id is already known.
+    /// Kept apart from the hashing so the layout can be checked on its own.
+    fn laid_out(id: Hash, manifest: Manifest, encoded: Vec<u8>) -> Self {
         let chunk_size = u64::from(manifest.chunk_size);
         let mut first_chunk = Vec::with_capacity(manifest.files.len());
         let mut next = 0u64;
@@ -205,7 +211,7 @@ impl Artifact {
             total_size += file.size;
         }
         Self {
-            id: Hash::derive(ID_CONTEXT, &encoded),
+            id,
             manifest,
             encoded,
             first_chunk,
@@ -402,5 +408,136 @@ mod tests {
         let mut tampered = bytes;
         *tampered.last_mut().unwrap() ^= 1;
         assert!(Artifact::decode(artifact.id(), tampered).is_err());
+    }
+}
+
+/// Bounded proofs, run by `just kani`. They hold for every chunk size a
+/// manifest may use, every file size that gives up to `MAX_FILE_CHUNKS`
+/// chunks, and every chunk index.
+///
+/// Each proof walks through the number of chunks in each file one case at a
+/// time, and leaves the sizes themselves open. The model checker is far
+/// quicker when it knows how long each list is.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    const FILES: usize = 2;
+    /// Enough for an empty file, a file of one chunk, and a file whose last
+    /// chunk follows a full one.
+    const MAX_FILE_CHUNKS: u64 = 2;
+
+    /// Any size that makes a file of exactly `chunks` chunks.
+    fn any_size(chunks: u64, chunk_size: u32) -> u64 {
+        let chunk_size = u64::from(chunk_size);
+        let size: u64 = kani::any();
+        if chunks == 0 {
+            kani::assume(size == 0);
+        } else {
+            kani::assume(size > (chunks - 1) * chunk_size && size <= chunks * chunk_size);
+        }
+        size
+    }
+
+    /// An artifact whose files have the given numbers of chunks, with any
+    /// chunk size and any sizes that fit.
+    fn any_artifact(file_chunks: [u64; FILES]) -> (Artifact, [u64; FILES], u32) {
+        let chunk_size: u32 =
+            kani::any_where(|size| (MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(size));
+        let mut sizes = [0; FILES];
+        let mut files = Vec::new();
+        let mut chunks = Vec::new();
+        let mut file = 0;
+        while file < FILES {
+            sizes[file] = any_size(file_chunks[file], chunk_size);
+            files.push(FileEntry {
+                path: String::new(),
+                size: sizes[file],
+                executable: false,
+            });
+            let mut chunk = 0;
+            while chunk < file_chunks[file] {
+                chunks.push(Hash::from_bytes([0; 32]));
+                chunk += 1;
+            }
+            file += 1;
+        }
+        let manifest = Manifest {
+            name: String::new(),
+            kind: Kind::Directory,
+            chunk_size,
+            files,
+            chunks,
+        };
+        let artifact = Artifact::laid_out(Hash::from_bytes([0; 32]), manifest, Vec::new());
+        (artifact, sizes, chunk_size)
+    }
+
+    /// Runs `check` on every combination of chunk counts for the files.
+    fn for_every_shape(check: impl Fn([u64; FILES])) {
+        let mut first = 0;
+        while first <= MAX_FILE_CHUNKS {
+            let mut second = 0;
+            while second <= MAX_FILE_CHUNKS {
+                check([first, second]);
+                second += 1;
+            }
+            first += 1;
+        }
+    }
+
+    /// Every index in range names a chunk that lies wholly inside one file,
+    /// starts on a chunk boundary and is full unless it is that file's last.
+    /// Every index out of range names nothing.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn every_chunk_lies_inside_its_file() {
+        for_every_shape(|shape| {
+            let (artifact, sizes, chunk_size) = any_artifact(shape);
+            let index: u64 = kani::any();
+
+            match artifact.locate(index) {
+                None => assert!(index >= artifact.chunk_count()),
+                Some(chunk) => {
+                    assert!(index < artifact.chunk_count());
+                    assert!(chunk.file < FILES);
+                    let size = sizes[chunk.file];
+                    let end = chunk.offset + u64::from(chunk.len);
+
+                    assert!(chunk.len > 0 && chunk.len <= chunk_size);
+                    assert!(end <= size);
+                    assert!(chunk.len == chunk_size || end == size);
+
+                    // It is the right chunk of that file: the one whose
+                    // position in the file matches its offset.
+                    let range = artifact.file_chunks(chunk.file);
+                    assert!(range.contains(&index));
+                    assert!(chunk.offset == (index - range.start) * u64::from(chunk_size));
+                }
+            }
+        });
+    }
+
+    /// The files' chunk ranges follow one another with no gap or overlap and
+    /// together make up every index. The total size is the sum of the files.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn the_files_split_the_chunks_between_them() {
+        for_every_shape(|shape| {
+            let (artifact, sizes, _) = any_artifact(shape);
+            let mut next = 0;
+            let mut total = 0;
+            let mut file = 0;
+            while file < FILES {
+                let range = artifact.file_chunks(file);
+                assert!(range.start == next);
+                assert!(range.end - range.start == shape[file]);
+                next = range.end;
+                total += sizes[file];
+                file += 1;
+            }
+            assert!(next == artifact.chunk_count());
+            assert!(total == artifact.total_size());
+        });
     }
 }

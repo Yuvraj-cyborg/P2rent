@@ -105,7 +105,8 @@ impl Have {
 pub struct PeerInfo {
     /// The participant's node id.
     pub node: NodeId,
-    /// Where it can be dialled.
+    /// Where it can be dialled. Only the IP address and port are sent: an
+    /// IPv6 scope id or flow label is local to one machine.
     pub addr: SocketAddr,
 }
 

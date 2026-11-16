@@ -11,23 +11,27 @@ build:
 release:
     cargo build --release --locked
 
-# Run the test suite (extra arguments go to cargo test)
+# Run the test suite (extra arguments go to nextest), then the doc tests
 test *args:
-    cargo test --locked --workspace {{args}}
+    cargo nextest run --locked --workspace {{args}}
+    cargo test --locked --workspace --doc
 
 # Format the code
 fmt:
     cargo fmt --all
+    cargo fmt --all --manifest-path fuzz/Cargo.toml
 
 # ---- What CI runs. Keep these in step with .github/workflows/ci.yml ----
 
 # Everything CI runs
-ci: lint test msrv audit features miri
+ci: lint test msrv audit features miri fuzz loom
 
 # Formatting, lints, documentation and spelling, with warnings as errors
 lint:
     cargo fmt --all -- --check
+    cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
     cargo clippy --locked --workspace --all-targets -- -D warnings
+    cargo clippy --locked --manifest-path fuzz/Cargo.toml -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items
     typos
 
@@ -49,13 +53,31 @@ features:
 
 # Run the tests that touch neither disk nor network under Miri
 miri:
-    cargo +nightly miri test --locked -p p2rent-core
+    cargo +nightly miri test --locked -p p2rent-core --lib
     cargo +nightly miri test --locked -p p2rent-peer --lib -- swarm::ticket::
+
+# Needs a nightly toolchain and cargo-fuzz.
+
+# Feed random bytes to every parser of untrusted input, for this many seconds each
+fuzz seconds="10":
+    cargo xtask fuzz {{seconds}}
+
+# The model test swaps in loom's locks, which need their own build directory.
+
+# Check the download's shared state under every interleaving of two fetchers
+loom:
+    RUSTFLAGS="--cfg p2rent_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p p2rent-peer --lib --release -- model::
 
 # ---- Our own analysis. Not part of CI: run it before opening a pull request ----
 
 # Every local analysis check
-analysis: workflows unused dupes pure deps size
+analysis: workflows unused dupes pure deps size kani
+
+# Needs Kani: `cargo install --locked kani-verifier && cargo kani setup`.
+
+# Prove the core's arithmetic and state machines for every input up to a bound
+kani:
+    cargo kani -p p2rent-core
 
 # Check the CI workflow files for mistakes GitHub would reject
 workflows:
@@ -97,6 +119,14 @@ size:
 
 # CI's checks and our own analysis together
 all: ci analysis
+
+# Slow: every mutant rebuilds and reruns the tests. A mutant that survives is
+# either a missing test or code that nothing needs. Not part of `just all`;
+# run it before a release. Needs cargo-mutants.
+
+# Change the core's code in small ways and check that some test notices
+mutants:
+    cargo mutants --package p2rent-core
 
 # Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
 bench size_mb="1024" seeders="1" runs="3" files="1":

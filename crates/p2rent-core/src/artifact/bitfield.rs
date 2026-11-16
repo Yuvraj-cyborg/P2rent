@@ -125,3 +125,80 @@ mod tests {
         assert!(!bits.is_well_formed(10));
     }
 }
+
+/// Bounded proofs, run by `just kani`. They hold for every length up to
+/// `MAX_BITS` and every index, not just for the inputs a test happens to try.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Large enough to cover a partial last byte and several whole ones.
+    const MAX_BITS: u64 = 20;
+
+    /// A bitfield of any length up to the bound, with any bits set.
+    fn any_bitfield() -> Bitfield {
+        let len: u64 = kani::any_where(|&len| len <= MAX_BITS);
+        let mut bits = Bitfield::new(len);
+        let mut index = 0;
+        while index < len {
+            if kani::any() {
+                bits.set(index);
+            }
+            index += 1;
+        }
+        bits
+    }
+
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn set_affects_exactly_one_bit() {
+        let mut bits = any_bitfield();
+        let index: u64 = kani::any();
+        let other: u64 = kani::any();
+        kani::assume(other != index);
+        let before = bits.get(other);
+
+        bits.set(index);
+
+        assert_eq!(bits.get(index), index < bits.len());
+        assert_eq!(bits.get(other), before);
+        assert!(bits.is_well_formed(bits.len()));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn clear_affects_exactly_one_bit() {
+        let mut bits = any_bitfield();
+        let index: u64 = kani::any();
+        let other: u64 = kani::any();
+        kani::assume(other != index);
+        let before = bits.get(other);
+
+        bits.clear(index);
+
+        assert!(!bits.get(index));
+        assert_eq!(bits.get(other), before);
+        assert!(bits.is_well_formed(bits.len()));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn a_full_bitfield_has_every_bit_and_no_more() {
+        let len: u64 = kani::any_where(|&len| len <= MAX_BITS);
+        let bits = Bitfield::full(len);
+        let index: u64 = kani::any();
+
+        assert_eq!(bits.get(index), index < len);
+        assert_eq!(bits.count_ones(), len);
+        assert!(bits.is_full());
+        assert!(bits.is_well_formed(len));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn the_count_never_exceeds_the_length() {
+        let bits = any_bitfield();
+        assert!(bits.count_ones() <= bits.len());
+        assert!(bits.is_well_formed(bits.len()));
+    }
+}

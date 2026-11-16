@@ -31,8 +31,9 @@ fn main() -> ExitCode {
         ["layers"] => finish(layers()),
         ["deps"] => finish(deps(false)),
         ["deps", "--write"] => finish(deps(true)),
+        ["fuzz", seconds] => finish(fuzz(seconds)),
         _ => {
-            eprintln!("usage: cargo xtask <size | layers | deps [--write]>");
+            eprintln!("usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS>");
             ExitCode::from(2)
         }
     }
@@ -209,6 +210,41 @@ fn layers() -> Result<(), String> {
             unexpected.join(", ")
         ))
     }
+}
+
+/// Runs every fuzz target for `seconds` each, on a nightly toolchain.
+fn fuzz(seconds: &str) -> Result<(), String> {
+    seconds
+        .parse::<u32>()
+        .map_err(|_| format!("{seconds:?} is not a number of seconds"))?;
+
+    // cargo-fuzz assumes the platform it was built for, which is not always
+    // the one it runs on, so name the target outright.
+    let version = output(Command::new("rustc").arg("-vV"))?;
+    let host = version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .ok_or("`rustc -vV` did not report a host")?;
+
+    let targets = output(nightly_fuzz().arg("list"))?;
+    for target in targets.lines().filter(|line| !line.is_empty()) {
+        eprintln!("fuzzing {target} for {seconds}s");
+        run(nightly_fuzz()
+            .args(["run", "--target", host, target, "--"])
+            .arg(format!("-max_total_time={seconds}")))?;
+    }
+    Ok(())
+}
+
+/// `cargo +nightly fuzz`, run in the fuzz workspace.
+fn nightly_fuzz() -> Command {
+    // Through `cargo` on the path, not `$CARGO`: only rustup's wrapper
+    // understands `+nightly`.
+    let mut command = Command::new("cargo");
+    command
+        .args(["+nightly", "fuzz"])
+        .current_dir(workspace_root().join("fuzz"));
+    command
 }
 
 fn cargo() -> Command {
