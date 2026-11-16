@@ -1,6 +1,8 @@
 # Protocol
 
-This describes protocol version 2, negotiated with the ALPN token `mux/2`.
+This describes protocol version 3, negotiated with the ALPN token `mux/3`.
+Version 2 was the same protocol under the project's former name, p2rent,
+with the token `p2rent/2`. The two do not interoperate.
 
 ## Tickets
 

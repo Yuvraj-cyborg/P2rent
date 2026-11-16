@@ -77,23 +77,11 @@ More detail: [illustrated walk-through](docs/how-it-works.md) ·
 
 ## Install
 
-Binaries for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows
-are attached to each [release](https://github.com/Yuvraj-cyborg/mux/releases/latest),
-with SHA-256 checksums. On Linux:
+mux was called p2rent up to release 0.2.0. The first release under the new
+name will be 0.3. Until then, build from source to get `mux`:
 
 ```console
-$ curl -sSfL https://github.com/Yuvraj-cyborg/mux/releases/latest/download/mux-x86_64-linux.tar.gz | tar xz mux
-$ sudo install mux /usr/local/bin/
-```
-
-The Linux binaries need glibc 2.17 or newer, which covers mainstream
-distributions from the last ten years. The macOS binaries are not notarized:
-if a browser download is blocked, run `xattr -d com.apple.quarantine mux`.
-
-From source:
-
-```console
-$ cargo install --git https://github.com/Yuvraj-cyborg/mux --locked mux
+$ cargo install --git https://github.com/Yuvraj-cyborg/mux --locked cli
 ```
 
 With Nix:
@@ -104,6 +92,26 @@ $ nix run github:Yuvraj-cyborg/mux -- --help
 
 From a checkout, `cargo build --release` produces `target/release/mux`.
 Building needs Rust 1.88 or newer.
+
+The binaries attached to
+[release 0.2.0](https://github.com/Yuvraj-cyborg/mux/releases/tag/v0.2.0),
+and the command inside them, still carry the old name. They do not talk to a
+build from this source: the protocol identifier and the ticket format changed
+with the name. To install them on Linux:
+
+```console
+$ curl -sSfL https://github.com/Yuvraj-cyborg/mux/releases/download/v0.2.0/p2rent-x86_64-linux.tar.gz | tar xz p2rent
+$ sudo install p2rent /usr/local/bin/
+```
+
+There are builds for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and
+Windows, with SHA-256 checksums. The Linux binaries need glibc 2.17 or newer,
+which covers mainstream distributions from the last ten years. The macOS
+binaries are not notarized: if a browser download is blocked, run
+`xattr -d com.apple.quarantine p2rent`.
+
+A machine that ran p2rent keeps its identity under mux: the key in the old
+configuration folder is copied to the new one the first time mux runs.
 
 ## Usage
 
@@ -139,7 +147,7 @@ Run `mux <command> --help` for the full list.
 
 ## Status
 
-Version 0.2 is a rewrite and is not yet production software.
+This is a rewrite and is not yet production software.
 
 - Developed and tested on macOS. CI runs the test suite on Linux, macOS and
   Windows; Windows has not been used beyond that.

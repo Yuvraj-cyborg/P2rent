@@ -132,10 +132,33 @@ impl Identity {
 
     /// `<config dir>/mux/node.key`.
     pub fn default_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("mux")
-            .join("node.key")
+        key_path("mux")
+    }
+
+    /// Loads this machine's key from [`Identity::default_path`], creating it
+    /// on first use.
+    ///
+    /// The project was called p2rent before it was mux, and kept the key in
+    /// a folder of that name. A machine with a key there and none in the new
+    /// place keeps its identity: the key is copied across.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Identity::load_or_create`].
+    pub fn load_or_create_default() -> Result<Self> {
+        Self::load_or_adopt(&Self::default_path(), &key_path("p2rent"))
+    }
+
+    /// Loads the key at `path`. If there is none, adopts the one at `former`
+    /// by copying it to `path`. If there is none there either, creates a new
+    /// key at `path`.
+    fn load_or_adopt(path: &Path, former: &Path) -> Result<Self> {
+        if path.exists() || !former.exists() {
+            return Self::load_or_create(path);
+        }
+        let identity = Self::load_or_create(former)?;
+        identity.save(path)?;
+        Ok(identity)
     }
 
     /// The public half, which names this node.
@@ -178,6 +201,14 @@ impl fmt::Debug for Identity {
     }
 }
 
+/// Where the key lives for a project of the given name.
+fn key_path(project: &str) -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(project)
+        .join("node.key")
+}
+
 fn parse_key(pkcs8: &[u8]) -> Result<KeyPair> {
     KeyPair::from_pkcs8_der_and_sign_algo(&PrivatePkcs8KeyDer::from(pkcs8), &PKCS_ED25519)
         .map_err(Error::from)
@@ -202,6 +233,48 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_key_from_the_former_folder_is_adopted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let former = tmp.path().join("p2rent").join("node.key");
+        let path = tmp.path().join("mux").join("node.key");
+        let original = Identity::load_or_create(&former).unwrap();
+
+        // No key in the new place yet: the former one is copied across.
+        let adopted = Identity::load_or_adopt(&path, &former).unwrap();
+        assert_eq!(adopted.node_id(), original.node_id());
+        assert!(path.exists());
+
+        // From then on the new place is used, whatever happens to the old.
+        std::fs::remove_file(&former).unwrap();
+        let again = Identity::load_or_adopt(&path, &former).unwrap();
+        assert_eq!(again.node_id(), original.node_id());
+    }
+
+    #[test]
+    fn a_key_in_the_new_folder_wins_over_the_former_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let former = tmp.path().join("p2rent").join("node.key");
+        let path = tmp.path().join("mux").join("node.key");
+        let old = Identity::load_or_create(&former).unwrap();
+        let new = Identity::load_or_create(&path).unwrap();
+
+        let loaded = Identity::load_or_adopt(&path, &former).unwrap();
+        assert_eq!(loaded.node_id(), new.node_id());
+        assert_ne!(loaded.node_id(), old.node_id());
+    }
+
+    #[test]
+    fn with_no_key_anywhere_a_new_one_is_created_in_the_new_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let former = tmp.path().join("p2rent").join("node.key");
+        let path = tmp.path().join("mux").join("node.key");
+
+        Identity::load_or_adopt(&path, &former).unwrap();
+        assert!(path.exists());
+        assert!(!former.exists());
     }
 
     #[test]

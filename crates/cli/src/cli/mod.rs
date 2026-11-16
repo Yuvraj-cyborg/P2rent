@@ -62,9 +62,17 @@ pub(crate) fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let key_path = cli.key.unwrap_or_else(Identity::default_path);
-    let identity = Identity::load_or_create(&key_path)
-        .with_context(|| format!("cannot load the node key at {}", key_path.display()))?;
+    let identity = match &cli.key {
+        Some(path) => Identity::load_or_create(path)
+            .with_context(|| format!("cannot load the node key at {}", path.display())),
+        // The usual place, adopting a key left by the tool's former name.
+        None => Identity::load_or_create_default().with_context(|| {
+            format!(
+                "cannot load the node key at {}",
+                Identity::default_path().display()
+            )
+        }),
+    }?;
 
     match cli.command {
         Command::Seed(args) => seed::run(args, &identity).await,
