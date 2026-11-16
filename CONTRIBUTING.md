@@ -97,13 +97,13 @@ Each issue says which tiers apply to it.
 
 | Tier | Tool | Run with | Used for |
 | --- | --- | --- | --- |
-| Proven | Lean 4, through Aeneas | `just proofs` | The logic that decides what happens to files. Today: the bitfield, the chunk layout and the schedule, for inputs of any size. |
+| Proven | Lean 4, through Aeneas | `just proofs` | The logic that decides what happens to files. Today: the bitfield, the chunk layout, the schedule, and the rule for when a file may take its final name, for inputs of any size. |
 | Bounded | Kani | `just kani` | Arithmetic and state machines that must never overflow, panic or leave their bounds, for every input up to a size limit. |
 | Model-checked | `loom` | `just loom` | Shared state under every interleaving. |
 | Empirical | Property tests | `just test` | Round trips, and behaviour compared with a simple model. |
 | | Fuzzing | `just fuzz` | Parsers of untrusted bytes. A long run is `just fuzz 600`. |
 | | Mutation testing | `just mutants` | Whether the tests would notice a wrong change. |
-| Runtime | Hash checks | always on | Every chunk before it is kept, and every file before it is renamed into place. |
+| Runtime | Hash checks | always on | Every chunk before it is kept. A file is renamed into place only when every one of its chunks has passed. |
 
 A property is written once, at the strongest tier that can express it. A
 bug found by any tier is fixed at its cause, and the input that found it is

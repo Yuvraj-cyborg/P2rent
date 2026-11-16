@@ -6,7 +6,7 @@ this table.
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
 | `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, and the schedule of which chunk to fetch next | nothing else |
-| `fs` | Local folders: hashing files into artifacts; reading and writing chunks in place | model |
+| `fs` | Local folders: hashing files into artifacts; reading chunks from them; writing chunks to part files that are renamed into place when whole | model |
 | `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, fs |
 | `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the three above | all of the above |
 
@@ -53,9 +53,10 @@ starts at byte *n × chunk size*. Two consequences follow:
 
 Manifests come from untrusted peers. `Manifest::validate` runs before a
 manifest is used for anything and rejects path components that are empty,
-`.`, `..`, or contain a separator, drive colon or NUL; paths that are unsorted,
-duplicated or that name something as both a file and a directory; and chunk
-counts that disagree with the declared file sizes.
+`.`, `..`, longer than 246 bytes, that end in `.mux-part`, or that contain a
+separator, drive colon or NUL; paths that are unsorted, duplicated or that
+name something as both a file and a directory; and chunk counts that disagree
+with the declared file sizes.
 
 ## Storage
 
@@ -64,9 +65,27 @@ artifact. `DiskStore` maps a chunk index to a file and offset and performs
 positional reads and writes, so many chunks can be in flight without sharing
 a file cursor.
 
-Resuming needs no state file. `DiskStore::scan` re-hashes whatever is at the
-destination and reports which chunks are already valid; anything else is
-fetched again. This also repairs files that were corrupted after a download.
+A file under its final name is always whole and correct. While a file is
+being downloaded its chunks go into a part file beside it, `<name>.mux-part`.
+`DiskStore::write_chunk` checks a chunk against the manifest before writing
+it, and when the last chunk of a file is in place it flushes the part file
+and renames it over the final name. The directories are flushed once, when
+the download completes, so that the renames survive a power cut. So however the
+program stops, there is never a file with holes under a name a user would
+open, and a file that was already there is replaced in one step or left
+alone, never changed in place. The decision "this file is now whole" is made
+by `model::assembly`, which is proven: a file is announced only when every
+chunk of it is in place.
+
+Chunks are read from part files as well as whole ones, so a node serves what
+it holds while it downloads the rest.
+
+Resuming needs no state file. `DiskStore::resume` re-hashes whatever is at
+the destination. A whole file is kept. A part file keeps every chunk that is
+right. A file under its final name that is not whole, because it was damaged
+or is another version, is left as it is until its replacement is ready, and
+the chunks of it that are right are copied into the part file instead of
+being fetched again. Indexing leaves part files out.
 
 ## Network
 
@@ -103,10 +122,12 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
                                                               │
         ┌─────────────────────────────────────────────────────┘
         ▼
-   register share (start serving) ──► manager ──► finalize (fsync, modes)
+   register share (start serving) ──► manager ──► done
                                          │
                       one task per peer, each with N workers
-                      worker: claim chunk → fetch → hash → write → mark
+                      worker: claim chunk → fetch → hash → write to part file
+                              last chunk of a file → fsync, rename into place
+                      done: fsync the directories
 ```
 
 The manager keeps up to `max_peers` peer tasks running, adds peers reported
@@ -128,4 +149,6 @@ Memory held for chunk data is bounded by
 - `tests/connection.rs` checks mutual authentication and id pinning.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
-- `tests/cli.rs` runs the compiled binary as separate processes.
+- `tests/cli.rs` runs the compiled binary as separate processes, and kills
+  a download at random moments to check that only whole files have their
+  final names.

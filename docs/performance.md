@@ -24,14 +24,14 @@ counted, and neither is time in the kernel.
 
 | Benchmark | Hot path | Instructions |
 | --- | --- | ---: |
-| `hash_chunk` | Hash one 1 MiB chunk | 2,619,335 |
-| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,149,631 |
-| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 5,998,180 |
-| `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,523,224 |
+| `hash_chunk` | Hash one 1 MiB chunk | 2,619,342 |
+| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,191,641 |
+| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 6,040,211 |
+| `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,493,228 |
 | `mark_and_count` | Set every third bit of a 10,000-bit bitfield, then count them | 67,093 |
 | `claim_every_chunk` | Claim and complete each of 10,000 chunks | 580,971 |
-| `read_chunks` | Read 16 chunks of 1 MiB from a file | 945,405 |
-| `write_chunks` | Write 16 chunks of 1 MiB to a file | 7,701 |
+| `read_chunks` | Read 16 chunks of 1 MiB from a file | 909,772 |
+| `store_chunks` | Check 16 chunks of 1 MiB against the manifest, write them to a part file, then flush it and rename it into place | 41,930,897 |
 
 These figures are from one build: Linux on x86-64, Rust 1.100, 17 November
 2026. Another compiler or processor gives other figures, so only compare two
@@ -159,6 +159,42 @@ Each was built and measured, then dropped.
 | Reuse chunk buffers instead of allocating per request | No change (3.74 vs 3.71 CPU seconds per GiB) |
 | Larger UDP socket buffers (2 to 7 MiB) | Fewer lost packets with three seeders, but no gain in throughput |
 | More seeders on loopback | Throughput stays flat; the downloader is the limit |
+
+## Part files
+
+Downloads used to be written straight into files under their final names.
+They now go to a part file that is flushed and renamed into place when whole
+([#14](https://github.com/Yuvraj-cyborg/mux/issues/14)). Measured on Linux
+(Intel Core i5-10200H), before and after:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| One 1 GiB file, tmpfs: throughput | 436 MiB/s | 435 MiB/s |
+| One 1 GiB file, tmpfs: CPU seconds per GiB | 6.85 | 6.78 |
+| 2000 files of 128 KiB, btrfs: CPU seconds per GiB | 8.07 | 9.94 |
+| `build_artifact`, instructions | 5,149,624 | 5,191,641 (+0.8%) |
+| `decode_artifact`, instructions | 5,998,194 | 6,040,211 (+0.7%) |
+| `read_chunks`, instructions | 945,405 | 909,772 (-3.8%) |
+
+For a large file nothing changes. The manifest checks rose by under one
+percent, which is the new rule that no name may end in `.mux-part`.
+
+Many small files cost about a quarter more CPU, all of it in the kernel.
+Each file is now flushed and renamed as its last chunk arrives, while other
+files are still being written, where before every file was flushed in one
+pass at the end. Wall time for that case is not in the table: on this disk it
+ranged from 7 to 190 MiB/s between identical runs, before and after.
+
+One version was built, measured and dropped:
+
+| Change | Result |
+| --- | --- |
+| Flush the directory after every rename | CPU for 2000 small files rose from 8.1 to 13.1 seconds per GiB, and throughput fell several times over. Directories are now flushed once, when the download completes. A power cut before that can undo a rename, and the next run finds the file whole under its part name and renames it again. |
+
+`store_chunks` replaces `write_chunks`. The old benchmark measured a bare
+write of 7,701 instructions for 16 chunks. Storing a chunk now includes
+checking it against the manifest, which a download always did, one step
+earlier, so the figure is nearly all hashing: 16 times `hash_chunk`.
 
 ## The fast path
 
