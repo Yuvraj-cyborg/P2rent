@@ -1,0 +1,40 @@
+[package]
+name = "benches"
+description = "Benchmarks for mux: instruction counts for the hot paths, and a timed loopback transfer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# docs/performance.md says what each benchmark measures and how to run it.
+
+[dev-dependencies]
+blake3.workspace = true
+fs.workspace = true
+gungraun.workspace = true
+model.workspace = true
+peer.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+
+# A safe wrapper around `getrusage`, so the transfer benchmark needs no
+# `unsafe`.
+[target.'cfg(unix)'.dev-dependencies]
+nix.workspace = true
+
+# Counts instructions under Valgrind, so Linux only.
+[[bench]]
+name = "instructions"
+path = "instructions.rs"
+harness = false
+
+# Times a transfer over loopback.
+[[bench]]
+name = "transfer"
+path = "transfer.rs"
+harness = false
+
+[lints]
+workspace = true

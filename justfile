@@ -26,6 +26,9 @@ fmt:
 # Everything CI runs
 ci: lint test msrv audit features miri fuzz loom
 
+# `just bench` is a CI job too, but it needs Valgrind, which runs on Linux
+# only, so it is not part of `just ci`.
+
 # Formatting, lints, documentation and spelling, with warnings as errors
 lint:
     cargo fmt --all -- --check
@@ -67,6 +70,12 @@ fuzz seconds="10":
 # Check the download's shared state under every interleaving of two fetchers
 loom:
     RUSTFLAGS="--cfg mux_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p peer --lib --release -- interleavings::
+
+# Needs Linux, Valgrind and gungraun-runner: see docs/performance.md.
+
+# Count the instructions the hot paths execute, e.g. `just bench origin/main` to compare with main
+bench base="":
+    cargo xtask bench {{base}}
 
 # ---- Our own analysis. Not part of CI: run it before opening a pull request ----
 
@@ -136,9 +145,9 @@ proofs:
 mutants:
     cargo mutants --package model
 
-# Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
-bench size_mb="1024" seeders="1" runs="3" files="1":
-    MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_SEEDERS={{seeders}} MUX_BENCH_RUNS={{runs}} MUX_BENCH_FILES={{files}} cargo bench --locked -p peer --bench transfer
+# Time a loopback transfer, e.g. `just transfer 4096 2` for 4 GiB from two seeders
+transfer size_mb="1024" seeders="1" runs="3" files="1":
+    MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_SEEDERS={{seeders}} MUX_BENCH_RUNS={{runs}} MUX_BENCH_FILES={{files}} cargo bench --locked --package benches --bench transfer
 
 # Run mux from source, e.g. `just run seed ./model.bin`
 run *args:

@@ -105,6 +105,24 @@ jobs:
       # A smoke test: each target runs for ten seconds.
       - run: cargo xtask fuzz 10
 
+  bench:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The base branch is measured too, so its history is needed.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install --yes valgrind
+      # Keep in step with `gungraun` in Cargo.lock: the two must match.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: gungraun-runner@0.20.0
+      # Instruction counts, compared with the base branch.
+      - run: cargo xtask bench origin/${{ github.base_ref }}
+
   loom:
     runs-on: ubuntu-latest
     env:

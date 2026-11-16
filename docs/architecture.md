@@ -1,7 +1,7 @@
 # Architecture
 
-mux is a workspace of four crates. Each depends only on the ones above it
-in this table.
+mux is built from four crates. Each depends only on the ones above it in
+this table.
 
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
@@ -28,11 +28,11 @@ crates/
 │   │   ├── swarm/     node.rs  share.rs  server.rs  ticket.rs
 │   │   │   └── download/  mod.rs  session.rs  claims.rs  peer.rs
 │   │   └── sync.rs    locks that recover from poisoning
-│   ├── tests/         connection.rs  download.rs  swarm.rs  properties.rs
-│   └── benches/       transfer.rs
+│   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
+benches/               instructions.rs  transfer.rs (see docs/performance.md)
 fuzz/                  fuzz targets, a workspace of their own
 proofs/                Lean proofs of the logic in `model`
 xtask/                 development tasks written in Rust (`cargo xtask`)

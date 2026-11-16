@@ -1,13 +1,125 @@
-# Performance notes
+# Performance
 
-What has been measured, what helped and what did not, so the same ground is
-not covered twice. Reproduce any of it with `just bench`.
+How speed is measured, what guards it, and what has been learnt: what
+helped and what did not, so the same ground is not covered twice.
 
-All figures are loopback transfers of a 1 GiB file from one seeder unless
-stated. Loopback has no loss, no latency and no network card, so they show
-CPU cost per byte, not what a real network delivers. They come from one
-laptop (Apple M4) and a Linux container running on it; treat differences
+## Two kinds of measurement
+
+| | Instruction counts | Timed transfer |
+| --- | --- | --- |
+| Measures | Instructions executed by one hot path | A whole transfer over loopback: MiB per second, and CPU seconds per GiB |
+| Repeatable | Yes: the same build gives the same count every time | No: it moves with the machine, the disk and the temperature |
+| Used as | A gate on every pull request | A record, taken every night |
+| Run with | `just bench` | `just transfer` |
+| Lives in | `benches/instructions.rs` | `benches/transfer.rs` |
+
+Both are in the `benches` package, which nothing else depends on.
+
+## Instruction counts
+
+Each benchmark runs one hot path under Valgrind, which counts the
+instructions it executes. Nothing is timed, so a busy machine does not
+change the result. Setting up the input and dropping the result are not
+counted, and neither is time in the kernel.
+
+| Benchmark | Hot path | Instructions |
+| --- | --- | ---: |
+| `hash_chunk` | Hash one 1 MiB chunk | 2,619,335 |
+| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,149,631 |
+| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 5,998,180 |
+| `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,523,224 |
+| `mark_and_count` | Set every third bit of a 10,000-bit bitfield, then count them | 67,093 |
+| `claim_every_chunk` | Claim and complete each of 10,000 chunks | 580,971 |
+| `read_chunks` | Read 16 chunks of 1 MiB from a file | 945,405 |
+| `write_chunks` | Write 16 chunks of 1 MiB to a file | 7,701 |
+
+These figures are from one build: Linux on x86-64, Rust 1.100, 17 November
+2026. Another compiler or processor gives other figures, so only compare two
+counts taken on the same machine with the same compiler. That is what the
+gate does.
+
+Indexing is not in the table. It hashes on several threads, and the
+instruction count of a thread pool changes from run to run. The timed
+transfer reports it instead.
+
+### Running them
+
+They need Linux, because Valgrind does not run on current macOS or on
+Windows.
+
+1. Install Valgrind 3.20 or later, from the system's packages.
+2. Install the benchmark runner. Its version must match the `gungraun`
+   version in `Cargo.lock`:
+
+   ```console
+   $ cargo install --locked --version 0.20.0 gungraun-runner
+   ```
+
+3. Run them:
+
+   ```console
+   $ just bench                # compare with this tree's previous run
+   $ just bench origin/main    # measure main first, then compare with it
+   ```
+
+The second form checks out the other commit in a worktree of its own under
+`target/`, measures it, removes the worktree and then measures this tree.
+
+### The gate
+
+The `bench` job in CI runs `cargo xtask bench` against the base branch of
+every pull request. A benchmark that executes more than 5% more instructions
+than it does on the base branch fails the job. The limit is
+`RISE_LIMIT_PERCENT` in `benches/instructions.rs`.
+
+Two builds of the same code can differ by a few instructions, because the
+path of the source tree ends up in the binary. Beyond that the counts are
+exact, so the limit is not there to absorb noise. It decides how large a
+rise needs a decision.
+
+A pull request that has to raise a count beyond the limit:
+
+1. gives that one benchmark a higher limit in `benches/instructions.rs`,
+   with the reason in a comment beside it;
+2. updates the table above;
+3. says in its description what the extra instructions buy.
+
+A pull request that adds a hot path adds a benchmark for it. A new benchmark
+has nothing to be compared with, so it passes the first time.
+
+## Timed transfer
+
+`just transfer` seeds a generated file from one node and downloads it with
+another, both on this machine, three times. It reports throughput and CPU
+seconds per GiB, and how fast the file was indexed.
+
+```console
+$ just transfer            # 1 GiB from one seeder
+$ just transfer 4096 2     # 4 GiB from two seeders
+```
+
+`benches/transfer.rs` lists the settings. Put `MUX_BENCH_DIR` on a RAM disk
+or tmpfs, or the disk is what gets measured.
+
+The `Bench` workflow runs it every night on a GitHub-hosted Linux machine
+and keeps the output of each run as an artifact for 90 days. That list of
+runs is the history. A hosted machine is shared and its hardware changes, so
+read the history for a trend over weeks and not for the difference between
+two nights.
+
+### Figures
+
+All figures below are loopback transfers of a 1 GiB file from one seeder
+unless stated. Loopback has no loss, no latency and no network card, so they
+show CPU cost per byte, not what a real network delivers. Treat differences
 under about 15% as noise.
+
+| Machine | Throughput | CPU seconds per GiB | Indexing |
+| --- | ---: | ---: | ---: |
+| Linux, Intel Core i5-10200H (4 cores), data on tmpfs, 17 November 2026 | 441 MiB/s | 6.82 | 11,114 MiB/s |
+
+The sections that follow come from one laptop (Apple M4) and a Linux
+container running on it.
 
 ## Where the CPU goes
 
@@ -47,6 +159,18 @@ Each was built and measured, then dropped.
 | Reuse chunk buffers instead of allocating per request | No change (3.74 vs 3.71 CPU seconds per GiB) |
 | Larger UDP socket buffers (2 to 7 MiB) | Fewer lost packets with three seeders, but no gain in throughput |
 | More seeders on loopback | Throughput stays flat; the downloader is the limit |
+
+## The fast path
+
+`unsafe`, SIMD intrinsics and assembly are allowed in one crate, `accel`,
+under the rules in [CONTRIBUTING.md](../CONTRIBUTING.md#7-safe-by-default-with-a-fenced-fast-path).
+The crate does not exist yet: the first pull request that needs it creates
+it. Every attempt is recorded here with its figures, whether it is kept or
+not.
+
+| Function | Reference | Fast version | Gain | Kept |
+| --- | --- | --- | --- | --- |
+| None yet | | | | |
 
 ## Method notes
 

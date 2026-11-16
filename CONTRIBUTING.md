@@ -69,6 +69,7 @@ same ones locally.
 | `miri` | `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
 | `fuzz` | `just fuzz` | Every parser of bytes from other machines, fed random input for ten seconds each as a smoke test. |
 | `loom` | `just loom` | The download's shared state, under every interleaving of two fetchers. |
+| `bench` | `just bench origin/main` | The instructions each hot path executes, compared with the base branch. A rise of more than 5% fails. Needs Valgrind, so it runs on Linux only and is not part of `just ci`. |
 
 The checks that are this project's own analysis run locally, with
 `just analysis`:
@@ -84,9 +85,11 @@ The checks that are this project's own analysis run locally, with
 | `just kani` | The core's arithmetic and state machines, proven for every input up to a bound. |
 
 Library code may not panic on bad input: `unwrap`, `expect` and `panic!` are
-errors outside tests. A lint that produces noise without value is switched
-off in `Cargo.toml` with a written reason, never with an `allow` in the
-code.
+errors outside tests. Both that rule and the one that every public item is
+documented are about a library's public surface, so each library sets them
+at the top of its `lib.rs`; a new library crate copies those lines. A lint
+that produces noise without value is switched off in `Cargo.toml` with a
+written reason, never with an `allow` in the code.
 
 ## 6. Verification comes in tiers
 
@@ -115,27 +118,36 @@ not part of `just all`: run it whenever one of those modules changes.
 
 ## 7. Safe by default, with a fenced fast path
 
-`unsafe`, SIMD intrinsics and assembly are allowed in one crate,
-`accel`. Every other crate forbids `unsafe`. In that crate:
+`unsafe`, SIMD intrinsics and assembly are allowed in one crate, `accel`.
+Every other crate forbids `unsafe`. This is the method FFmpeg uses for its
+hand-written assembly, with `checkasm` as the comparison test.
 
-- every fast function has a safe reference version with the same signature;
-- a comparison test runs both on random inputs, for every CPU feature level
-  the fast version supports;
-- a benchmark shows the gain;
-- the fast version is chosen at run time, and the safe one stays as the
-  fallback.
-
-The fence and the comparison tests are set up in
-[#13](https://github.com/Yuvraj-cyborg/mux/issues/13).
+- `accel` is created by the first pull request that needs it, not before.
+- Every fast function has a safe reference version with the same signature.
+- A comparison test runs both versions on random inputs, for every CPU
+  feature level the fast version supports.
+- A benchmark must show the gain. The figures go into
+  [docs/performance.md](docs/performance.md), including for a change that
+  did not help and was dropped.
+- The fast version is chosen at run time by CPU detection. The safe version
+  stays as the fallback, and is what runs where no fast version exists.
+- Miri and the sanitizers run on `accel`.
 
 ## 8. Measure before optimising
 
-No optimisation is merged without figures.
-[docs/performance.md](docs/performance.md) records what was measured, what
-helped and what did not, so the same ground is not covered twice. One change
-per pull request. A benchmark comparison against `main` will make a
-regression visible before a change merges
-([#13](https://github.com/Yuvraj-cyborg/mux/issues/13)).
+No optimisation is merged without figures, and one pull request makes one
+change. [docs/performance.md](docs/performance.md) says how each figure is
+taken and records what was measured, what helped and what did not, so the
+same ground is not covered twice.
+
+- Each hot path that runs on one thread has a benchmark that counts the
+  instructions it executes. The count is the same on every run, so CI
+  compares each pull request with its base branch and fails on a rise of
+  more than 5%. A pull request that adds a hot path adds its benchmark.
+- A pull request that has to raise a count beyond the limit raises the limit
+  for that one benchmark, with the reason beside it.
+- A timed transfer over loopback runs every night. It moves with the
+  machine, so it is a record and not a gate.
 
 ## 9. Easy to guess
 

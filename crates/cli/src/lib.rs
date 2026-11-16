@@ -4,6 +4,9 @@
 //! that live in their own crates: the data model, local storage and
 //! machine-to-machine transfer.
 
+// Every public item is documented.
+#![warn(missing_docs)]
+
 pub use ::fs as store;
 pub use model::artifact;
 pub use peer::{Error, Result, net, swarm};

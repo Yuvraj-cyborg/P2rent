@@ -3,7 +3,7 @@
 //! Run one with `cargo xtask <task>`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 /// Largest release binary allowed. Raise it only in a pull request that says
@@ -31,6 +31,9 @@ const PROVEN_MODULES: &[&str] = &[
 /// is also the revision of the Aeneas Lean library in `proofs/lakefile.toml`.
 const AENEAS_RELEASE: &str = "nightly-2026.11.16-1dc8ad3";
 
+/// The benchmark that counts instructions under Valgrind. See [`bench()`].
+const INSTRUCTIONS_BENCH: &str = "benches/instructions.rs";
+
 /// Every crate `model` may depend on directly. It holds the logic that gets
 /// proven, so each addition here is a decision: it must not bring in a
 /// disk, a network, a clock or an async runtime.
@@ -46,9 +49,11 @@ fn main() -> ExitCode {
         ["deps", "--write"] => finish(deps(true)),
         ["fuzz", seconds] => finish(fuzz(seconds)),
         ["proofs"] => finish(proofs()),
+        ["bench"] => finish(bench(None)),
+        ["bench", base] => finish(bench(Some(base))),
         _ => {
             eprintln!(
-                "usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS | proofs>"
+                "usage: cargo xtask <size | layers | deps [--write] | fuzz SECONDS | proofs | bench [COMMIT]>"
             );
             ExitCode::from(2)
         }
@@ -318,6 +323,66 @@ fn proofs() -> Result<(), String> {
         .arg("build")
         .current_dir(root.join("proofs")))
     .map_err(|_| "the proofs do not check, or `lake` is not installed".to_owned())
+}
+
+/// Runs the benchmarks that count instructions.
+///
+/// With `base`, a commit, that commit is measured first, in a worktree of
+/// its own, and this tree is then compared with it. A count that rises by
+/// more than the limit set in the benchmark file fails the run. Without
+/// `base`, this tree is compared with its own previous run.
+///
+/// The counts come from Valgrind, so this needs Linux.
+fn bench(base: Option<&str>) -> Result<(), String> {
+    let target = workspace_root().join("target");
+    // Both trees write their results here, which is what lets one be
+    // compared with the other.
+    let results = target.join("gungraun");
+
+    let mut head = instructions(&results);
+    if let Some(base) = base {
+        let tree = target.join("bench-base");
+        // Left behind if an earlier run was interrupted.
+        let _ = output(git().args(["worktree", "remove", "--force"]).arg(&tree));
+        run(git()
+            .args(["worktree", "add", "--detach"])
+            .arg(&tree)
+            .arg(base))?;
+        let measured = if tree.join(INSTRUCTIONS_BENCH).exists() {
+            head.arg("--baseline=base");
+            run(instructions(&results)
+                .current_dir(&tree)
+                .env("CARGO_TARGET_DIR", &target)
+                .arg("--save-baseline=base"))
+        } else {
+            eprintln!("{base} has no instruction-count benchmark: nothing to compare with");
+            Ok(())
+        };
+        run(git().args(["worktree", "remove", "--force"]).arg(&tree))?;
+        measured?;
+    }
+    run(&mut head).map_err(|_| {
+        "a benchmark failed or executes more instructions than its limit allows. \
+         Running them needs Linux, Valgrind and gungraun-runner: see docs/performance.md"
+            .to_owned()
+    })
+}
+
+/// `cargo bench` for the instruction-count benchmarks, ready to take the
+/// benchmark runner's own arguments.
+fn instructions(results: &Path) -> Command {
+    let mut command = cargo();
+    command
+        .args(["bench", "--locked", "--package", "benches"])
+        .args(["--bench", "instructions", "--"])
+        .env("GUNGRAUN_HOME", results);
+    command
+}
+
+fn git() -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(workspace_root());
+    command
 }
 
 /// `cargo fuzz` on the nightly toolchain, run in the fuzz workspace.

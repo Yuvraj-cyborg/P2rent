@@ -1,6 +1,8 @@
 //! Local storage: hashing files into artifacts and reading or writing chunks
 //! in place.
 
+// Every public item is documented.
+#![warn(missing_docs)]
 // A library must not panic on bad input. Tests may.
 #![cfg_attr(
     not(test),
