@@ -101,10 +101,13 @@ async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Re
 
     if indexed.skipped > 0 {
         let entries = match indexed.skipped {
-            1 => "1 entry that is not a regular file".to_owned(),
-            n => format!("{n} entries that are not regular files"),
+            1 => "1 entry".to_owned(),
+            n => format!("{n} entries"),
         };
-        eprintln!("note: skipped {entries} (symlinks are not followed)");
+        eprintln!(
+            "note: left out {entries}. Links that point outside the tree, unfinished \
+             downloads and special files are not sent."
+        );
     }
     Ok(node.seed(Arc::new(indexed.artifact), indexed.root))
 }
