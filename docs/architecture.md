@@ -69,8 +69,9 @@ directory is not itself listed as a directory, which rules out anything
 under a file or behind a link; a link whose target climbs above the root;
 permission bits beyond read, write and execute; and chunk counts that
 disagree with the declared file sizes. The rules on bytes live in
-`artifact::path`, and the ones about a single name and about the order of
-paths are proven.
+`artifact::path` and are proven: a path that passes stays inside the root,
+a link target that passes never climbs above it, and paths in order are all
+different.
 
 ## Storage
 

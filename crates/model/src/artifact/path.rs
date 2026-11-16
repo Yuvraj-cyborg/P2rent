@@ -151,36 +151,51 @@ pub fn parent_len(path: &[u8]) -> usize {
     0
 }
 
+/// Where following `name` leaves a walk that is `level` names below the
+/// root: one level up for `..`, one level down for a safe name. `None` if
+/// the name may not be followed, which includes `..` at the root itself.
+fn follow(name: &[u8], level: u64) -> Option<u64> {
+    if is_parent(name) {
+        if level == 0 {
+            return None;
+        }
+        return Some(level - 1);
+    }
+    if is_safe_name(name) {
+        return Some(level + 1);
+    }
+    None
+}
+
 /// Whether a link that lies `depth` names below the root may point at
 /// `target`. The target is relative: names joined by `/`, each a safe name
 /// or `..`. Followed from the directory that holds the link, it must never
 /// climb above the root.
 pub fn is_safe_target(target: &[u8], depth: u32) -> bool {
-    if target.is_empty() || target.len() > MAX_TARGET_BYTES || depth == 0 {
+    if target.is_empty() {
+        return false;
+    }
+    if target.len() > MAX_TARGET_BYTES {
+        return false;
+    }
+    if depth == 0 {
         return false;
     }
     // How far below the root the walk is. It starts in the link's directory.
     let mut level = u64::from(depth - 1);
     let mut start = 0;
     let mut at = 0;
-    while at <= target.len() {
-        if at == target.len() || target[at] == b'/' {
-            let name = &target[start..at];
-            if is_parent(name) {
-                if level == 0 {
-                    return false;
-                }
-                level -= 1;
-            } else if is_safe_name(name) {
-                level += 1;
-            } else {
-                return false;
+    while at < target.len() {
+        if target[at] == b'/' {
+            match follow(&target[start..at], level) {
+                Some(next) => level = next,
+                None => return false,
             }
             start = at + 1;
         }
         at += 1;
     }
-    true
+    follow(&target[start..], level).is_some()
 }
 
 /// Whether `a` sorts strictly before `b`, comparing byte by byte. Entries
