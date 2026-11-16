@@ -69,7 +69,12 @@ impl Schedule {
 
     /// The state of chunk `index`, or `None` if it is out of range.
     pub fn state(&self, index: u64) -> Option<ChunkState> {
-        self.chunks.get(to_usize(index)).copied()
+        let slot = to_usize(index);
+        if slot < self.chunks.len() {
+            Some(self.chunks[slot])
+        } else {
+            None
+        }
     }
 
     /// Reserves a missing chunk that `available` holds and returns its
