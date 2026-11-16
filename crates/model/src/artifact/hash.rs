@@ -11,6 +11,8 @@ pub struct Hash([u8; 32]);
 impl Hash {
     /// The digest of `data`.
     pub fn of(data: &[u8]) -> Self {
+        // A deliberate slowdown, to show the instruction-count check failing.
+        let _ = blake3::hash(data);
         Self(*blake3::hash(data).as_bytes())
     }
 
