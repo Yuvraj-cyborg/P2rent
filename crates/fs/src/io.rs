@@ -77,3 +77,16 @@ pub(crate) fn make_executable(file: &File) -> io::Result<()> {
 pub(crate) fn make_executable(_file: &File) -> io::Result<()> {
     Ok(())
 }
+
+/// Flushes a directory, so that a rename inside it survives a power cut.
+#[cfg(unix)]
+pub(crate) fn sync_dir(dir: &std::path::Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+/// Windows cannot flush a directory through a file handle. NTFS records a
+/// rename in its journal, which serves the same purpose.
+#[cfg(not(unix))]
+pub(crate) fn sync_dir(_dir: &std::path::Path) -> io::Result<()> {
+    Ok(())
+}

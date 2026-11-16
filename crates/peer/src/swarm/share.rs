@@ -4,7 +4,7 @@ use fs::DiskStore;
 use model::artifact::{Artifact, Bitfield};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A participant is forgotten if it has not asked for status for this long.
@@ -20,7 +20,6 @@ const MAX_PARTICIPANTS: usize = 4096;
 #[derive(Debug)]
 pub struct Share {
     store: DiskStore,
-    have: RwLock<Bitfield>,
     participants: Mutex<HashMap<NodeId, Participant>>,
     uploaded: AtomicU64,
 }
@@ -32,10 +31,9 @@ struct Participant {
 }
 
 impl Share {
-    pub(crate) fn new(store: DiskStore, have: Bitfield) -> Self {
+    pub(crate) fn new(store: DiskStore) -> Self {
         Self {
             store,
-            have: RwLock::new(have),
             participants: Mutex::new(HashMap::new()),
             uploaded: AtomicU64::new(0),
         }
@@ -53,26 +51,22 @@ impl Share {
 
     /// Whether chunk `index` is held.
     pub fn has(&self, index: u64) -> bool {
-        sync::read(&self.have).get(index)
+        self.store.has(index)
     }
 
     /// A snapshot of which chunks are held.
     pub fn have(&self) -> Bitfield {
-        sync::read(&self.have).clone()
+        self.store.held()
     }
 
     /// Whether every chunk is held.
     pub fn is_complete(&self) -> bool {
-        sync::read(&self.have).is_full()
+        self.store.is_complete()
     }
 
     /// Bytes served to other peers so far.
     pub fn uploaded_bytes(&self) -> u64 {
         self.uploaded.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn mark(&self, index: u64) {
-        sync::write(&self.have).set(index);
     }
 
     pub(crate) fn add_uploaded(&self, bytes: u64) {

@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::net::{Endpoint, Identity, NodeId};
 use crate::sync;
 use fs::DiskStore;
-use model::artifact::{Artifact, Bitfield, Hash};
+use model::artifact::{Artifact, Hash};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -56,8 +56,7 @@ impl Node {
     /// Offers a complete artifact whose files live at `root`. Chunks are
     /// served straight from those files.
     pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf) -> Arc<Share> {
-        let have = Bitfield::full(artifact.chunk_count());
-        self.register(Arc::new(Share::new(DiskStore::new(artifact, root), have)))
+        self.register(Arc::new(Share::new(DiskStore::whole(artifact, root))))
     }
 
     /// Adds a share, or returns the one already registered for its artifact.

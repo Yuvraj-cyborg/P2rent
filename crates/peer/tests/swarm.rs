@@ -3,6 +3,7 @@
 mod common;
 
 use common::{CHUNK, get, index, node, options, pattern, peer_info, seed, ticket_for};
+use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
 use peer::swarm::{DownloadOptions, Progress, announce, download};
@@ -152,7 +153,11 @@ async fn forged_data_is_never_accepted() {
 
     assert!(matches!(error, Error::Stalled(_)), "{error}");
     assert_eq!(progress.fetched_bytes(), 0);
-    let written = fs::read(out.join("model.bin")).unwrap();
+    assert!(
+        !out.join("model.bin").exists(),
+        "an unfinished file has its final name"
+    );
+    let written = fs::read(out.join(format!("model.bin{PART_SUFFIX}"))).unwrap();
     assert!(written.iter().all(|&b| b == 0), "forged bytes reached disk");
 }
 

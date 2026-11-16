@@ -63,9 +63,8 @@ impl Session {
         Claims::claim(&self.claims, peer_has, cursor)
     }
 
-    /// Records a chunk that has been verified and written to disk.
+    /// Records a chunk that the store has verified and written to disk.
     pub(super) fn complete(&self, claim: Claim, from: NodeId, bytes: u64) {
-        self.share.mark(claim.index);
         self.progress.add_fetched(bytes);
         *sync::lock(&self.fetched_from).entry(from).or_default() += bytes;
         self.claims.complete(claim);

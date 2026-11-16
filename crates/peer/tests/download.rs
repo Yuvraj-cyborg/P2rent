@@ -107,7 +107,7 @@ async fn a_complete_copy_fetches_nothing() {
 }
 
 #[tokio::test]
-async fn repairs_corrupted_data_in_place() {
+async fn a_damaged_file_is_repaired_by_fetching_only_what_is_wrong() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 10, 6);
