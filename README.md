@@ -150,13 +150,14 @@ Version 0.2 is a rewrite and is not yet production software.
 - If a seeded file changes on disk, its chunks stop verifying and downloaders
   will drop that seeder. Seed again to publish the new contents.
 
-## Roadmap
+## Direction
 
-1. Origin fallback: seed from, and fall back to, an HTTP, S3 or Hugging Face
-   URL, so a swarm is never slower than a direct download.
-2. LAN discovery, so machines on one network need no ticket peers.
-3. Private swarms gated by a shared key or a node allowlist.
-4. A long-running daemon with a disk quota, rate limits and metrics.
+p2rent is growing from a swarm distributor into a general tool and library
+for moving and syncing data between any two places: folders, web URLs, other
+machines and cloud storage. [docs/scope.md](docs/scope.md) describes where it
+is going, the [milestones](https://github.com/Yuvraj-cyborg/P2rent/milestones)
+track the work, and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules a change
+follows.
 
 ## Development
 
