@@ -1,0 +1,23 @@
+[package]
+name = "p2rent-core"
+description = "The p2rent data model: content hashes, manifests and chunk layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["std"]
+# Lets BLAKE3 pick the fastest implementation the CPU supports at run time.
+# This crate's own code never uses `std`, with or without the feature.
+std = ["blake3/std"]
+
+[dependencies]
+blake3.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -633,15 +633,50 @@ name = "p2rent"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "blake3",
  "clap",
- "dirs",
  "indicatif",
+ "p2rent-core",
+ "p2rent-fs",
+ "p2rent-peer",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "p2rent-core"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "postcard",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "p2rent-fs"
+version = "0.2.0"
+dependencies = [
+ "p2rent-core",
+ "rayon",
+ "tempfile",
+ "thiserror",
+ "walkdir",
+]
+
+[[package]]
+name = "p2rent-peer"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "dirs",
  "nix",
+ "p2rent-core",
+ "p2rent-fs",
  "postcard",
  "quinn",
  "quinn-udp",
- "rayon",
  "rcgen",
  "rustls",
  "rustls-webpki",
@@ -650,8 +685,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "tracing-subscriber",
- "walkdir",
 ]
 
 [[package]]

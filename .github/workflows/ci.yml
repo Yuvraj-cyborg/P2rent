@@ -80,6 +80,20 @@ jobs:
           tool: just
       - run: just miri
 
+  pure:
+    name: Core is pure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just pure
+
   size:
     name: Size budget
     runs-on: ubuntu-latest

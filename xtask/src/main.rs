@@ -15,12 +15,19 @@ const MAX_BINARY_BYTES: u64 = 5 * 1024 * 1024;
 /// needed.
 const MAX_DEPENDENCIES: usize = 110;
 
+/// Every crate `p2rent-core` may depend on directly. The core holds the
+/// logic that gets proven, so each addition here is a decision: it must not
+/// bring in a disk, a network, a clock or an async runtime.
+const CORE_DEPENDENCIES: &[&str] = &["blake3", "postcard", "serde", "thiserror"];
+
 fn main() -> ExitCode {
-    if std::env::args().nth(1).as_deref() == Some("size") {
-        finish(size())
-    } else {
-        eprintln!("usage: cargo xtask size");
-        ExitCode::from(2)
+    match std::env::args().nth(1).as_deref() {
+        Some("size") => finish(size()),
+        Some("layers") => finish(layers()),
+        _ => {
+            eprintln!("usage: cargo xtask <size|layers>");
+            ExitCode::from(2)
+        }
     }
 }
 
@@ -80,6 +87,40 @@ fn size() -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Checks that `p2rent-core` depends only on the crates it is allowed to.
+fn layers() -> Result<(), String> {
+    let tree = output(cargo().args([
+        "tree",
+        "--locked",
+        "--edges",
+        "normal",
+        "--depth",
+        "1",
+        "--prefix",
+        "none",
+        "--package",
+        "p2rent-core",
+    ]))?;
+    let unexpected: Vec<&str> = tree
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| !CORE_DEPENDENCIES.contains(name))
+        .collect();
+    if unexpected.is_empty() {
+        println!(
+            "p2rent-core depends only on: {}",
+            CORE_DEPENDENCIES.join(", ")
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "p2rent-core may not depend on {}; see CORE_DEPENDENCIES in xtask/src/main.rs",
+            unexpected.join(", ")
+        ))
+    }
 }
 
 fn cargo() -> Command {

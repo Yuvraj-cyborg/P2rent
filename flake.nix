@@ -10,11 +10,12 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+        workspace = (pkgs.lib.importTOML ./Cargo.toml).workspace.package;
+        manifest = (pkgs.lib.importTOML ./crates/p2rent/Cargo.toml).package;
 
         p2rent = pkgs.rustPlatform.buildRustPackage {
           pname = manifest.name;
-          version = manifest.version;
+          version = workspace.version;
 
           # Only the files that affect the build, so editing docs does not
           # trigger a rebuild.
@@ -23,9 +24,7 @@
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
-              ./src
-              ./tests
-              ./benches
+              ./crates
               ./xtask
             ];
           };
@@ -33,7 +32,7 @@
 
           meta = {
             description = manifest.description;
-            homepage = manifest.repository;
+            homepage = workspace.repository;
             license = pkgs.lib.licenses.mit;
             mainProgram = "p2rent";
           };

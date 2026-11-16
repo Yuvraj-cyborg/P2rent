@@ -59,6 +59,7 @@ locally:
 | `just dupes` | Functions that are near copies of each other. |
 | `just features` | Every combination of features builds. |
 | `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
+| `just pure` | `p2rent-core` builds with no standard library and depends only on the crates it is allowed to. |
 | `just size` | Binary size and dependency count against their budgets. |
 
 CI also checks that the code builds with the minimum supported Rust version
@@ -121,9 +122,8 @@ their output.
 
 The CLI is a thin layer. Every decision is made in the library, and every
 kind of place is its own crate behind a feature, so that other programs can
-embed exactly what they need.
-[#10](https://github.com/Yuvraj-cyborg/P2rent/issues/10) splits the code that
-way, and CI will fail if the core gains a dependency on disk or network.
+embed exactly what they need. `just pure` fails if the core gains a
+dependency on a disk, a network or a clock.
 
 ## Commits
 
