@@ -73,6 +73,7 @@ The checks that are this project's own analysis run locally, with
 
 | Recipe | Checks |
 | --- | --- |
+| `just workflows` | The CI workflow files are valid. |
 | `just unused` | No dependency is declared and never used. |
 | `just dupes` | No function is a near copy of another. |
 | `just pure` | `p2rent-core` builds with no standard library and depends only on the crates it is allowed to. |

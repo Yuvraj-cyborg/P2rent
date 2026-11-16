@@ -55,7 +55,11 @@ miri:
 # ---- Our own analysis. Not part of CI: run it before opening a pull request ----
 
 # Every local analysis check
-analysis: unused dupes pure deps size
+analysis: workflows unused dupes pure deps size
+
+# Check the CI workflow files for mistakes GitHub would reject
+workflows:
+    actionlint
 
 # Dependencies that are declared but never used
 unused:

@@ -83,4 +83,4 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - run: cargo miri test --locked -p p2rent-core
-      - run: cargo miri test --locked -p p2rent-peer --lib -- swarm::ticket::
+      - run: cargo miri test --locked -p p2rent-peer --lib -- 'swarm::ticket::'

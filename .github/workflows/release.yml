@@ -114,7 +114,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: cd artifacts && sha256sum *.tar.gz > checksums-sha256.txt
+        run: cd artifacts && sha256sum -- *.tar.gz > checksums-sha256.txt
 
       - uses: softprops/action-gh-release@v2
         with:
