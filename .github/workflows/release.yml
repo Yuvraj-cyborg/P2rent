@@ -65,9 +65,9 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ matrix.glibc }}" ]; then
-            cargo zigbuild --release --locked --target "${{ matrix.target }}.${{ matrix.glibc }}"
+            cargo zigbuild --release --locked -p p2rent --target "${{ matrix.target }}.${{ matrix.glibc }}"
           else
-            cargo build --release --locked --target "${{ matrix.target }}"
+            cargo build --release --locked -p p2rent --target "${{ matrix.target }}"
           fi
 
       - name: Check the binary starts

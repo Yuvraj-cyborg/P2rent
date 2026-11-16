@@ -93,7 +93,7 @@ if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
 From source:
 
 ```console
-$ cargo install --git https://github.com/Yuvraj-cyborg/P2rent --locked
+$ cargo install --git https://github.com/Yuvraj-cyborg/P2rent --locked p2rent
 ```
 
 With Nix:

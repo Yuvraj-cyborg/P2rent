@@ -74,8 +74,8 @@ milestones below.
 
 ## Layout
 
-The code is one crate today. [#10](https://github.com/Yuvraj-cyborg/P2rent/issues/10)
-splits it into a workspace, and later milestones add the rest.
+`p2rent-core`, `p2rent-fs`, `p2rent-peer` and `p2rent` exist today. Later
+milestones add the rest.
 
 | Crate | Holds |
 | --- | --- |

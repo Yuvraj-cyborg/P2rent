@@ -1,65 +1,43 @@
 [workspace]
-members = ["xtask"]
+resolver = "3"
+members = ["crates/*", "xtask"]
 
-[package]
-name = "p2rent"
+[workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Swarm distribution of large artifacts over QUIC"
 license = "MIT"
-readme = "README.md"
 repository = "https://github.com/Yuvraj-cyborg/P2rent"
-keywords = ["p2p", "quic", "swarm", "blake3", "file-transfer"]
-categories = ["command-line-utilities", "network-programming"]
 
-[features]
-default = ["fast-apple-datapath"]
-# Send and receive UDP packets in batches on macOS. This uses sendmsg_x and
-# recvmsg_x, which Apple does not document as public API. If a future macOS
-# breaks them, build with `--no-default-features`.
-fast-apple-datapath = ["quinn-udp/fast-apple-datapath"]
+# One place for every version. A crate asks for a dependency with
+# `name.workspace = true`.
+[workspace.dependencies]
+p2rent-core = { path = "crates/p2rent-core", version = "0.2.0" }
+p2rent-fs = { path = "crates/p2rent-fs", version = "0.2.0" }
+p2rent-peer = { path = "crates/p2rent-peer", version = "0.2.0", default-features = false }
 
-# `quinn-udp` is never imported: it is listed so that the
-# `fast-apple-datapath` feature can switch on its feature of the same name.
-[package.metadata.cargo-machete]
-ignored = ["quinn-udp"]
-
-[dependencies]
 anyhow = "1"
-blake3 = "1.8"
+blake3 = { version = "1.8", default-features = false }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 indicatif = "0.18"
-postcard = { version = "1", default-features = false, features = ["use-std"] }
+nix = { version = "0.32", default-features = false, features = ["resource"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 quinn-udp = { version = "0.5", default-features = false }
 rayon = "1.10"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+tempfile = "3"
+thiserror = { version = "2", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
 walkdir = "2.5"
 
-[dev-dependencies]
-tempfile = "3"
-
-# A safe wrapper around `getrusage`, so the benchmark needs no `unsafe`.
-[target.'cfg(unix)'.dev-dependencies]
-nix = { version = "0.32", default-features = false, features = ["resource"] }
-
-[[bench]]
-name = "transfer"
-harness = false
-
-[lints]
-workspace = true
-
-# Lints apply to every target. CI turns warnings into errors, so "warn" here
+# Lints apply to every target of every crate. CI turns warnings into errors, so "warn" here
 # means "must be fixed before merging" while keeping local builds going.
 [workspace.lints.rust]
 # The fast path that needs `unsafe` gets its own crate (see CONTRIBUTING.md).

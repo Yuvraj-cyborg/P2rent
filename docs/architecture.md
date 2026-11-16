@@ -1,30 +1,38 @@
 # Architecture
 
-p2rent is one crate with a library and a thin binary. The library is split
-into four layers; each depends only on the ones above it in this table.
+p2rent is a workspace of four crates. Each depends only on the ones above it
+in this table.
 
-| Layer | Path | Responsibility | Knows about |
-| --- | --- | --- | --- |
-| Data model | `src/artifact/` | Hashes, manifests, chunk layout, bitfields | nothing else |
-| Storage | `src/store/` | Hashing files into artifacts; reading and writing chunks in place | artifact |
-| Network | `src/net/` | Node identity, authenticated QUIC, wire messages | artifact |
-| Swarm | `src/swarm/` | What a node serves, how it answers peers, multi-source download | all of the above |
-| CLI | `src/cli/`, `src/main.rs` | Argument parsing, progress bars, output | the library's public API |
+| Crate | Responsibility | Knows about |
+| --- | --- | --- |
+| `p2rent-core` | The data model: hashes, manifests, chunk layout, bitfields | nothing else |
+| `p2rent-fs` | Local folders: hashing files into artifacts; reading and writing chunks in place | core |
+| `p2rent-peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | core, fs |
+| `p2rent` | The library other programs depend on, which re-exports the three above, and the CLI: argument parsing, progress bars, output | all of the above |
+
+`p2rent-core` touches no disk, network or clock and does not use `std`. CI
+builds it for a target that has no standard library and checks that it
+depends only on an allowed list of crates (`just pure`). That is what keeps
+its logic small enough to prove.
 
 ```
-src/
-├── artifact/      hash.rs  manifest.rs  bitfield.rs
-├── store/         index.rs  disk.rs  io.rs
-├── net/           identity.rs  tls.rs  endpoint.rs  proto.rs
-├── swarm/         node.rs  share.rs  server.rs  ticket.rs
-│   └── download/  mod.rs  session.rs  peer.rs
-├── cli/           seed.rs  get.rs  ui.rs
-├── error.rs
-├── sync.rs        locks that recover from poisoning
-├── lib.rs
-└── main.rs
-xtask/             development tasks written in Rust (`cargo xtask`)
-tests/             connection.rs  download.rs  swarm.rs  cli.rs
+crates/
+├── p2rent-core/src/
+│   ├── artifact/      hash.rs  manifest.rs  bitfield.rs
+│   └── hex.rs
+├── p2rent-fs/src/     index.rs  disk.rs  io.rs
+├── p2rent-peer/
+│   ├── src/
+│   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
+│   │   ├── swarm/     node.rs  share.rs  server.rs  ticket.rs
+│   │   │   └── download/  mod.rs  session.rs  peer.rs
+│   │   └── sync.rs    locks that recover from poisoning
+│   ├── tests/         connection.rs  download.rs  swarm.rs
+│   └── benches/       transfer.rs
+└── p2rent/
+    ├── src/           lib.rs  main.rs  cli/
+    └── tests/         cli.rs
+xtask/                 development tasks written in Rust (`cargo xtask`)
 ```
 
 ## Data model

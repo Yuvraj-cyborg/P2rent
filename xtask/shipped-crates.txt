@@ -1,0 +1,99 @@
+# Third-party crates compiled into the released binaries, one per line.
+# A crate that only some release targets use is followed by those targets.
+# Do not edit by hand: run `cargo xtask deps --write`.
+anstream
+anstyle
+anstyle-parse
+anstyle-query
+anstyle-wincon: x86_64-pc-windows-msvc
+anyhow
+arrayvec
+blake3
+bytes
+cfg-if
+chacha20
+clap
+clap_builder
+clap_derive
+clap_lex
+cobs
+colorchoice
+console
+constant_time_eq
+cpufeatures: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
+crossbeam-deque
+crossbeam-epoch
+crossbeam-utils
+deranged
+dirs
+dirs-sys
+either
+encode_unicode: x86_64-pc-windows-msvc
+errno: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+getrandom
+heck
+indicatif
+is_terminal_polyfill
+lazy_static
+libc
+lru-slab
+mio
+nu-ansi-term
+num-conv
+once_cell
+once_cell_polyfill: x86_64-pc-windows-msvc
+option-ext
+pin-project-lite
+portable-atomic
+postcard
+powerfmt
+proc-macro2
+quinn
+quinn-proto
+quinn-udp
+quote
+rand
+rand_core
+rand_pcg
+rayon
+rayon-core
+rcgen
+ring
+rustc-hash
+rustls
+rustls-pki-types
+rustls-webpki
+same-file
+serde
+serde_core
+serde_derive
+sharded-slab
+signal-hook-registry: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+slab
+socket2
+strsim
+subtle
+syn
+thiserror
+thiserror-impl
+thread_local
+time
+time-core
+tinyvec
+tokio
+tokio-macros
+tracing
+tracing-attributes
+tracing-core
+tracing-subscriber
+unicode-ident
+unicode-width
+unit-prefix
+untrusted
+utf8parse
+walkdir
+winapi-util: x86_64-pc-windows-msvc
+windows-link: x86_64-pc-windows-msvc
+windows-sys: x86_64-pc-windows-msvc
+yasna
+zeroize

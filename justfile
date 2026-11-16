@@ -40,7 +40,7 @@ spelling:
 # between them. It does not catch a copy in which every name was changed.
 # Functions shorter than 8 lines are too small to judge.
 dupes:
-    similarity-rs src xtask --threshold 0.92 --min-lines 8 --skip-test --fail-on-duplicates
+    similarity-rs crates xtask --threshold 0.92 --min-lines 8 --skip-test --fail-on-duplicates
 
 # Check that every combination of features builds
 features:
@@ -49,27 +49,35 @@ features:
 # Run the tests that touch neither disk nor network under Miri, which
 # detects undefined behaviour (needs a nightly toolchain with miri)
 miri:
-    cargo +nightly miri test --lib --locked -- artifact:: hex:: swarm::ticket::
+    cargo +nightly miri test --locked -p p2rent-core
+    cargo +nightly miri test --locked -p p2rent-peer --lib -- swarm::ticket::
+
+# The core crate holds the logic that gets proven. It must build with no
+# standard library at all, and may depend only on the crates listed in xtask
+# (needs the thumbv7em-none-eabihf target)
+pure:
+    cargo check --locked -p p2rent-core --no-default-features --target thumbv7em-none-eabihf
+    cargo xtask layers
 
 # Report binary size and dependency count, and fail if either is over budget
 size:
     cargo xtask size
 
 # Everything CI runs
-ci: lint deps spelling dupes features miri size
+ci: lint deps spelling dupes features miri pure size
     cargo test --workspace --locked
 
 # Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
 bench size_mb="1024" seeders="1" runs="3" files="1":
-    P2RENT_BENCH_SIZE_MB={{size_mb}} P2RENT_BENCH_SEEDERS={{seeders}} P2RENT_BENCH_RUNS={{runs}} P2RENT_BENCH_FILES={{files}} cargo bench --locked --bench transfer
+    P2RENT_BENCH_SIZE_MB={{size_mb}} P2RENT_BENCH_SEEDERS={{seeders}} P2RENT_BENCH_RUNS={{runs}} P2RENT_BENCH_FILES={{files}} cargo bench --locked -p p2rent-peer --bench transfer
 
 # Run p2rent from source, e.g. `just run seed ./model.bin`
 run *args:
-    cargo run --release -- {{args}}
+    cargo run --release -p p2rent -- {{args}}
 
 # Install p2rent into ~/.cargo/bin
 install:
-    cargo install --path . --locked
+    cargo install --path crates/p2rent --locked
 
 # Build with Nix and run the flake checks
 nix:
