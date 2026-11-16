@@ -255,6 +255,51 @@ fn a_download_killed_at_any_moment_leaves_only_whole_files_and_resumes() {
     );
 }
 
+/// A link that stays inside the tree is sent. One that points outside it is
+/// left out, and `seed` says so.
+#[cfg(unix)]
+#[test]
+fn seed_says_what_it_left_out() {
+    use std::io::Read;
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("a.bin"), b"data").unwrap();
+    std::os::unix::fs::symlink("a.bin", source.join("inside")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", source.join("outside")).unwrap();
+
+    let mut seeder = KillOnDrop(
+        mux(&tmp.path().join("seed.key"))
+            .args(["seed", "--listen", "127.0.0.1:0"])
+            .arg(&source)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    // The ticket is printed once indexing is done, after any note.
+    let mut ticket = String::new();
+    BufReader::new(seeder.0.stdout.take().unwrap())
+        .read_line(&mut ticket)
+        .unwrap();
+    assert!(
+        ticket.starts_with("mux://"),
+        "unexpected output: {ticket:?}"
+    );
+    seeder.0.kill().unwrap();
+    let mut said = String::new();
+    seeder
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut said)
+        .unwrap();
+
+    assert!(said.contains("note: left out 1 entry."), "{said}");
+    assert!(said.contains("Links that point outside the tree"), "{said}");
+}
+
 #[test]
 fn a_bad_ticket_is_a_usage_error() {
     let tmp = tempfile::tempdir().unwrap();
