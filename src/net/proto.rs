@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+/// Protocol identifier negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"p2rent/2";
 
 /// Requests are tiny; anything larger is a misbehaving peer.
@@ -23,46 +24,73 @@ pub const MAX_REQUEST_BYTES: usize = 1024;
 /// needs one bit per chunk.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
+/// A request, sent as the first frame on a new stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     /// The encoded manifest of an artifact.
-    Manifest { artifact: Hash },
+    Manifest {
+        /// The artifact whose manifest is wanted.
+        artifact: Hash,
+    },
     /// Which chunks the peer holds and which other peers it knows. Sending
     /// this also registers the requester as a participant.
-    Status { artifact: Hash },
+    Status {
+        /// The artifact being asked about.
+        artifact: Hash,
+    },
     /// One chunk.
-    Chunk { artifact: Hash, index: u64 },
+    Chunk {
+        /// The artifact the chunk belongs to.
+        artifact: Hash,
+        /// Position of the chunk in the artifact.
+        index: u64,
+    },
 }
 
+/// The first frame of an answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Response {
     /// Followed by `len` bytes of encoded manifest.
     Manifest {
+        /// Length of the encoded manifest that follows.
         len: u64,
     },
+    /// What the peer holds and whom it knows.
     Status(Status),
     /// Followed by `len` bytes of chunk data.
     Chunk {
+        /// Length of the chunk that follows.
         len: u32,
     },
     /// The peer does not have what was asked for.
     NotFound,
 }
 
+/// What a peer holds of an artifact and whom else it knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
+    /// Chunks the peer holds.
     pub have: Have,
+    /// Other participants the peer has seen recently.
     pub peers: Vec<PeerInfo>,
 }
 
+/// A set of chunks, with a short form for a complete artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Have {
+    /// Every chunk.
     All,
+    /// The chunks whose bits are set.
     Some(Bitfield),
 }
 
 impl Have {
     /// Expands into a bitfield of `chunks` bits, rejecting malformed input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Protocol`] if the bitfield is malformed or does not describe `chunks`
+    /// chunks.
     pub fn into_bitfield(self, chunks: u64) -> Result<Bitfield> {
         match self {
             Have::All => Ok(Bitfield::full(chunks)),
@@ -75,10 +103,18 @@ impl Have {
 /// How to reach another participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerInfo {
+    /// The participant's node id.
     pub node: NodeId,
+    /// Where it can be dialled.
     pub addr: SocketAddr,
 }
 
+/// Writes one length-prefixed message.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] if the message cannot be encoded, and a transport error if the
+/// stream fails.
 pub async fn write_frame<T: Serialize>(send: &mut SendStream, message: &T) -> Result<()> {
     let body = postcard::to_allocvec(message).map_err(|e| Error::Protocol(e.to_string()))?;
     let len = u32::try_from(body.len()).map_err(|_| Error::Protocol("frame too large".into()))?;
@@ -87,6 +123,12 @@ pub async fn write_frame<T: Serialize>(send: &mut SendStream, message: &T) -> Re
     Ok(())
 }
 
+/// Reads one length-prefixed message of at most `max` bytes.
+///
+/// # Errors
+///
+/// Returns [`Error::Protocol`] if the frame is too large or cannot be decoded, and a transport
+/// error if the stream fails.
 pub async fn read_frame<T: DeserializeOwned>(recv: &mut RecvStream, max: usize) -> Result<T> {
     let mut len = [0u8; 4];
     recv.read_exact(&mut len).await?;
@@ -100,6 +142,11 @@ pub async fn read_frame<T: DeserializeOwned>(recv: &mut RecvStream, max: usize) 
     postcard::from_bytes(&body).map_err(|e| Error::Protocol(e.to_string()))
 }
 
+/// Reads exactly `len` raw bytes.
+///
+/// # Errors
+///
+/// Returns a transport error if the stream ends early.
 pub async fn read_payload(recv: &mut RecvStream, len: usize) -> Result<Vec<u8>> {
     let mut payload = vec![0u8; len];
     recv.read_exact(&mut payload).await?;

@@ -1,3 +1,6 @@
+[workspace]
+members = ["xtask"]
+
 [package]
 name = "p2rent"
 version = "0.2.0"
@@ -17,12 +20,17 @@ default = ["fast-apple-datapath"]
 # breaks them, build with `--no-default-features`.
 fast-apple-datapath = ["quinn-udp/fast-apple-datapath"]
 
+# `quinn-udp` is never imported: it is listed so that the
+# `fast-apple-datapath` feature can switch on its feature of the same name.
+[package.metadata.cargo-machete]
+ignored = ["quinn-udp"]
+
 [dependencies]
 anyhow = "1"
 blake3 = "1.8"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
-indicatif = "0.17"
+indicatif = "0.18"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 quinn-udp = { version = "0.5", default-features = false }
@@ -40,12 +48,39 @@ walkdir = "2.5"
 [dev-dependencies]
 tempfile = "3"
 
+# A safe wrapper around `getrusage`, so the benchmark needs no `unsafe`.
 [target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+nix = { version = "0.32", default-features = false, features = ["resource"] }
 
 [[bench]]
 name = "transfer"
 harness = false
+
+[lints]
+workspace = true
+
+# Lints apply to every target. CI turns warnings into errors, so "warn" here
+# means "must be fixed before merging" while keeping local builds going.
+[workspace.lints.rust]
+# The fast path that needs `unsafe` gets its own crate (see CONTRIBUTING.md).
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Switched off, each for a stated reason:
+# Asks for `#[must_use]` on nearly every getter without finding bugs.
+must_use_candidate = "allow"
+# u64 to f64 is only used to print rates and percentages.
+cast_precision_loss = "allow"
 
 [profile.release]
 lto = "thin"

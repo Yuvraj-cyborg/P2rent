@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 #[derive(clap::Args)]
-pub struct Args {
+pub(super) struct Args {
     /// Files or directories to offer
     #[arg(required = true, value_name = "PATH")]
     paths: Vec<PathBuf>,
@@ -30,7 +30,7 @@ pub struct Args {
     chunk_size: u32,
 }
 
-pub async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
+pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&args.chunk_size) {
         bail!(
             "chunk size must be between {} and {} (default {})",
@@ -54,7 +54,7 @@ pub async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
             "seeding  {}  ({}, {})",
             artifact.manifest().name,
             ui::bytes(artifact.total_size()),
-            ui::plural(artifact.chunk_count() as usize, "chunk"),
+            ui::plural(artifact.chunk_count(), "chunk"),
         );
         // The ticket is the only thing on stdout, so it can be piped.
         println!("{}", node.ticket(artifact.id(), &advertised));
@@ -89,7 +89,7 @@ async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Re
     let indexed = loop {
         tokio::select! {
             joined = &mut task => break joined,
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+            () = tokio::time::sleep(Duration::from_millis(100)) => {
                 bar.set_position(hashed.load(Ordering::Relaxed));
             }
         }
@@ -116,7 +116,7 @@ async fn serve_until_interrupted(shares: &[Arc<Share>]) {
     loop {
         tokio::select! {
             _ = &mut interrupted => break,
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+            () = tokio::time::sleep(Duration::from_millis(500)) => {
                 let uploaded: u64 = shares.iter().map(|s| s.uploaded_bytes()).sum();
                 if uploaded > 0 {
                     status.set_message(format!("uploaded {} (Ctrl-C to stop)", ui::bytes(uploaded)));
@@ -160,9 +160,10 @@ fn with_default_port(entry: &str, port: u16) -> String {
     let has_port = entry
         .rsplit_once(':')
         .is_some_and(|(_, port)| port.parse::<u16>().is_ok());
-    match has_port {
-        true => entry.to_owned(),
-        false => format!("{entry}:{port}"),
+    if has_port {
+        entry.to_owned()
+    } else {
+        format!("{entry}:{port}")
     }
 }
 

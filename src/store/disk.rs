@@ -29,10 +29,12 @@ impl DiskStore {
         Self::new(artifact, root)
     }
 
+    /// The artifact this store holds.
     pub fn artifact(&self) -> &Arc<Artifact> {
         &self.artifact
     }
 
+    /// The file itself, or the directory holding the tree.
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -50,6 +52,11 @@ impl DiskStore {
         }
     }
 
+    /// Reads one chunk from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is out of range or the file cannot be read.
     pub fn read_chunk(&self, index: u64) -> Result<Vec<u8>> {
         let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
         let file = File::open(self.file_path(location.file))?;
@@ -60,6 +67,11 @@ impl DiskStore {
 
     /// Writes one chunk in place. The file must have been created by
     /// [`DiskStore::allocate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is out of range, `data` has the wrong length or the file
+    /// cannot be written.
     pub fn write_chunk(&self, index: u64, data: &[u8]) -> Result<()> {
         let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
         if data.len() != location.len as usize {
@@ -76,6 +88,10 @@ impl DiskStore {
 
     /// Creates every directory and file at its final size. Existing files are
     /// kept, so data from an interrupted download survives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a directory or file cannot be created or resized.
     pub fn allocate(&self) -> Result<()> {
         let manifest = self.artifact.manifest();
         for (index, entry) in manifest.files.iter().enumerate() {
@@ -102,6 +118,11 @@ impl DiskStore {
     ///
     /// Missing files cost nothing. `on_bytes` is called from worker threads
     /// with the size of each chunk examined.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a file cannot be read, or if something other than a regular file is in
+    /// the way.
     pub fn scan(&self, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Bitfield> {
         let files = self.artifact.manifest().files.len();
         let valid: Vec<Vec<u64>> = (0..files)
@@ -153,6 +174,10 @@ impl DiskStore {
     }
 
     /// Flushes every file to stable storage and restores execute bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a file cannot be flushed or its permissions cannot be set.
     pub fn finalize(&self) -> Result<()> {
         for (index, entry) in self.artifact.manifest().files.iter().enumerate() {
             let file = OpenOptions::new().write(true).open(self.file_path(index))?;

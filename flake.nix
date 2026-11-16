@@ -26,6 +26,7 @@
               ./src
               ./tests
               ./benches
+              ./xtask
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;

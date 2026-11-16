@@ -1,5 +1,5 @@
 use super::io;
-use crate::artifact::{Artifact, FileEntry, Hash, Kind, Manifest};
+use crate::artifact::{Artifact, FileEntry, Hash, Kind, Manifest, to_usize};
 use crate::error::{Error, Result};
 use rayon::prelude::*;
 use std::fs::File;
@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 /// The result of hashing a local file or directory.
 #[derive(Debug)]
 pub struct Indexed {
+    /// The artifact describing what was hashed.
     pub artifact: Artifact,
     /// Canonical path of the file or directory that was indexed.
     pub root: PathBuf,
@@ -26,6 +27,11 @@ struct Source {
 ///
 /// `on_bytes` is called from worker threads with the size of each chunk as it
 /// is hashed.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be read, is neither a file nor a directory, or contains
+/// a name that is not UTF-8.
 pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Indexed> {
     let root = path.canonicalize()?;
     let name = root
@@ -70,6 +76,10 @@ pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> R
 }
 
 /// Total size in bytes of the regular files under `path`, for progress bars.
+///
+/// # Errors
+///
+/// Returns an error if the path, or anything under it, cannot be read.
 pub fn measure(path: &Path) -> Result<u64> {
     let metadata = std::fs::metadata(path)?;
     if !metadata.is_dir() {
@@ -128,7 +138,7 @@ fn hash_file(
         .map_init(Vec::new, |buf: &mut Vec<u8>, index| {
             let offset = index * chunk_size;
             let len = (size - offset).min(chunk_size);
-            buf.resize(len as usize, 0);
+            buf.resize(to_usize(len), 0);
             io::read_exact_at(&file, buf, offset)?;
             on_bytes(len);
             Ok(Hash::of(buf))

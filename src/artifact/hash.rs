@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub struct Hash([u8; 32]);
 
 impl Hash {
+    /// The digest of `data`.
     pub fn of(data: &[u8]) -> Self {
         Self(*blake3::hash(data).as_bytes())
     }
@@ -17,14 +18,17 @@ impl Hash {
         Self(blake3::derive_key(context, data))
     }
 
+    /// Wraps a digest computed elsewhere.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
+    /// The 32 raw bytes.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
+    /// Lowercase hex, 64 characters.
     pub fn to_hex(&self) -> String {
         hex::encode(&self.0)
     }
@@ -55,6 +59,7 @@ impl FromStr for Hash {
     }
 }
 
+/// The text is not a 64-character hex digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("expected 64 hex characters")]
 pub struct InvalidHash;

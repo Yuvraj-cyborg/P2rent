@@ -163,14 +163,13 @@ follows.
 
 ```console
 $ just          # list tasks
-$ just ci       # format check, clippy, tests
+$ just ci       # every check CI runs
 $ just demo     # three nodes on this machine
 $ just bench    # time a loopback transfer
 ```
 
-`nix develop` provides the toolchain. Without `just`, the same checks are
-`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
-`cargo test`.
+`nix develop` provides the toolchain. [CONTRIBUTING.md](CONTRIBUTING.md)
+lists what each check does and the tools it needs.
 
 ## License
 

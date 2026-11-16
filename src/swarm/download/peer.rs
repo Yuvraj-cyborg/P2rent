@@ -4,6 +4,7 @@ use super::session::Session;
 use crate::artifact::{Bitfield, Hash};
 use crate::error::Error;
 use crate::net::{Connection, PeerInfo};
+use crate::sync;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -99,7 +100,7 @@ async fn refresh(
         .have
         .into_bitfield(session.artifact.chunk_count())
         .map_err(|e| Outcome::Banned(e.to_string()))?;
-    *view.write().unwrap() = have;
+    *sync::write(view) = have;
     for peer in status.peers.into_iter().take(MAX_PEERS_PER_STATUS) {
         session.discover(peer);
     }
@@ -119,13 +120,13 @@ async fn work(
         if session.is_complete() {
             return Ok(());
         }
-        let claim = session.claim(&view.read().unwrap(), &mut cursor);
+        let claim = session.claim(&sync::read(&view), &mut cursor);
         let Some(claim) = claim else {
             // The peer has nothing we need right now. It may gain chunks, or
             // another peer may release one it holds.
             tokio::select! {
-                _ = session.wake.notified() => {}
-                _ = tokio::time::sleep(IDLE_POLL) => {}
+                () = session.wake.notified() => {}
+                () = tokio::time::sleep(IDLE_POLL) => {}
             }
             continue;
         };
@@ -142,7 +143,7 @@ async fn work(
         let data = match timeout(CHUNK_TIMEOUT, request).await {
             Ok(Ok(Some(data))) => data,
             Ok(Ok(None)) => {
-                view.write().unwrap().clear(index);
+                sync::write(&view).clear(index);
                 continue;
             }
             Ok(Err(e)) => return Err(Outcome::Failed(e.to_string())),

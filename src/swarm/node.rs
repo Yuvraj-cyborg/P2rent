@@ -5,6 +5,7 @@ use crate::artifact::{Artifact, Bitfield, Hash};
 use crate::error::Result;
 use crate::net::{Endpoint, Identity, NodeId};
 use crate::store::DiskStore;
+use crate::sync;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,6 +22,10 @@ pub struct Node {
 impl Node {
     /// Binds `addr` and starts answering peers. Must be called from within a
     /// Tokio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint cannot be created or `addr` cannot be bound.
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Arc<Self>> {
         let node = Arc::new(Self {
             endpoint: Endpoint::bind(identity, addr)?,
@@ -30,10 +35,16 @@ impl Node {
         Ok(node)
     }
 
+    /// This node's id.
     pub fn node_id(&self) -> NodeId {
         self.endpoint.node_id()
     }
 
+    /// The address the node listens on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operating system cannot report the address.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.endpoint.local_addr()
     }
@@ -51,16 +62,15 @@ impl Node {
 
     /// Adds a share, or returns the one already registered for its artifact.
     pub(crate) fn register(&self, share: Arc<Share>) -> Arc<Share> {
-        self.shares
-            .write()
-            .unwrap()
+        sync::write(&self.shares)
             .entry(share.artifact().id())
             .or_insert(share)
             .clone()
     }
 
+    /// The share registered for `artifact`, if any.
     pub fn share(&self, artifact: Hash) -> Option<Arc<Share>> {
-        self.shares.read().unwrap().get(&artifact).cloned()
+        sync::read(&self.shares).get(&artifact).cloned()
     }
 
     /// A ticket naming this node as the peer to contact, reachable at each of

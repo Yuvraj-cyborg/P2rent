@@ -42,7 +42,7 @@ enum Command {
     Id,
 }
 
-pub fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
 

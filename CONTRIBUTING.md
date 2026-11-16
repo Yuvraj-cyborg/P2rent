@@ -25,9 +25,12 @@ earn its place.
 - A dependency is added only with a stated reason.
 - Code that no test notices is deleted.
 
-CI will fail on near-duplicate functions, unused dependencies and dead code
-([#8](https://github.com/Yuvraj-cyborg/P2rent/issues/8)). A scheduled
-mutation run will list code that no test notices
+CI fails on near-duplicate functions (`just dupes`), unused dependencies and
+duplicate dependency versions (`just deps`), and dead code (`just lint`). It
+also reports the size of the binary and the number of dependencies on every
+pull request and fails when either is over the budget set in
+`xtask/src/main.rs` (`just size`). A scheduled mutation run will list code
+that no test notices
 ([#11](https://github.com/Yuvraj-cyborg/P2rent/issues/11)).
 
 ## 3. Foundations before features
@@ -46,11 +49,26 @@ case around it.
 
 ## 5. Static analysis is required
 
-Today CI runs `rustfmt`, `clippy` with warnings as errors, and the tests on
-Linux, macOS and Windows. `just ci` runs the same checks locally.
-[#8](https://github.com/Yuvraj-cyborg/P2rent/issues/8) adds checks on
-dependencies, documentation, undefined behaviour, feature combinations and
-binary size.
+Every CI job runs a `just` recipe, so `just ci` runs the same checks
+locally:
+
+| Recipe | Checks |
+| --- | --- |
+| `just lint` | Formatting, `clippy` with its pedantic lints, and the documentation build, all with warnings as errors. Every public item is documented. |
+| `just deps` | Licences, known vulnerabilities, duplicate versions and unused dependencies. |
+| `just spelling` | Spelling in code and documentation. |
+| `just dupes` | Functions that are near copies of each other. |
+| `just features` | Every combination of features builds. |
+| `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
+| `just size` | Binary size and dependency count against their budgets. |
+
+CI also checks that the code builds with the minimum supported Rust version
+and runs the tests on Linux, macOS and Windows.
+
+Library code may not panic on bad input: `unwrap`, `expect` and `panic!` are
+errors outside tests. A lint that produces noise without value is switched
+off in `Cargo.toml` with a written reason, never with an `allow` in the
+code.
 
 ## 6. Verification comes in tiers
 

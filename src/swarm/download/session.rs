@@ -1,7 +1,8 @@
 use super::{DownloadOptions, Progress};
-use crate::artifact::{Artifact, Bitfield};
+use crate::artifact::{Artifact, Bitfield, to_usize};
 use crate::net::{NodeId, PeerInfo};
 use crate::swarm::{Node, Share};
+use crate::sync;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -35,7 +36,7 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub fn new(
+    pub(super) fn new(
         node: Arc<Node>,
         share: Arc<Share>,
         options: DownloadOptions,
@@ -44,9 +45,12 @@ impl Session {
     ) -> Arc<Self> {
         let have = share.have();
         let chunks: Vec<ChunkState> = (0..have.len())
-            .map(|i| match have.get(i) {
-                true => ChunkState::Done,
-                false => ChunkState::Missing,
+            .map(|i| {
+                if have.get(i) {
+                    ChunkState::Done
+                } else {
+                    ChunkState::Missing
+                }
             })
             .collect();
         let remaining = have.len() - have.count_ones();
@@ -67,29 +71,30 @@ impl Session {
         })
     }
 
-    pub fn is_complete(&self) -> bool {
-        self.scheduler.lock().unwrap().remaining == 0
+    pub(super) fn is_complete(&self) -> bool {
+        sync::lock(&self.scheduler).remaining == 0
     }
 
     /// When a chunk was last completed, or when the download started.
-    pub fn last_progress(&self) -> Instant {
-        self.scheduler.lock().unwrap().last_progress
+    pub(super) fn last_progress(&self) -> Instant {
+        sync::lock(&self.scheduler).last_progress
     }
 
     /// Reserves a missing chunk that the peer holds, scanning from `cursor`.
     ///
     /// Each worker starts from a different offset, so concurrent downloaders
     /// collect different parts of the artifact first and can then trade them.
-    pub fn claim(self: &Arc<Self>, peer_has: &Bitfield, cursor: &mut u64) -> Option<Claim> {
-        let mut scheduler = self.scheduler.lock().unwrap();
+    pub(super) fn claim(self: &Arc<Self>, peer_has: &Bitfield, cursor: &mut u64) -> Option<Claim> {
+        let mut scheduler = sync::lock(&self.scheduler);
         let total = scheduler.chunks.len() as u64;
         if scheduler.remaining == 0 {
             return None;
         }
         for step in 0..total {
             let index = (*cursor + step) % total;
-            if scheduler.chunks[index as usize] == ChunkState::Missing && peer_has.get(index) {
-                scheduler.chunks[index as usize] = ChunkState::InFlight;
+            let slot = to_usize(index);
+            if scheduler.chunks[slot] == ChunkState::Missing && peer_has.get(index) {
+                scheduler.chunks[slot] = ChunkState::InFlight;
                 *cursor = (index + 1) % total;
                 return Some(Claim {
                     session: self.clone(),
@@ -102,14 +107,14 @@ impl Session {
     }
 
     /// Records a chunk that has been verified and written to disk.
-    pub fn complete(&self, mut claim: Claim, from: NodeId, bytes: u64) {
+    pub(super) fn complete(&self, mut claim: Claim, from: NodeId, bytes: u64) {
         claim.settled = true;
         self.share.mark(claim.index);
         self.progress.add_fetched(bytes);
-        *self.fetched_from.lock().unwrap().entry(from).or_default() += bytes;
+        *sync::lock(&self.fetched_from).entry(from).or_default() += bytes;
 
-        let mut scheduler = self.scheduler.lock().unwrap();
-        scheduler.chunks[claim.index as usize] = ChunkState::Done;
+        let mut scheduler = sync::lock(&self.scheduler);
+        scheduler.chunks[to_usize(claim.index)] = ChunkState::Done;
         scheduler.remaining -= 1;
         scheduler.last_progress = Instant::now();
         if scheduler.remaining == 0 {
@@ -118,20 +123,17 @@ impl Session {
     }
 
     fn release(&self, index: u64) {
-        self.scheduler.lock().unwrap().chunks[index as usize] = ChunkState::Missing;
+        sync::lock(&self.scheduler).chunks[to_usize(index)] = ChunkState::Missing;
         self.wake.notify_waiters();
     }
 
     /// Reports a peer learned from another peer.
-    pub fn discover(&self, peer: PeerInfo) {
+    pub(super) fn discover(&self, peer: PeerInfo) {
         let _ = self.discovered.send(peer);
     }
 
-    pub fn fetched_from(&self) -> Vec<(NodeId, u64)> {
-        let mut sources: Vec<_> = self
-            .fetched_from
-            .lock()
-            .unwrap()
+    pub(super) fn fetched_from(&self) -> Vec<(NodeId, u64)> {
+        let mut sources: Vec<_> = sync::lock(&self.fetched_from)
             .iter()
             .map(|(&node, &bytes)| (node, bytes))
             .collect();

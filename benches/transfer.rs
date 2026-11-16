@@ -100,9 +100,12 @@ fn main() {
                 report
             })
             .expect("download failed");
-        let cpu = cpu_time()
-            .zip(cpu_before)
-            .map(|(after, before)| (after.0 - before.0, after.1 - before.1));
+        let cpu = cpu_time().zip(cpu_before).map(|(after, before)| {
+            (
+                after.0.saturating_sub(before.0),
+                after.1.saturating_sub(before.1),
+            )
+        });
         assert_eq!(report.fetched_bytes, size, "download was not complete");
 
         let per_second = size as f64 / MIB as f64 / report.elapsed.as_secs_f64();
@@ -125,8 +128,8 @@ fn main() {
 
     // CPU time covers every node in this process, seeders included. It is
     // steadier than wall time, which also depends on the disk.
-    rates.sort_by(|a, b| a.total_cmp(b));
-    cpu_per_gib.sort_by(|a, b| a.total_cmp(b));
+    rates.sort_by(f64::total_cmp);
+    cpu_per_gib.sort_by(f64::total_cmp);
     match cpu_per_gib.get(cpu_per_gib.len() / 2) {
         Some(cost) => println!(
             "median    {:>5.0} MiB/s            {cost:.2} cpu-s/GiB",
@@ -154,11 +157,11 @@ fn setting(name: &str, default: u64) -> u64 {
 /// of `files` equal parts, and returns the path to seed.
 fn generate(dir: &Path, size: u64, files: u64) -> PathBuf {
     let mut stream = blake3::Hasher::new().update(b"p2rent bench").finalize_xof();
-    let mut block = vec![0u8; 4 * MIB as usize];
+    let mut block = vec![0u8; 4 << 20];
     let mut write = |path: &Path, mut remaining: u64| {
         let mut file = File::create(path).expect("cannot create bench data");
         while remaining > 0 {
-            let n = remaining.min(block.len() as u64) as usize;
+            let n = usize::try_from(remaining).map_or(block.len(), |r| r.min(block.len()));
             stream.fill(&mut block[..n]);
             file.write_all(&block[..n])
                 .expect("cannot write bench data");
@@ -195,19 +198,15 @@ fn rate(bytes: u64, elapsed: Duration) -> String {
 /// User and system CPU time used by this process so far.
 #[cfg(unix)]
 fn cpu_time() -> Option<(Duration, Duration)> {
-    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    // SAFETY: `getrusage` fills the struct it is given and reports failure
-    // through its return value.
-    let usage = unsafe {
-        if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) != 0 {
-            return None;
-        }
-        usage.assume_init()
-    };
-    let seconds = |time: libc::timeval| {
-        Duration::from_secs(time.tv_sec as u64) + Duration::from_micros(time.tv_usec as u64)
-    };
-    Some((seconds(usage.ru_utime), seconds(usage.ru_stime)))
+    use nix::sys::resource::{UsageWho, getrusage};
+    use nix::sys::time::TimeValLike;
+
+    let usage = getrusage(UsageWho::RUSAGE_SELF).ok()?;
+    let duration = |micros: i64| u64::try_from(micros).ok().map(Duration::from_micros);
+    Some((
+        duration(usage.user_time().num_microseconds())?,
+        duration(usage.system_time().num_microseconds())?,
+    ))
 }
 
 #[cfg(not(unix))]

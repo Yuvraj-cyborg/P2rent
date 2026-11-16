@@ -18,10 +18,12 @@ const ED25519_SPKI_PREFIX: [u8; 12] = [
 pub struct NodeId([u8; 32]);
 
 impl NodeId {
+    /// Wraps a raw Ed25519 public key.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 
+    /// The raw Ed25519 public key.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -77,11 +79,21 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// Creates a new random key pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Identity`] if key generation fails.
     pub fn generate() -> Result<Self> {
-        let key = KeyPair::generate_for(&PKCS_ED25519).map_err(key_error)?;
+        let key = KeyPair::generate_for(&PKCS_ED25519)?;
         Self::from_pkcs8(key.serialize_der())
     }
 
+    /// Loads a key pair from PKCS#8 DER bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Identity`] if the bytes are not an Ed25519 private key.
     pub fn from_pkcs8(pkcs8: Vec<u8>) -> Result<Self> {
         let key = parse_key(&pkcs8)?;
         let public = <[u8; 32]>::try_from(key.public_key_raw())
@@ -96,6 +108,11 @@ impl Identity {
     ///
     /// A file that exists but cannot be read is an error: silently replacing
     /// it would change the node's identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Identity`] if the file exists but does not hold a valid key, and
+    /// [`Error::Io`] if it cannot be read or created.
     pub fn load_or_create(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
@@ -121,6 +138,7 @@ impl Identity {
             .join("node.key")
     }
 
+    /// The public half, which names this node.
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -146,8 +164,7 @@ impl Identity {
     pub(crate) fn tls_material(&self) -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
         let key = parse_key(&self.pkcs8)?;
         let certificate = CertificateParams::new(vec!["p2rent".to_owned()])
-            .and_then(|params| params.self_signed(&key))
-            .map_err(key_error)?;
+            .and_then(|params| params.self_signed(&key))?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.pkcs8.clone()));
         Ok((certificate.der().clone(), key))
     }
@@ -163,11 +180,7 @@ impl fmt::Debug for Identity {
 
 fn parse_key(pkcs8: &[u8]) -> Result<KeyPair> {
     KeyPair::from_pkcs8_der_and_sign_algo(&PrivatePkcs8KeyDer::from(pkcs8), &PKCS_ED25519)
-        .map_err(key_error)
-}
-
-fn key_error(e: rcgen::Error) -> Error {
-    Error::Identity(e.to_string())
+        .map_err(Error::from)
 }
 
 #[cfg(test)]

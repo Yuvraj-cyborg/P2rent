@@ -1,3 +1,5 @@
+//! The p2rent command-line tool.
+
 mod cli;
 
 fn main() -> std::process::ExitCode {

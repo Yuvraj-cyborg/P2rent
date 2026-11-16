@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(clap::Args)]
-pub struct Args {
+pub(super) struct Args {
     /// Ticket printed by `p2rent seed`
     ticket: Ticket,
 
@@ -38,7 +38,7 @@ pub struct Args {
     stall_timeout: u64,
 }
 
-pub async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
+pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     let mut ticket = args.ticket;
     ticket.peers.extend(args.peers);
 
@@ -87,7 +87,7 @@ async fn download_with_progress(
     let outcome = loop {
         tokio::select! {
             outcome = &mut transfer => break outcome,
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
         }
         let current = progress.phase();
         if current != phase {
