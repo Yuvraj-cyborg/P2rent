@@ -1,6 +1,8 @@
 //! Machine-to-machine transfer: node identity, authenticated QUIC
 //! connections, the wire protocol and the swarm built on them.
 
+// Every public item is documented.
+#![warn(missing_docs)]
 // A library must not panic on bad input. Tests may.
 #![cfg_attr(
     not(test),

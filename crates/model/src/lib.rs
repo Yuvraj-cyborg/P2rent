@@ -5,6 +5,8 @@
 //! anywhere.
 
 #![cfg_attr(not(test), no_std)]
+// Every public item is documented.
+#![warn(missing_docs)]
 // A library must not panic on bad input. Tests may.
 #![cfg_attr(
     not(test),

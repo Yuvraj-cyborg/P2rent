@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "benches", "xtask"]
 # Fuzzing needs a nightly compiler, so the fuzz targets are a workspace of
 # their own.
 exclude = ["fuzz"]
@@ -23,6 +23,7 @@ anyhow = "1"
 blake3 = { version = "1.8", default-features = false }
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
+gungraun = "0.20"
 indicatif = "0.18"
 nix = { version = "0.32", default-features = false, features = ["resource"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
@@ -43,10 +44,12 @@ walkdir = "2.5"
 
 # Lints apply to every target of every crate. CI turns warnings into errors, so "warn" here
 # means "must be fixed before merging" while keeping local builds going.
+#
+# Two rules are about a library's public surface only, so each library sets them at the top of
+# its `lib.rs` instead: every public item is documented, and nothing panics on bad input.
 [workspace.lints.rust]
 # The fast path that needs `unsafe` gets its own crate (see CONTRIBUTING.md).
 unsafe_code = "forbid"
-missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 unused = { level = "warn", priority = -1 }
@@ -70,3 +73,9 @@ cast_precision_loss = "allow"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The instruction-count benchmarks run under Valgrind, which needs symbols to
+# tell where a benchmark starts and ends.
+[profile.bench]
+debug = true
+strip = false
