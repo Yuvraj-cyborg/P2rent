@@ -10,10 +10,11 @@ use std::process::{Command, ExitCode};
 /// what the extra bytes buy.
 const MAX_BINARY_BYTES: u64 = 5 * 1024 * 1024;
 
-/// Most crates allowed in the dependency tree of the shipped binary. Raise it
-/// only in a pull request that names the new dependencies and why they are
-/// needed.
-const MAX_DEPENDENCIES: usize = 110;
+/// Most third-party crates allowed in the dependency tree of the shipped
+/// binary, counted across every platform so that the number is the same
+/// whichever machine runs the check. Raise it only in a pull request that
+/// names the new dependencies and why they are needed.
+const MAX_DEPENDENCIES: usize = 130;
 
 /// Every crate `p2rent-core` may depend on directly. The core holds the
 /// logic that gets proven, so each addition here is a decision: it must not
@@ -61,13 +62,17 @@ fn size() -> Result<(), String> {
         "normal",
         "--prefix",
         "none",
+        "--target",
+        "all",
         "--package",
         "p2rent",
     ]))?;
+    // This workspace's own crates are not dependencies in the sense meant
+    // here.
     let crates: BTreeSet<&str> = tree
         .lines()
         .map(|line| line.trim_end_matches(" (*)"))
-        .filter(|line| !line.is_empty() && !line.starts_with("p2rent "))
+        .filter(|line| !line.is_empty() && !line.starts_with("p2rent"))
         .collect();
 
     println!("| Measure | Now | Budget |");
