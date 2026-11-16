@@ -110,7 +110,7 @@ def artifact.bitfield.Bitfield.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [model::artifact::to_usize]:
-    Source: 'crates/model/src/artifact/mod.rs', lines 24:0-26:1
+    Source: 'crates/model/src/artifact/mod.rs', lines 26:0-28:1
     Visibility: public -/
 def artifact.to_usize (n : Std.U64) : Result Std.Usize := do
   let r ← Usize.Insts.CoreConvertTryFromU64TryFromIntError.try_from n
@@ -712,6 +712,445 @@ def artifact.layout.Layout.locate
       let len ← artifact.layout.to_u32 remaining
       ok (some { file, offset, len })
     else ok (some { file, offset, len := self.chunk_size })
+
+/-- [model::artifact::path::MAX_NAME_BYTES]
+    Source: 'crates/model/src/artifact/path.rs', lines 11:0-11:38
+    Visibility: public -/
+@[global_simps, irreducible]
+def artifact.path.MAX_NAME_BYTES : Std.Usize := 246#usize
+
+/-- [model::artifact::path::MAX_TARGET_BYTES]
+    Source: 'crates/model/src/artifact/path.rs', lines 14:0-14:41
+    Visibility: public -/
+@[global_simps, irreducible]
+def artifact.path.MAX_TARGET_BYTES : Std.Usize := 4096#usize
+
+/-- [model::artifact::path::PART_SUFFIX]
+    Source: 'crates/model/src/artifact/path.rs', lines 17:0-17:43 -/
+@[global_simps, irreducible]
+def artifact.path.PART_SUFFIX : Array Std.U8 9#usize :=
+  Array.make 9#usize [
+    46#u8, 109#u8, 117#u8, 120#u8, 45#u8, 112#u8, 97#u8, 114#u8, 116#u8
+    ]
+
+/-- [model::artifact::path::lower]:
+    Source: 'crates/model/src/artifact/path.rs', lines 20:0-28:1 -/
+def artifact.path.lower (byte : Std.U8) : Result Std.U8 := do
+  if byte < 65#u8
+  then ok byte
+  else if byte > 90#u8
+       then ok byte
+       else byte + 32#u8
+
+/-- [model::artifact::path::is_part_name]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 37:4-44:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.is_part_name_loop.body
+  («name» : Slice Std.U8) (start : Std.Usize) («at» : Std.Usize) :
+  Result (ControlFlow Std.Usize Bool)
+  := do
+  let s ← lift (Array.to_slice artifact.path.PART_SUFFIX)
+  let i := Slice.len s
+  if «at» < i
+  then
+    let i1 ← start + «at»
+    let i2 ← Slice.index_usize «name» i1
+    let i3 ← artifact.path.lower i2
+    let i4 ← Array.index_usize artifact.path.PART_SUFFIX «at»
+    if i3 != i4
+    then ok (done false)
+    else let at1 ← «at» + 1#usize
+         ok (cont at1)
+  else ok (done true)
+
+/-- [model::artifact::path::is_part_name]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 37:4-44:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.is_part_name_loop
+  («name» : Slice Std.U8) (start : Std.Usize) («at» : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun at1 => artifact.path.is_part_name_loop.body «name» start at1)
+    «at»
+
+/-- [model::artifact::path::is_part_name]:
+    Source: 'crates/model/src/artifact/path.rs', lines 31:0-44:1
+    Visibility: public -/
+def artifact.path.is_part_name («name» : Slice Std.U8) : Result Bool := do
+  let i := Slice.len «name»
+  let s ← lift (Array.to_slice artifact.path.PART_SUFFIX)
+  let i1 := Slice.len s
+  if i < i1
+  then ok false
+  else
+    let i2 := Slice.len «name»
+    let s1 ← lift (Array.to_slice artifact.path.PART_SUFFIX)
+    let i3 := Slice.len s1
+    let start ← i2 - i3
+    artifact.path.is_part_name_loop «name» start 0#usize
+
+/-- [model::artifact::path::is_current]:
+    Source: 'crates/model/src/artifact/path.rs', lines 47:0-52:1 -/
+def artifact.path.is_current («name» : Slice Std.U8) : Result Bool := do
+  let i := Slice.len «name»
+  if i != 1#usize
+  then ok false
+  else let i1 ← Slice.index_usize «name» 0#usize
+       ok (i1 = 46#u8)
+
+/-- [model::artifact::path::is_parent]:
+    Source: 'crates/model/src/artifact/path.rs', lines 55:0-63:1 -/
+def artifact.path.is_parent («name» : Slice Std.U8) : Result Bool := do
+  let i := Slice.len «name»
+  if i != 2#usize
+  then ok false
+  else
+    let i1 ← Slice.index_usize «name» 0#usize
+    if i1 != 46#u8
+    then ok false
+    else let i2 ← Slice.index_usize «name» 1#usize
+         ok (i2 = 46#u8)
+
+/-- [model::artifact::path::is_separator]:
+    Source: 'crates/model/src/artifact/path.rs', lines 67:0-78:1 -/
+def artifact.path.is_separator (byte : Std.U8) : Result Bool := do
+  if byte = 47#u8
+  then ok true
+  else
+    if byte = 92#u8
+    then ok true
+    else if byte = 58#u8
+         then ok true
+         else ok (byte = 0#u8)
+
+/-- [model::artifact::path::is_safe_name]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 98:4-105:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.is_safe_name_loop.body
+  («name» : Slice Std.U8) («at» : Std.Usize) :
+  Result (ControlFlow Std.Usize Bool)
+  := do
+  let i := Slice.len «name»
+  if «at» < i
+  then
+    let i1 ← Slice.index_usize «name» «at»
+    let b ← artifact.path.is_separator i1
+    if b
+    then ok (done false)
+    else let at1 ← «at» + 1#usize
+         ok (cont at1)
+  else let b ← artifact.path.is_part_name «name»
+       ok (done (¬ b))
+
+/-- [model::artifact::path::is_safe_name]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 98:4-105:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.is_safe_name_loop
+  («name» : Slice Std.U8) («at» : Std.Usize) : Result Bool := do
+  loop
+    (fun at1 => artifact.path.is_safe_name_loop.body «name» at1)
+    «at»
+
+/-- [model::artifact::path::is_safe_name]:
+    Source: 'crates/model/src/artifact/path.rs', lines 84:0-105:1
+    Visibility: public -/
+def artifact.path.is_safe_name («name» : Slice Std.U8) : Result Bool := do
+  let b ← core.slice.Slice.is_empty «name»
+  if b
+  then ok false
+  else
+    let i := Slice.len «name»
+    if i > artifact.path.MAX_NAME_BYTES
+    then ok false
+    else
+      let b1 ← artifact.path.is_current «name»
+      if b1
+      then ok false
+      else
+        let b2 ← artifact.path.is_parent «name»
+        if b2
+        then ok false
+        else artifact.path.is_safe_name_loop «name» 0#usize
+
+/-- [model::artifact::path::is_safe_path]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 112:4-122:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.is_safe_path_loop.body
+  (path : Slice Std.U8) (start : Std.Usize) («at» : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize) Bool)
+  := do
+  let i := Slice.len path
+  if «at» < i
+  then
+    let i1 ← Slice.index_usize path «at»
+    if i1 = 47#u8
+    then
+      let s ←
+        core.slice.index.Slice.index
+          (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) path
+          { start, «end» := «at» }
+      let b ← artifact.path.is_safe_name s
+      if b
+      then let start1 ← «at» + 1#usize
+           ok (cont (start1, start1))
+      else ok (done false)
+    else let at1 ← «at» + 1#usize
+         ok (cont (start, at1))
+  else
+    let s ←
+      core.slice.index.Slice.index
+        (core.slice.index.SliceIndexRangeFromUsizeSlice Std.U8) path 
+        { start }
+    let b ← artifact.path.is_safe_name s
+    ok (done b)
+
+/-- [model::artifact::path::is_safe_path]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 112:4-122:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.is_safe_path_loop
+  (path : Slice Std.U8) (start : Std.Usize) («at» : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (start1, at1) => artifact.path.is_safe_path_loop.body path start1 at1)
+    (start, «at»)
+
+/-- [model::artifact::path::is_safe_path]:
+    Source: 'crates/model/src/artifact/path.rs', lines 109:0-122:1
+    Visibility: public -/
+@[reducible]
+def artifact.path.is_safe_path (path : Slice Std.U8) : Result Bool := do
+  artifact.path.is_safe_path_loop path 0#usize 0#usize
+
+/-- [model::artifact::path::depth]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 132:4-137:5
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.depth_loop.body
+  (path : Slice Std.U8) (names : Std.U32) («at» : Std.Usize) :
+  Result (ControlFlow (Std.U32 × Std.Usize) Std.U32)
+  := do
+  let i := Slice.len path
+  if «at» < i
+  then
+    let i1 ← Slice.index_usize path «at»
+    let names1 ←
+      if i1 = 47#u8
+      then if names < core.num.U32.MAX
+           then names + 1#u32
+           else ok names
+      else ok names
+    let at1 ← «at» + 1#usize
+    ok (cont (names1, at1))
+  else ok (done names)
+
+/-- [model::artifact::path::depth]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 132:4-137:5
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.depth_loop
+  (path : Slice Std.U8) (names : Std.U32) («at» : Std.Usize) :
+  Result Std.U32
+  := do
+  loop
+    (fun (names1, at1) => artifact.path.depth_loop.body path names1 at1)
+    (names, «at»)
+
+/-- [model::artifact::path::depth]:
+    Source: 'crates/model/src/artifact/path.rs', lines 126:0-139:1
+    Visibility: public -/
+def artifact.path.depth (path : Slice Std.U8) : Result Std.U32 := do
+  let b ← core.slice.Slice.is_empty path
+  if b
+  then ok 0#u32
+  else artifact.path.depth_loop path 1#u32 0#usize
+
+/-- [model::artifact::path::parent_len]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 145:4-152:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.parent_len_loop.body
+  (path : Slice Std.U8) («at» : Std.Usize) :
+  Result (ControlFlow Std.Usize Std.Usize)
+  := do
+  if «at» > 0#usize
+  then
+    let at1 ← «at» - 1#usize
+    let i ← Slice.index_usize path at1
+    if i = 47#u8
+    then ok (done at1)
+    else ok (cont at1)
+  else ok (done 0#usize)
+
+/-- [model::artifact::path::parent_len]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 145:4-152:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.parent_len_loop
+  (path : Slice Std.U8) («at» : Std.Usize) : Result Std.Usize := do
+  loop
+    (fun at1 => artifact.path.parent_len_loop.body path at1)
+    «at»
+
+/-- [model::artifact::path::parent_len]:
+    Source: 'crates/model/src/artifact/path.rs', lines 143:0-152:1
+    Visibility: public -/
+def artifact.path.parent_len (path : Slice Std.U8) : Result Std.Usize := do
+  let «at» := Slice.len path
+  artifact.path.parent_len_loop path «at»
+
+/-- [model::artifact::path::is_safe_target]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 166:4-184:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.is_safe_target_loop.body
+  (target : Slice Std.U8) (level : Std.U64) (start : Std.Usize)
+  («at» : Std.Usize) :
+  Result (ControlFlow (Std.U64 × Std.Usize × Std.Usize) Bool)
+  := do
+  let i := Slice.len target
+  if «at» <= i
+  then
+    let i1 := Slice.len target
+    if «at» = i1
+    then
+      let «name» ←
+        core.slice.index.Slice.index
+          (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) target
+          { start, «end» := «at» }
+      let b ← artifact.path.is_parent «name»
+      if b
+      then
+        if level = 0#u64
+        then ok (done false)
+        else
+          let level1 ← level - 1#u64
+          let start1 ← «at» + 1#usize
+          ok (cont (level1, start1, start1))
+      else
+        let b1 ← artifact.path.is_safe_name «name»
+        if b1
+        then
+          let level1 ← level + 1#u64
+          let start1 ← «at» + 1#usize
+          ok (cont (level1, start1, start1))
+        else ok (done false)
+    else
+      let i2 ← Slice.index_usize target «at»
+      if i2 = 47#u8
+      then
+        let «name» ←
+          core.slice.index.Slice.index
+            (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) target
+            { start, «end» := «at» }
+        let b ← artifact.path.is_parent «name»
+        if b
+        then
+          if level = 0#u64
+          then ok (done false)
+          else
+            let level1 ← level - 1#u64
+            let start1 ← «at» + 1#usize
+            ok (cont (level1, start1, start1))
+        else
+          let b1 ← artifact.path.is_safe_name «name»
+          if b1
+          then
+            let level1 ← level + 1#u64
+            let start1 ← «at» + 1#usize
+            ok (cont (level1, start1, start1))
+          else ok (done false)
+      else let at1 ← «at» + 1#usize
+           ok (cont (level, start, at1))
+  else ok (done true)
+
+/-- [model::artifact::path::is_safe_target]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 166:4-184:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.is_safe_target_loop
+  (target : Slice Std.U8) (level : Std.U64) (start : Std.Usize)
+  («at» : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (level1, start1, at1) => artifact.path.is_safe_target_loop.body target
+      level1 start1 at1)
+    (level, start, «at»)
+
+/-- [model::artifact::path::is_safe_target]:
+    Source: 'crates/model/src/artifact/path.rs', lines 158:0-184:1
+    Visibility: public -/
+def artifact.path.is_safe_target
+  (target : Slice Std.U8) (depth : Std.U32) : Result Bool := do
+  let b ← core.slice.Slice.is_empty target
+  if b
+  then ok false
+  else
+    let i := Slice.len target
+    if i > artifact.path.MAX_TARGET_BYTES
+    then ok false
+    else
+      if depth = 0#u32
+      then ok false
+      else
+        let i1 ← depth - 1#u32
+        let level ← lift (core.convert.num.FromU64U32.from i1)
+        artifact.path.is_safe_target_loop target level 0#usize 0#usize
+
+/-- [model::artifact::path::precedes]: loop body 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 191:4-198:1
+    Visibility: public -/
+@[rust_loop_body]
+def artifact.path.precedes_loop.body
+  (a : Slice Std.U8) (b : Slice Std.U8) («at» : Std.Usize) :
+  Result (ControlFlow Std.Usize Bool)
+  := do
+  let i := Slice.len a
+  if «at» < i
+  then
+    let i1 := Slice.len b
+    if «at» < i1
+    then
+      let i2 ← Slice.index_usize a «at»
+      let i3 ← Slice.index_usize b «at»
+      if i2 != i3
+      then ok (done (i2 < i3))
+      else let at1 ← «at» + 1#usize
+           ok (cont at1)
+    else let i2 := Slice.len a
+         let i3 := Slice.len b
+         ok (done (i2 < i3))
+  else let i1 := Slice.len a
+       let i2 := Slice.len b
+       ok (done (i1 < i2))
+
+/-- [model::artifact::path::precedes]: loop 0:
+    Source: 'crates/model/src/artifact/path.rs', lines 191:4-198:1
+    Visibility: public -/
+@[rust_loop]
+def artifact.path.precedes_loop
+  (a : Slice Std.U8) (b : Slice Std.U8) («at» : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun at1 => artifact.path.precedes_loop.body a b at1)
+    «at»
+
+/-- [model::artifact::path::precedes]:
+    Source: 'crates/model/src/artifact/path.rs', lines 189:0-198:1
+    Visibility: public -/
+@[reducible]
+def artifact.path.precedes
+  (a : Slice Std.U8) (b : Slice Std.U8) : Result Bool := do
+  artifact.path.precedes_loop a b 0#usize
 
 /-- [model::assembly::{impl core::clone::Clone for model::assembly::Assembly}::clone]:
     Source: 'crates/model/src/assembly.rs', lines 14:9-14:14

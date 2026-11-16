@@ -6,12 +6,13 @@ test covers only the inputs someone tried.
 
 ## What is proven
 
-Four modules of `crates/model` are translated:
+Five modules of `crates/model` are translated:
 
 | Module | Holds |
 | --- | --- |
 | `artifact::bitfield` | The set of chunks a node holds. |
 | `artifact::layout` | Which file, offset and length each chunk has. |
+| `artifact::path` | Which names and paths a manifest may use. Proven so far: the check on a single name, and the order that keeps paths distinct. |
 | `assembly` | Which files are whole, and so may take their final names. |
 | `schedule` | Which chunk to fetch next, and what state each is in. |
 
@@ -53,7 +54,7 @@ by tests, fuzzing and simulation.
 
 ## Writing code that can be proven
 
-The translator accepts a plain subset of Rust. In the four modules above:
+The translator accepts a plain subset of Rust. In the five modules above:
 
 - loops and indexing, not iterators and closures;
 - no strings, hashing, I/O or `unsafe`;
