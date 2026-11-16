@@ -1,4 +1,4 @@
-# How p2rent works
+# How mux works
 
 A picture-first walk through one artifact, from `seed` to a finished swarm.
 For module layout see [architecture](architecture.md); for the bytes on the
@@ -10,7 +10,7 @@ When many machines download the same thing from one place, they split that
 place's uplink between them. Ten machines each get a tenth.
 
 ```
- direct download                    p2rent
+ direct download                    mux
 
       source                        source ─── A ─── C
    ┌──┬──┼──┬──┐                       │   ╲   │   ╱ │
@@ -25,7 +25,7 @@ fleet grows.
 
 ## 1. Seeding turns files into a ticket
 
-`p2rent seed` reads the files once, splits each into fixed-size chunks and
+`mux seed` reads the files once, splits each into fixed-size chunks and
 hashes every chunk. The list of files and chunk hashes is the manifest. The
 hash of the manifest is the artifact id.
 
@@ -42,7 +42,7 @@ Nothing is copied. The seeder serves straight from the original files.
 ## 2. The ticket says what, who and where
 
 ```
-p2rent://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
          └───────┬───────┘      └───────┬───────┘ └─────┬─────┘
            what to fetch          who to trust    where they are
       (hash of the manifest)    (node public key)
@@ -102,7 +102,7 @@ chunks are replaced.
 
 ## What this buys as the fleet grows
 
-This is a model, not a measurement. p2rent has so far been run with three
+This is a model, not a measurement. mux has so far been run with three
 nodes on one machine.
 
 Assume a 50 GB artifact and a 1 Gbit/s link on every machine, source included.

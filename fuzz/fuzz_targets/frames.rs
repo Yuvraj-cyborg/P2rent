@@ -5,8 +5,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use p2rent_core::schedule::Schedule;
-use p2rent_peer::net::proto::{Request, Response};
+use model::schedule::Schedule;
+use peer::net::proto::{Request, Response};
 
 fuzz_target!(|data: &[u8]| {
     let _ = postcard::from_bytes::<Request>(data);
@@ -25,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
 
     // A peer's claimed set is what the scheduler works from: claiming
     // against it must stay in range and must end.
-    let mut schedule = Schedule::new(&p2rent_core::artifact::Bitfield::new(chunks));
+    let mut schedule = Schedule::new(&model::artifact::Bitfield::new(chunks));
     let mut cursor = chunks / 2;
     let mut claimed = 0;
     while let Some(index) = schedule.claim(&have, &mut cursor) {

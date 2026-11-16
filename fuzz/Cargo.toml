@@ -1,5 +1,5 @@
 [package]
-name = "p2rent-fuzz"
+name = "fuzz"
 version = "0.0.0"
 edition = "2024"
 license = "MIT"
@@ -11,8 +11,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-p2rent-core = { path = "../crates/p2rent-core" }
-p2rent-peer = { path = "../crates/p2rent-peer", default-features = false }
+model = { path = "../crates/model" }
+peer = { path = "../crates/peer", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 # This crate is its own workspace, because fuzzing needs a nightly compiler

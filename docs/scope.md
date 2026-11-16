@@ -1,6 +1,6 @@
 # Scope
 
-p2rent moves and syncs data between any two places: a folder, a web URL,
+mux moves and syncs data between any two places: a folder, a web URL,
 another machine and, later, cloud storage and torrents. It is one
 command-line tool and one library, and it gives the same guarantees wherever
 the data comes from and wherever it goes.
@@ -18,10 +18,10 @@ describes what the released version does.
 
 | Command | Purpose |
 | --- | --- |
-| `p2rent cp SRC... DST` | Move data once. |
-| `p2rent sync SRC DST` | Make `DST` match `SRC`. `--watch` keeps it matching. |
-| `p2rent probe WHERE` | Report what is at a place: size, files, hashes, who holds it. |
-| `p2rent protocols` | List the kinds of place this build can read and write. |
+| `mux cp SRC... DST` | Move data once. |
+| `mux sync SRC DST` | Make `DST` match `SRC`. `--watch` keeps it matching. |
+| `mux probe WHERE` | Report what is at a place: size, files, hashes, who holds it. |
+| `mux protocols` | List the kinds of place this build can read and write. |
 
 A place is a path or a URL. The commands work out everything else from the two
 places they are given, and there is no configuration file.
@@ -30,7 +30,7 @@ places they are given, and there is no configuration file.
 | --- | --- | --- |
 | Local folder or file | `./data`, `/srv/data` | 1 |
 | Web URL | `https://example.org/big.iso` | 1 |
-| Another machine | `peer:` to serve, a `p2rent://` ticket to fetch | 1 |
+| Another machine | `peer:` to serve, a `mux://` ticket to fetch | 1 |
 | Cloud storage | `s3://`, `gs://`, `az://`, `sftp://` | 3 |
 | Model and container registries | `hf://`, `oci://` | 3 |
 | Torrents | `magnet:`, `.torrent` files | 3 |
@@ -74,33 +74,37 @@ milestones below.
 
 ## Layout
 
-`p2rent-core`, `p2rent-fs`, `p2rent-peer` and `p2rent` exist today. Later
-milestones add the rest.
+Crates are named for what they hold, with no project prefix. `model`, `fs`,
+`peer` and `cli` exist today. Later milestones add the rest.
 
 | Crate | Holds |
 | --- | --- |
-| `p2rent-core` | The data model, the `Source` and `Sink` traits and the transfer engine. No disk and no network, so its logic can be proven. |
-| `p2rent-fs` | Local folders. |
-| `p2rent-http` | Web URLs. |
-| `p2rent-peer` | Machine to machine. |
-| `p2rent-cloud` | Cloud storage, through Apache OpenDAL. |
-| `p2rent-sync` | The sync engine. |
-| `p2rent-accel` | The only crate allowed `unsafe`, SIMD and assembly. |
-| `p2rent` | The library other programs depend on, and the CLI. |
-| `p2rent-ffi` | A C API, then bindings for other languages. |
+| `model` | The data model, the `Source` and `Sink` traits and the transfer engine. No disk and no network, so its logic can be proven. |
+| `fs` | Local folders. |
+| `http` | Web URLs. |
+| `peer` | Machine to machine. |
+| `cloud` | Cloud storage, through Apache OpenDAL. |
+| `sync` | The sync engine. |
+| `accel` | The only crate allowed `unsafe`, SIMD and assembly. |
+| `cli` | The `mux` command, and the library other programs depend on. |
+| `ffi` | A C API, then bindings for other languages. |
 
-Shared logic has one home, `p2rent-core`. A backend is a thin adapter: it
+Shared logic has one home, `model`. A backend is a thin adapter: it
 does no scheduling, retrying or verifying of its own.
+
+The names the crates are published under are decided when publishing
+happens ([#25](https://github.com/Yuvraj-cyborg/mux/issues/25)): `mux` is
+taken on crates.io, and a name as plain as `fs` cannot be published either.
 
 ## Milestones
 
 | | Goal | Release |
 | --- | --- | --- |
-| [0](https://github.com/Yuvraj-cyborg/P2rent/milestone/1) | Foundations: analysis, verification, proofs, performance baseline, workspace. No visible change. | |
-| [1](https://github.com/Yuvraj-cyborg/P2rent/milestone/2) | `cp` between a folder, a URL and another machine. | 0.3 |
-| [2](https://github.com/Yuvraj-cyborg/P2rent/milestone/3) | One-way `sync`. | 0.4 |
-| [3](https://github.com/Yuvraj-cyborg/P2rent/milestone/4) | More places. | 0.5 |
-| [4](https://github.com/Yuvraj-cyborg/P2rent/milestone/5) | Pluggable anywhere: a stable library, a C API, bindings. | 0.6 |
-| [5](https://github.com/Yuvraj-cyborg/P2rent/milestone/6) | Two-way `sync`. | towards 1.0 |
+| [0](https://github.com/Yuvraj-cyborg/mux/milestone/1) | Foundations: analysis, verification, proofs, performance baseline, workspace. No visible change. | |
+| [1](https://github.com/Yuvraj-cyborg/mux/milestone/2) | `cp` between a folder, a URL and another machine. | 0.3 |
+| [2](https://github.com/Yuvraj-cyborg/mux/milestone/3) | One-way `sync`. | 0.4 |
+| [3](https://github.com/Yuvraj-cyborg/mux/milestone/4) | More places. | 0.5 |
+| [4](https://github.com/Yuvraj-cyborg/mux/milestone/5) | Pluggable anywhere: a stable library, a C API, bindings. | 0.6 |
+| [5](https://github.com/Yuvraj-cyborg/mux/milestone/6) | Two-way `sync`. | towards 1.0 |
 
 The rules every change follows are in [CONTRIBUTING.md](../CONTRIBUTING.md).

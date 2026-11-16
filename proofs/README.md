@@ -1,12 +1,12 @@
 # Proofs
 
-The logic in `p2rent-core` that decides what happens to files is translated
+The logic in `model` that decides what happens to files is translated
 from Rust to Lean 4 and proven here. A proof holds for every input, where a
 test covers only the inputs someone tried.
 
 ## What is proven
 
-Three modules of `crates/p2rent-core` are translated:
+Three modules of `crates/model` are translated:
 
 | Module | Holds |
 | --- | --- |
@@ -14,7 +14,7 @@ Three modules of `crates/p2rent-core` are translated:
 | `artifact::layout` | Which file, offset and length each chunk has. |
 | `schedule` | Which chunk to fetch next, and what state each is in. |
 
-The theorems are in `P2rentCore/`, one file per module, each beginning with a
+The theorems are in `Model/`, one file per module, each beginning with a
 plain statement of what it proves.
 
 ## How it works
@@ -26,7 +26,7 @@ Rust  --charon-->  LLBC  --aeneas-->  Lean  <--  theorems written by hand
 1. [Charon](https://github.com/AeneasVerif/charon) reads the Rust compiler's
    view of the chosen modules.
 2. [Aeneas](https://github.com/AeneasVerif/aeneas) turns that into Lean
-   functions: `P2rentCore/Types.lean` and `P2rentCore/Funs.lean`. These two
+   functions: `Model/Types.lean` and `Model/Funs.lean`. These two
    files are generated. Do not edit them.
 3. The theorems are about those generated functions, so they are about the
    code that ships and not about a copy of it.
@@ -41,7 +41,7 @@ A proof is only as good as what it rests on. Here that is:
 
 - Lean's kernel, and the Rust compiler.
 - Charon and Aeneas: that the Lean they produce means the same as the Rust.
-- `P2rentCore/FunsExternal.lean`: models, written by hand, of the three
+- `Model/FunsExternal.lean`: models, written by hand, of the three
   standard-library functions the code calls that Aeneas does not define
   (`u32::try_from(u64)`, `usize::try_from(u64)` and `u8::count_ones`).
   `cargo xtask proofs` fails if the code starts calling one that has no

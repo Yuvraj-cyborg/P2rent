@@ -1,15 +1,15 @@
 # Protocol
 
-This describes protocol version 2, negotiated with the ALPN token `p2rent/2`.
+This describes protocol version 2, negotiated with the ALPN token `mux/2`.
 
 ## Tickets
 
 ```
-p2rent://<artifact id>?peer=<node id>@<host:port>&peer=...
+mux://<artifact id>?peer=<node id>@<host:port>&peer=...
 ```
 
 - `artifact id`: 64 hex characters, the BLAKE3 hash of the encoded manifest
-  under the derivation context `p2rent 2026 manifest v1`.
+  under the derivation context `mux 2026 manifest v1`.
 - `node id`: 64 hex characters, an Ed25519 public key.
 - `host` may be an IPv4 address, a bracketed IPv6 address or a DNS name.
 

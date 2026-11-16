@@ -25,21 +25,21 @@ jobs:
           # systems as new as the build runner.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: p2rent-x86_64-linux
+            artifact: mux-x86_64-linux
             glibc: "2.17"
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            artifact: p2rent-aarch64-linux
+            artifact: mux-aarch64-linux
             glibc: "2.17"
           - target: x86_64-apple-darwin
             os: macos-latest
-            artifact: p2rent-x86_64-darwin
+            artifact: mux-x86_64-darwin
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact: p2rent-aarch64-darwin
+            artifact: mux-aarch64-darwin
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            artifact: p2rent-x86_64-windows
+            artifact: mux-x86_64-windows
 
     steps:
       - uses: actions/checkout@v4
@@ -65,16 +65,16 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ matrix.glibc }}" ]; then
-            cargo zigbuild --release --locked -p p2rent --target "${{ matrix.target }}.${{ matrix.glibc }}"
+            cargo zigbuild --release --locked -p cli --target "${{ matrix.target }}.${{ matrix.glibc }}"
           else
-            cargo build --release --locked -p p2rent --target "${{ matrix.target }}"
+            cargo build --release --locked -p cli --target "${{ matrix.target }}"
           fi
 
       - name: Check the binary starts
         if: matrix.target != 'x86_64-apple-darwin'
         shell: bash
         run: |
-          bin=target/${{ matrix.target }}/release/p2rent
+          bin=target/${{ matrix.target }}/release/mux
           if [ -f "$bin.exe" ]; then bin=$bin.exe; fi
           "$bin" --version
 
@@ -83,9 +83,9 @@ jobs:
         run: |
           docker run --rm -v "$PWD/target/${{ matrix.target }}/release:/w:ro" centos:7 sh -euc '
             head -c 50000000 /dev/urandom > /tmp/data
-            /w/p2rent --key /tmp/a.key seed /tmp/data --listen 127.0.0.1:4433 > /tmp/ticket &
+            /w/mux --key /tmp/a.key seed /tmp/data --listen 127.0.0.1:4433 > /tmp/ticket &
             for _ in $(seq 100); do [ -s /tmp/ticket ] && break; sleep 0.2; done
-            /w/p2rent --key /tmp/b.key get "$(cat /tmp/ticket)" --out /tmp/out
+            /w/mux --key /tmp/b.key get "$(cat /tmp/ticket)" --out /tmp/out
             [ "$(sha256sum < /tmp/data)" = "$(sha256sum < /tmp/out/data)" ]
             echo "transfer ok on $(ldd --version | head -n 1)"
           '
@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          if [ -f p2rent.exe ]; then binary=p2rent.exe; else binary=p2rent; fi
+          if [ -f mux.exe ]; then binary=mux.exe; else binary=mux; fi
           tar czf "../../../${{ matrix.artifact }}.tar.gz" "$binary" -C ../../.. LICENSE README.md
 
       - uses: actions/upload-artifact@v4

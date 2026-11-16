@@ -52,7 +52,7 @@ Each was built and measured, then dropped.
 
 - Compare CPU seconds per GiB first. Wall time on a laptop moves with disk
   state and temperature; on a nearly full SSD it ranged from 85 to 360 MiB/s
-  between identical runs. Put `P2RENT_BENCH_DIR` on a RAM disk or tmpfs.
+  between identical runs. Put `MUX_BENCH_DIR` on a RAM disk or tmpfs.
 - Alternate the builds being compared (A, B, A, B) so drift does not look
   like a result.
 - macOS `sample` reports where threads spend wall time, including time

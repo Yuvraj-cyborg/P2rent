@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="p2rent" width="380">
+  <img src="assets/logo.png" alt="mux" width="380">
 </p>
 
 <p align="center">
@@ -7,18 +7,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Yuvraj-cyborg/P2rent/actions/workflows/ci.yml"><img src="https://github.com/Yuvraj-cyborg/P2rent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Yuvraj-cyborg/mux/actions/workflows/ci.yml"><img src="https://github.com/Yuvraj-cyborg/mux/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT license"></a>
 </p>
 
-p2rent copies large files and directories (model weights, datasets, build
+mux copies large files and directories (model weights, datasets, build
 outputs, VM images) to many machines at once. Every machine that is
 downloading also serves the parts it already has, so the tenth machine is not
 waiting on the first. It is a single binary with no tracker, scheduler or
 database to run.
 
 ```
- direct download                    p2rent
+ direct download                    mux
 
       source                        source ─── A ─── C
    ┌──┬──┼──┬──┐                       │   ╲   │   ╱ │
@@ -32,15 +32,15 @@ database to run.
 On the machine that has the data:
 
 ```console
-$ p2rent seed ./weights
+$ mux seed ./weights
 seeding  weights  (400.68 MiB, 402 chunks)
-p2rent://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
 ```
 
 On every machine that needs it:
 
 ```console
-$ p2rent get 'p2rent://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433' --out /models --seed
+$ mux get 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433' --out /models --seed
 saved    /models/weights  (400.68 MiB)
 fetched  400.68 MiB from 2 peers
          35964d95  219.68 MiB
@@ -78,40 +78,40 @@ More detail: [illustrated walk-through](docs/how-it-works.md) ·
 ## Install
 
 Binaries for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows
-are attached to each [release](https://github.com/Yuvraj-cyborg/P2rent/releases/latest),
+are attached to each [release](https://github.com/Yuvraj-cyborg/mux/releases/latest),
 with SHA-256 checksums. On Linux:
 
 ```console
-$ curl -sSfL https://github.com/Yuvraj-cyborg/P2rent/releases/latest/download/p2rent-x86_64-linux.tar.gz | tar xz p2rent
-$ sudo install p2rent /usr/local/bin/
+$ curl -sSfL https://github.com/Yuvraj-cyborg/mux/releases/latest/download/mux-x86_64-linux.tar.gz | tar xz mux
+$ sudo install mux /usr/local/bin/
 ```
 
 The Linux binaries need glibc 2.17 or newer, which covers mainstream
 distributions from the last ten years. The macOS binaries are not notarized:
-if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
+if a browser download is blocked, run `xattr -d com.apple.quarantine mux`.
 
 From source:
 
 ```console
-$ cargo install --git https://github.com/Yuvraj-cyborg/P2rent --locked p2rent
+$ cargo install --git https://github.com/Yuvraj-cyborg/mux --locked mux
 ```
 
 With Nix:
 
 ```console
-$ nix run github:Yuvraj-cyborg/P2rent -- --help
+$ nix run github:Yuvraj-cyborg/mux -- --help
 ```
 
-From a checkout, `cargo build --release` produces `target/release/p2rent`.
+From a checkout, `cargo build --release` produces `target/release/mux`.
 Building needs Rust 1.88 or newer.
 
 ## Usage
 
 | Command | Purpose |
 | --- | --- |
-| `p2rent seed <PATH>...` | Hash files or directories and serve them. Prints one ticket per path on stdout. |
-| `p2rent get <TICKET>` | Download into `--out` (default: current directory). |
-| `p2rent id` | Print this machine's node id. |
+| `mux seed <PATH>...` | Hash files or directories and serve them. Prints one ticket per path on stdout. |
+| `mux get <TICKET>` | Download into `--out` (default: current directory). |
+| `mux id` | Print this machine's node id. |
 
 Commonly used options:
 
@@ -122,9 +122,9 @@ Commonly used options:
 | `--chunk-size <SIZE>` | `seed` | 4K to 16M, default 1M. |
 | `--seed` | `get` | Keep serving after the download completes. |
 | `--peer <NODE@HOST:PORT>` | `get` | Extra peer to try, in addition to those in the ticket. |
-| `--key <FILE>` | all | Node key file. Also `P2RENT_KEY`. |
+| `--key <FILE>` | all | Node key file. Also `MUX_KEY`. |
 
-Run `p2rent <command> --help` for the full list.
+Run `mux <command> --help` for the full list.
 
 ## Security model
 
@@ -152,10 +152,10 @@ Version 0.2 is a rewrite and is not yet production software.
 
 ## Direction
 
-p2rent is growing from a swarm distributor into a general tool and library
+mux is growing from a swarm distributor into a general tool and library
 for moving and syncing data between any two places: folders, web URLs, other
 machines and cloud storage. [docs/scope.md](docs/scope.md) describes where it
-is going, the [milestones](https://github.com/Yuvraj-cyborg/P2rent/milestones)
+is going, the [milestones](https://github.com/Yuvraj-cyborg/mux/milestones)
 track the work, and [CONTRIBUTING.md](CONTRIBUTING.md) has the rules a change
 follows.
 
