@@ -107,7 +107,8 @@ async fn serve_request(
             };
             match data {
                 Some((share, data)) => {
-                    let len = data.len() as u32;
+                    let len = u32::try_from(data.len())
+                        .map_err(|_| Error::Protocol("chunk too large".into()))?;
                     proto::write_frame(&mut send, &Response::Chunk { len }).await?;
                     send.write_all(&data).await?;
                     share.add_uploaded(u64::from(len));

@@ -14,12 +14,16 @@ const SCHEME: &str = "p2rent://";
 /// downloaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
+    /// The artifact to fetch.
     pub artifact: Hash,
+    /// Peers to contact first.
     pub peers: Vec<TicketPeer>,
 }
 
+/// A peer named in a ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketPeer {
+    /// The node id the peer must prove.
     pub node: NodeId,
     /// `host:port`. The host may be a DNS name, resolved when dialling.
     pub addr: String,

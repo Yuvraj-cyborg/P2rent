@@ -20,8 +20,10 @@ src/
 │   └── download/  mod.rs  session.rs  peer.rs
 ├── cli/           seed.rs  get.rs  ui.rs
 ├── error.rs
+├── sync.rs        locks that recover from poisoning
 ├── lib.rs
 └── main.rs
+xtask/             development tasks written in Rust (`cargo xtask`)
 tests/             connection.rs  download.rs  swarm.rs  cli.rs
 ```
 

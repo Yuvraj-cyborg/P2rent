@@ -3,8 +3,11 @@ use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+/// Smallest chunk size a manifest may use.
 pub const MIN_CHUNK_SIZE: u32 = 4 * 1024;
+/// Largest chunk size a manifest may use.
 pub const MAX_CHUNK_SIZE: u32 = 16 * 1024 * 1024;
+/// Chunk size used when none is requested.
 pub const DEFAULT_CHUNK_SIZE: u32 = 1024 * 1024;
 
 /// Upper bound on an encoded manifest. At the default chunk size this covers
@@ -13,6 +16,7 @@ pub const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
 const MAX_COMPONENT_BYTES: usize = 255;
 
+/// Whether an artifact is a single file or a directory tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     /// A single file, stored as `<name>`.
@@ -21,11 +25,14 @@ pub enum Kind {
     Directory,
 }
 
+/// One file in an artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {
     /// Path relative to the artifact root, with `/` separators.
     pub path: String,
+    /// Size in bytes.
     pub size: u64,
+    /// Whether any execute permission bit is set.
     pub executable: bool,
 }
 
@@ -36,8 +43,11 @@ pub struct FileEntry {
 /// files and lets a downloader write chunks in any order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
+    /// File or directory name the artifact is stored under.
     pub name: String,
+    /// Whether this is a single file or a directory tree.
     pub kind: Kind,
+    /// Size of every chunk except, possibly, the last one of each file.
     pub chunk_size: u32,
     /// Sorted by path.
     pub files: Vec<FileEntry>,
@@ -48,6 +58,10 @@ pub struct Manifest {
 impl Manifest {
     /// Checks every invariant the rest of the program relies on. Manifests
     /// arrive from untrusted peers, so nothing is used before this passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidManifest`] naming the first invariant that fails.
     pub fn validate(&self) -> Result<()> {
         if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&self.chunk_size) {
             return Err(invalid(format!(
@@ -120,7 +134,9 @@ impl Manifest {
 pub struct ChunkLocation {
     /// Index into `Manifest::files`.
     pub file: usize,
+    /// Byte offset of the chunk within that file.
     pub offset: u64,
+    /// Length of the chunk in bytes.
     pub len: u32,
 }
 
@@ -139,6 +155,10 @@ const ID_CONTEXT: &str = "p2rent 2026 manifest v1";
 
 impl Artifact {
     /// Builds an artifact from a locally produced manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidManifest`] if the manifest is invalid or too large to encode.
     pub fn new(manifest: Manifest) -> Result<Self> {
         manifest.validate()?;
         let encoded =
@@ -153,6 +173,11 @@ impl Artifact {
 
     /// Decodes manifest bytes received from a peer, accepting them only if
     /// they hash to `expected` and describe a valid artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidManifest`] if the bytes exceed the size limit, do not hash to
+    /// `expected`, cannot be decoded or fail validation.
     pub fn decode(expected: Hash, encoded: Vec<u8>) -> Result<Self> {
         if encoded.len() > MAX_MANIFEST_BYTES {
             return Err(invalid("manifest exceeds the size limit"));
@@ -185,10 +210,12 @@ impl Artifact {
         }
     }
 
+    /// The artifact id: the hash of the encoded manifest.
     pub fn id(&self) -> Hash {
         self.id
     }
 
+    /// The validated manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
@@ -198,14 +225,17 @@ impl Artifact {
         &self.encoded
     }
 
+    /// Sum of all file sizes, in bytes.
     pub fn total_size(&self) -> u64 {
         self.total_size
     }
 
+    /// Number of chunks across all files.
     pub fn chunk_count(&self) -> u64 {
         self.manifest.chunks.len() as u64
     }
 
+    /// Expected digest of chunk `index`, or `None` if it is out of range.
     pub fn chunk_hash(&self, index: u64) -> Option<Hash> {
         self.manifest
             .chunks
@@ -222,6 +252,7 @@ impl Artifact {
         start..start + count
     }
 
+    /// Where chunk `index` lives, or `None` if it is out of range.
     pub fn locate(&self, index: u64) -> Option<ChunkLocation> {
         if index >= self.chunk_count() {
             return None;
@@ -231,7 +262,11 @@ impl Artifact {
         let file = self.first_chunk.partition_point(|&start| start <= index) - 1;
         let chunk_size = u64::from(self.manifest.chunk_size);
         let offset = (index - self.first_chunk[file]) * chunk_size;
-        let len = (self.manifest.files[file].size - offset).min(chunk_size) as u32;
+        // A remainder too large for `u32` is longer than any chunk.
+        let remaining = self.manifest.files[file].size - offset;
+        let len = u32::try_from(remaining).map_or(self.manifest.chunk_size, |r| {
+            r.min(self.manifest.chunk_size)
+        });
         Some(ChunkLocation { file, offset, len })
     }
 }
@@ -344,9 +379,9 @@ mod tests {
         assert_eq!(artifact.chunk_count(), 4);
         assert_eq!(artifact.total_size(), cs * 3 + 5);
         let at = |i| artifact.locate(i).unwrap();
-        assert_eq!((at(0).file, at(0).offset, at(0).len as u64), (0, 0, cs));
+        assert_eq!((at(0).file, at(0).offset, u64::from(at(0).len)), (0, 0, cs));
         assert_eq!((at(2).file, at(2).offset, at(2).len), (0, cs * 2, 5));
-        assert_eq!((at(3).file, at(3).offset, at(3).len as u64), (2, 0, cs));
+        assert_eq!((at(3).file, at(3).offset, u64::from(at(3).len)), (2, 0, cs));
         assert!(artifact.locate(4).is_none());
         assert_eq!(artifact.file_chunks(1), 3..3);
         assert_eq!(artifact.file_chunks(2), 3..4);

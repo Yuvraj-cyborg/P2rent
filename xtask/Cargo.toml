@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Development tasks that need logic, written in Rust rather than shell"
+
+[lints]
+workspace = true

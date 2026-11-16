@@ -20,7 +20,7 @@ mod tests {
 
     fn bytes(len: usize, seed: u8) -> Vec<u8> {
         (0..len)
-            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .map(|i| i.to_le_bytes()[0].wrapping_mul(31).wrapping_add(seed))
             .collect()
     }
 

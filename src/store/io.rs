@@ -15,32 +15,36 @@ pub(crate) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<(
 }
 
 #[cfg(windows)]
-pub(crate) fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
-    while !buf.is_empty() {
-        match file.seek_read(buf, offset) {
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(n) => {
-                buf = &mut buf[n..];
-                offset += n as u64;
-            }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
+    in_parts(buf.len(), io::ErrorKind::UnexpectedEof, |done| {
+        file.seek_read(&mut buf[done..], offset + done as u64)
+    })
 }
 
 #[cfg(windows)]
-pub(crate) fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
-    while !buf.is_empty() {
-        match file.seek_write(buf, offset) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => {
-                buf = &buf[n..];
-                offset += n as u64;
-            }
+    in_parts(buf.len(), io::ErrorKind::WriteZero, |done| {
+        file.seek_write(&buf[done..], offset + done as u64)
+    })
+}
+
+/// Repeats a positional read or write until `len` bytes have been handled.
+/// Windows may transfer fewer bytes than asked for in one call. `step` is
+/// given the number of bytes done so far and returns how many more it moved;
+/// moving none is reported as `stuck`.
+#[cfg(windows)]
+fn in_parts(
+    len: usize,
+    stuck: io::ErrorKind,
+    mut step: impl FnMut(usize) -> io::Result<usize>,
+) -> io::Result<()> {
+    let mut done = 0;
+    while done < len {
+        match step(done) {
+            Ok(0) => return Err(stuck.into()),
+            Ok(n) => done += n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }

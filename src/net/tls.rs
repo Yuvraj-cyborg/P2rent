@@ -37,8 +37,32 @@ impl NodeVerifier {
     }
 }
 
-fn tls12_unsupported() -> rustls::Error {
-    rustls::Error::General("TLS 1.2 is not supported".into())
+/// The handshake signature checks, which rustls asks for through two
+/// separate traits: one for each direction of the connection.
+macro_rules! signature_checks {
+    () => {
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Err(rustls::Error::General("TLS 1.2 is not supported".into()))
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            self.verify_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![SignatureScheme::ED25519]
+        }
+    };
 }
 
 impl ServerCertVerifier for NodeVerifier {
@@ -54,27 +78,7 @@ impl ServerCertVerifier for NodeVerifier {
         Ok(ServerCertVerified::assertion())
     }
 
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(tls12_unsupported())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.verify_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::ED25519]
-    }
+    signature_checks!();
 }
 
 impl ClientCertVerifier for NodeVerifier {
@@ -92,27 +96,7 @@ impl ClientCertVerifier for NodeVerifier {
         Ok(ClientCertVerified::assertion())
     }
 
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(tls12_unsupported())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.verify_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::ED25519]
-    }
+    signature_checks!();
 }
 
 /// Server and client configurations that both authenticate as `identity`.

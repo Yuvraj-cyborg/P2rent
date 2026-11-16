@@ -35,6 +35,7 @@ const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
 /// Most peers a download will keep track of.
 const MAX_KNOWN_PEERS: usize = 512;
 
+/// Limits for one download.
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     /// Peers to download from at the same time.
@@ -55,6 +56,7 @@ impl Default for DownloadOptions {
     }
 }
 
+/// The stage a download is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Phase {
@@ -64,6 +66,7 @@ pub enum Phase {
     Scanning = 1,
     /// Fetching chunks.
     Downloading = 2,
+    /// Every chunk is on disk and verified.
     Done = 3,
 }
 
@@ -79,6 +82,7 @@ pub struct Progress {
 }
 
 impl Progress {
+    /// The current stage.
     pub fn phase(&self) -> Phase {
         match self.phase.load(Ordering::Relaxed) {
             0 => Phase::Connecting,
@@ -108,6 +112,7 @@ impl Progress {
         self.fetched.load(Ordering::Relaxed)
     }
 
+    /// Bytes on disk and verified, whether resumed or fetched.
     pub fn done_bytes(&self) -> u64 {
         self.resumed_bytes() + self.fetched_bytes()
     }
@@ -131,17 +136,26 @@ impl Progress {
 pub struct Report {
     /// The artifact, now registered with the node and served to others.
     pub share: Arc<Share>,
+    /// Bytes that were already on disk and valid.
     pub resumed_bytes: u64,
+    /// Bytes fetched from peers.
     pub fetched_bytes: u64,
     /// Bytes fetched from each peer, largest first.
     pub sources: Vec<(NodeId, u64)>,
     /// Every peer this download learned about, for [`announce`].
     pub peers: Vec<PeerInfo>,
+    /// Wall time from start to finish.
     pub elapsed: Duration,
 }
 
 /// Downloads the ticket's artifact into `out_dir`, resuming from whatever is
 /// already there.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached,
+/// [`Error::ManifestUnavailable`] if none supplies a valid manifest, [`Error::Stalled`] if no
+/// chunk arrives within the stall timeout, and [`Error::Io`] for local disk failures.
 pub async fn download(
     node: &Arc<Node>,
     ticket: &Ticket,
@@ -236,7 +250,7 @@ pub async fn announce(node: Arc<Node>, artifact: Hash, peers: Vec<PeerInfo>) {
 
 /// Turns the ticket's `host:port` entries into socket addresses.
 async fn resolve(node: &Node, ticket: &Ticket) -> Vec<PeerInfo> {
-    let want_v4 = node.local_addr().map(|a| a.is_ipv4()).unwrap_or(true);
+    let want_v4 = node.local_addr().map_or(true, |a| a.is_ipv4());
     let mut peers = Vec::new();
     for entry in &ticket.peers {
         if entry.node == node.node_id() {
@@ -344,7 +358,7 @@ async fn manage(
             .max_peers
             .max(1)
             .saturating_sub(running.len());
-        for (&node, slot) in slots.iter_mut() {
+        for (&node, slot) in &mut slots {
             if free == 0 {
                 break;
             }
@@ -399,7 +413,7 @@ async fn manage(
                 }
             }
             _ = ticker.tick() => {}
-            _ = session.wake.notified() => {}
+            () = session.wake.notified() => {}
         }
 
         let idle = session.last_progress().elapsed();

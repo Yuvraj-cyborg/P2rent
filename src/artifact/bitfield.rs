@@ -8,6 +8,7 @@ pub struct Bitfield {
 }
 
 impl Bitfield {
+    /// A bitfield of `len` bits, all unset.
     pub fn new(len: u64) -> Self {
         Self {
             len,
@@ -15,6 +16,7 @@ impl Bitfield {
         }
     }
 
+    /// A bitfield of `len` bits, all set.
     pub fn full(len: u64) -> Self {
         let mut bytes = vec![0xff; byte_len(len)];
         let tail = (len % 8) as u32;
@@ -26,14 +28,17 @@ impl Bitfield {
         Self { len, bytes }
     }
 
+    /// Number of bits.
     pub fn len(&self) -> u64 {
         self.len
     }
 
+    /// Whether the bitfield has no bits at all.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Whether bit `index` is set. Out-of-range indices read as unset.
     pub fn get(&self, index: u64) -> bool {
         index < self.len && self.bytes[(index / 8) as usize] & (1 << (index % 8)) != 0
     }
@@ -45,16 +50,19 @@ impl Bitfield {
         }
     }
 
+    /// Unsets a bit. Out-of-range indices are ignored.
     pub fn clear(&mut self, index: u64) {
         if index < self.len {
             self.bytes[(index / 8) as usize] &= !(1 << (index % 8));
         }
     }
 
+    /// Number of bits that are set.
     pub fn count_ones(&self) -> u64 {
         self.bytes.iter().map(|b| u64::from(b.count_ones())).sum()
     }
 
+    /// Whether every bit is set.
     pub fn is_full(&self) -> bool {
         self.count_ones() == self.len
     }
@@ -74,7 +82,7 @@ impl Bitfield {
 }
 
 fn byte_len(bits: u64) -> usize {
-    bits.div_ceil(8) as usize
+    super::to_usize(bits.div_ceil(8))
 }
 
 #[cfg(test)]

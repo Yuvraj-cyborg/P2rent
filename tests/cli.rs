@@ -40,7 +40,9 @@ fn id_is_stable_across_runs() {
 fn seed_then_get() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("payload.bin");
-    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i ^ (i >> 9)) as u8).collect();
+    let data: Vec<u8> = (0..3_000_000u32)
+        .map(|i| (i ^ (i >> 9)).to_le_bytes()[0])
+        .collect();
     std::fs::write(&source, &data).unwrap();
 
     let mut seeder = KillOnDrop(

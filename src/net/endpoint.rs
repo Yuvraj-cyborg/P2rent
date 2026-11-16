@@ -33,6 +33,10 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// Must be called from within a Tokio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS configuration cannot be built or `addr` cannot be bound.
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self> {
         let (mut server, mut client) = tls::configs(identity)?;
 
@@ -45,7 +49,9 @@ impl Endpoint {
             .max_concurrent_uni_streams(VarInt::from_u32(0))
             .keep_alive_interval(Some(KEEP_ALIVE))
             .max_idle_timeout(Some(
-                VarInt::from_u32(IDLE_TIMEOUT.as_millis() as u32).into(),
+                IDLE_TIMEOUT
+                    .try_into()
+                    .map_err(|_| Error::Transport("idle timeout out of range".into()))?,
             ))
             .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
             .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
@@ -69,15 +75,26 @@ impl Endpoint {
         })
     }
 
+    /// The node id this endpoint authenticates as.
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
 
+    /// The address the socket is bound to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the operating system cannot report the address.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.inner.local_addr()?)
     }
 
     /// Dials `addr` and succeeds only if the peer proves it is `expected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport error if the connection fails, and [`Error::IdentityMismatch`] if the
+    /// peer proves a different node id.
     pub async fn connect(&self, addr: SocketAddr, expected: NodeId) -> Result<Connection> {
         let inner = self.inner.connect(addr, "p2rent")?.await?;
         let connection = Connection::authenticated(inner)?;
@@ -106,11 +123,16 @@ impl Endpoint {
 }
 
 /// An inbound connection whose handshake has not completed yet.
+#[derive(Debug)]
 pub struct Incoming(quinn::Incoming);
 
 impl Incoming {
     /// Completes the handshake. Run this off the accept loop so a slow or
     /// hostile client cannot hold up other connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handshake fails or the peer presents no usable certificate.
     pub async fn establish(self) -> Result<Connection> {
         Connection::authenticated(self.0.await?)
     }
@@ -136,6 +158,7 @@ impl Connection {
         Ok(Self { inner, peer })
     }
 
+    /// The node id the peer proved during the handshake.
     pub fn peer(&self) -> NodeId {
         self.peer
     }
@@ -154,11 +177,16 @@ impl Connection {
         self.inner.stats().path.current_mtu
     }
 
+    /// Closes the connection.
     pub fn close(&self) {
         self.inner.close(VarInt::from_u32(0), b"done");
     }
 
     /// Waits for the peer to open a request stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport error once the connection is closed.
     pub async fn accept_request(&self) -> Result<(SendStream, RecvStream)> {
         Ok(self.inner.accept_bi().await?)
     }
@@ -173,6 +201,11 @@ impl Connection {
 
     /// Fetches the encoded manifest. `None` means the peer does not serve
     /// this artifact. The bytes are unverified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the peer answers with something other than a
+    /// manifest.
     pub async fn manifest(&self, artifact: Hash) -> Result<Option<Vec<u8>>> {
         match self.request(&Request::Manifest { artifact }).await? {
             (Response::Manifest { len }, mut recv) => {
@@ -187,6 +220,12 @@ impl Connection {
         }
     }
 
+    /// Asks which chunks the peer holds and which other peers it knows. `None` means the peer
+    /// does not serve this artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the answer is not a status.
     pub async fn status(&self, artifact: Hash) -> Result<Option<Status>> {
         match self.request(&Request::Status { artifact }).await? {
             (Response::Status(status), _) => Ok(Some(status)),
@@ -197,6 +236,11 @@ impl Connection {
 
     /// Fetches one chunk, which must be exactly `expected_len` bytes. `None`
     /// means the peer does not hold it. The bytes are unverified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Protocol`] if the peer announces a different length, and a transport error
+    /// if the request fails.
     pub async fn chunk(
         &self,
         artifact: Hash,

@@ -19,14 +19,42 @@ test *args:
 fmt:
     cargo fmt --all
 
-# Check formatting and lints exactly as CI does
+# Formatting, lints and documentation, with warnings as errors
 lint:
     cargo fmt --all -- --check
-    cargo clippy --all-targets --locked -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
+
+# Licences, known vulnerabilities, duplicate versions and unused dependencies
+deps:
+    cargo deny check
+    cargo machete --with-metadata
+
+# Spelling in code and documentation
+spelling:
+    typos
+
+# Fail on functions that are near copies of each other. 0.93 catches a copy
+# with small edits; functions shorter than 8 lines are too small to judge.
+dupes:
+    similarity-rs src xtask --threshold 0.93 --min-lines 8 --skip-test --fail-on-duplicates
+
+# Check that every combination of features builds
+features:
+    cargo hack check --feature-powerset --all-targets --locked
+
+# Run the tests that touch neither disk nor network under Miri, which
+# detects undefined behaviour (needs a nightly toolchain with miri)
+miri:
+    cargo +nightly miri test --lib --locked -- artifact:: hex:: swarm::ticket::
+
+# Report binary size and dependency count, and fail if either is over budget
+size:
+    cargo xtask size
 
 # Everything CI runs
-ci: lint
-    cargo test --locked
+ci: lint deps spelling dupes features miri size
+    cargo test --workspace --locked
 
 # Time a loopback transfer, e.g. `just bench 4096 2` for 4 GiB from two seeders
 bench size_mb="1024" seeders="1" runs="3" files="1":

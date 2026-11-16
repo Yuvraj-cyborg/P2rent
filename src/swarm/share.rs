@@ -1,6 +1,7 @@
 use crate::artifact::{Artifact, Bitfield};
 use crate::net::{NodeId, PeerInfo};
 use crate::store::DiskStore;
+use crate::sync;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -40,24 +41,29 @@ impl Share {
         }
     }
 
+    /// The artifact being shared.
     pub fn artifact(&self) -> &Arc<Artifact> {
         self.store.artifact()
     }
 
+    /// Where its chunks live on disk.
     pub fn store(&self) -> &DiskStore {
         &self.store
     }
 
+    /// Whether chunk `index` is held.
     pub fn has(&self, index: u64) -> bool {
-        self.have.read().unwrap().get(index)
+        sync::read(&self.have).get(index)
     }
 
+    /// A snapshot of which chunks are held.
     pub fn have(&self) -> Bitfield {
-        self.have.read().unwrap().clone()
+        sync::read(&self.have).clone()
     }
 
+    /// Whether every chunk is held.
     pub fn is_complete(&self) -> bool {
-        self.have.read().unwrap().is_full()
+        sync::read(&self.have).is_full()
     }
 
     /// Bytes served to other peers so far.
@@ -66,7 +72,7 @@ impl Share {
     }
 
     pub(crate) fn mark(&self, index: u64) {
-        self.have.write().unwrap().set(index);
+        sync::write(&self.have).set(index);
     }
 
     pub(crate) fn add_uploaded(&self, bytes: u64) {
@@ -76,7 +82,7 @@ impl Share {
     /// Records that `peer` is taking part in this swarm.
     pub(crate) fn note_participant(&self, peer: PeerInfo) {
         let now = Instant::now();
-        let mut participants = self.participants.lock().unwrap();
+        let mut participants = sync::lock(&self.participants);
         if participants.len() >= MAX_PARTICIPANTS && !participants.contains_key(&peer.node) {
             participants.retain(|_, p| now.duration_since(p.seen) < PARTICIPANT_TTL);
             if participants.len() >= MAX_PARTICIPANTS {
@@ -95,7 +101,7 @@ impl Share {
     /// Recently seen participants other than `except`, most recent first.
     pub(crate) fn participants(&self, except: NodeId) -> Vec<PeerInfo> {
         let now = Instant::now();
-        let mut participants = self.participants.lock().unwrap();
+        let mut participants = sync::lock(&self.participants);
         participants.retain(|_, p| now.duration_since(p.seen) < PARTICIPANT_TTL);
         let mut recent: Vec<(Instant, PeerInfo)> = participants
             .iter()

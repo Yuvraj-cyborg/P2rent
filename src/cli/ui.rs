@@ -5,7 +5,7 @@ use std::time::Duration;
 
 const TICK: Duration = Duration::from_millis(120);
 
-pub fn spinner(message: impl Into<String>) -> ProgressBar {
+pub(super) fn spinner(message: impl Into<String>) -> ProgressBar {
     let bar = ProgressBar::new_spinner();
     bar.set_style(style("{spinner} {msg}"));
     bar.set_message(message.into());
@@ -14,7 +14,7 @@ pub fn spinner(message: impl Into<String>) -> ProgressBar {
 }
 
 /// A byte-count bar with throughput and time remaining.
-pub fn bytes_bar(total: u64, label: &str) -> ProgressBar {
+pub(super) fn bytes_bar(total: u64, label: &str) -> ProgressBar {
     let bar = ProgressBar::new(total);
     bar.set_style(
         style(
@@ -30,20 +30,24 @@ fn style(template: &str) -> ProgressStyle {
     ProgressStyle::with_template(template).expect("progress templates are static and valid")
 }
 
-pub fn bytes(n: u64) -> String {
+pub(super) fn bytes(n: u64) -> String {
     HumanBytes(n).to_string()
 }
 
-pub fn rate(bytes: u64, elapsed: Duration) -> String {
-    let seconds = elapsed.as_secs_f64();
-    if seconds <= 0.0 {
+pub(super) fn rate(bytes: u64, elapsed: Duration) -> String {
+    let millis = elapsed.as_millis();
+    if millis == 0 {
         return "-".to_owned();
     }
-    format!("{}/s", HumanBytes((bytes as f64 / seconds) as u64))
+    let per_second = u128::from(bytes) * 1000 / millis;
+    format!(
+        "{}/s",
+        HumanBytes(u64::try_from(per_second).unwrap_or(u64::MAX))
+    )
 }
 
-pub fn plural(n: usize, noun: &str) -> String {
-    match n {
+pub(super) fn plural(n: impl TryInto<u64>, noun: &str) -> String {
+    match n.try_into().unwrap_or(u64::MAX) {
         1 => format!("1 {noun}"),
         n => format!("{n} {noun}s"),
     }
@@ -51,7 +55,7 @@ pub fn plural(n: usize, noun: &str) -> String {
 
 /// Parses sizes such as `1048576`, `512K`, `4M`, `1MiB` or `16MB`. Suffixes
 /// are binary: K is 1024.
-pub fn parse_size(text: &str) -> Result<u32, String> {
+pub(super) fn parse_size(text: &str) -> Result<u32, String> {
     let text = text.trim();
     let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let multiplier: u64 = match text[digits.len()..].to_ascii_lowercase().as_str() {

@@ -1,0 +1,41 @@
+# Dependency policy, checked by `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+# Known vulnerabilities and unmaintained crates fail the check.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licences only: anything else needs a decision, not a default.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "CC0-1.0",
+    # File-level copyleft: using an unmodified MPL crate (`option-ext`, via
+    # `dirs`) places no condition on this project's own code.
+    "MPL-2.0",
+]
+
+[bans]
+# Two versions of one crate means two copies of its code in the binary.
+multiple-versions = "deny"
+wildcards = "deny"
+# Duplicates this project cannot remove, because two upstream crates pin
+# different major versions. Anything not listed here fails the check.
+skip = [
+    { crate = "getrandom@0.2", reason = "ring is still on 0.2; quinn and rand use 0.4" },
+    { crate = "syn@2", reason = "tracing-attributes is still on 2; the other derive macros use 3" },
+    { crate = "windows-sys@0.52", reason = "ring is still on 0.52; everything else uses 0.61" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
