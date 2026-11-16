@@ -52,7 +52,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
         let artifact = share.artifact();
         eprintln!(
             "seeding  {}  ({}, {})",
-            artifact.manifest().name,
+            artifact.name(),
             ui::bytes(artifact.total_size()),
             ui::plural(artifact.chunk_count(), "chunk"),
         );

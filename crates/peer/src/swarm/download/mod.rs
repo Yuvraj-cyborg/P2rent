@@ -146,6 +146,9 @@ pub struct Report {
     pub sources: Vec<(NodeId, u64)>,
     /// Every peer this download learned about, for [`announce`].
     pub peers: Vec<PeerInfo>,
+    /// Links of the artifact that were left out because this system cannot
+    /// create them.
+    pub skipped_links: usize,
     /// Wall time from start to finish.
     pub elapsed: Duration,
 }
@@ -210,15 +213,17 @@ pub async fn download(
         discovered_tx,
     );
     // Each file was flushed and renamed into place as its last chunk
-    // arrived. What is left is to make the renames themselves last.
+    // arrived. What is left is to give the directories their times and
+    // permissions, and to make the renames themselves last.
     let peers = manage(&session, bootstrap, discovered_rx).await?;
     let renamed = share.clone();
-    tokio::task::spawn_blocking(move || renamed.store().flush())
+    tokio::task::spawn_blocking(move || renamed.store().seal())
         .await
         .map_err(|e| Error::Transport(e.to_string()))??;
     progress.set_phase(Phase::Done);
 
     Ok(Report {
+        skipped_links: share.store().skipped_links(),
         share,
         resumed_bytes: resumed,
         fetched_bytes: progress.fetched_bytes(),
@@ -228,16 +233,17 @@ pub async fn download(
     })
 }
 
-/// Keeps this node listed with `peers` as a holder of `artifact`, so that
-/// downloaders arriving later are told about it. Runs until cancelled.
-pub async fn announce(node: Arc<Node>, artifact: Hash, peers: Vec<PeerInfo>) {
+/// Keeps this node listed with `peers` as a holder of `content`, a content
+/// id, so that downloaders arriving later are told about it. Runs until
+/// cancelled.
+pub async fn announce(node: Arc<Node>, content: Hash, peers: Vec<PeerInfo>) {
     let mut ticker = tokio::time::interval(ANNOUNCE_INTERVAL);
     loop {
         ticker.tick().await;
         for peer in &peers {
             let attempt = async {
                 let connection = node.endpoint().connect(peer.addr, peer.node).await?;
-                let status = connection.status(artifact).await;
+                let status = connection.status(content).await;
                 connection.close();
                 status
             };

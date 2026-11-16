@@ -54,8 +54,8 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     print_summary(&report);
 
     if args.seed {
-        let artifact = report.share.artifact().id();
-        let announcer = tokio::spawn(announce(node.clone(), artifact, report.peers.clone()));
+        let content = report.share.artifact().content_id();
+        let announcer = tokio::spawn(announce(node.clone(), content, report.peers.clone()));
         let status = ui::spinner(format!(
             "seeding on {} (Ctrl-C to stop)",
             node.local_addr()?
@@ -133,6 +133,12 @@ fn print_summary(report: &Report) {
         eprintln!(
             "reused   {} already on disk",
             ui::bytes(report.resumed_bytes)
+        );
+    }
+    if report.skipped_links > 0 {
+        eprintln!(
+            "skipped  {}, which this system cannot create",
+            ui::plural(report.skipped_links, "link")
         );
     }
     if report.fetched_bytes > 0 {

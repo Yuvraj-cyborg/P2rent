@@ -18,7 +18,9 @@
 use fs::DiskStore;
 use gungraun::prelude::*;
 use gungraun::{Callgrind, EventKind};
-use model::artifact::{Artifact, Bitfield, DEFAULT_CHUNK_SIZE, FileEntry, Hash, Kind, Manifest};
+use model::artifact::{
+    Artifact, Bitfield, DEFAULT_CHUNK_SIZE, Entry, EntryKind, EntryMetadata, Hash, Manifest,
+};
 use model::schedule::Schedule;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -31,23 +33,35 @@ fn chunk_bytes() -> Vec<u8> {
         .collect()
 }
 
-/// A manifest of `files` files of `chunks_each` whole chunks each.
+/// What is recorded about every entry here besides its content.
+const METADATA: EntryMetadata = EntryMetadata {
+    mode: 0o644,
+    modified: None,
+};
+
+fn entry(path: String, kind: EntryKind) -> (Entry, EntryMetadata) {
+    (Entry { path, kind }, METADATA)
+}
+
+/// A manifest of `files` files of `chunks_each` whole chunks each, in one
+/// directory under the root.
 fn manifest(files: u64, chunks_each: u64) -> Manifest {
-    Manifest {
-        name: "bench".to_owned(),
-        kind: Kind::Directory,
-        chunk_size: DEFAULT_CHUNK_SIZE,
-        files: (0..files)
-            .map(|file| FileEntry {
-                path: format!("dir/file-{file:06}"),
-                size: chunks_each * u64::from(DEFAULT_CHUNK_SIZE),
-                executable: false,
-            })
-            .collect(),
-        chunks: (0..files * chunks_each)
+    let size = chunks_each * u64::from(DEFAULT_CHUNK_SIZE);
+    let mut entries = vec![
+        entry(String::new(), EntryKind::Directory),
+        entry("dir".to_owned(), EntryKind::Directory),
+    ];
+    entries.extend(
+        (0..files).map(|file| entry(format!("dir/file-{file:06}"), EntryKind::File { size })),
+    );
+    Manifest::new(
+        "bench",
+        DEFAULT_CHUNK_SIZE,
+        entries,
+        (0..files * chunks_each)
             .map(|chunk| Hash::of(&chunk.to_le_bytes()))
             .collect(),
-    }
+    )
 }
 
 fn artifact(files: u64, chunks_each: u64) -> Artifact {
@@ -74,17 +88,13 @@ struct OnDisk {
 /// empty part file waiting for its chunks.
 fn on_disk(chunks: u64, written: bool) -> OnDisk {
     let chunk = chunk_bytes();
-    let manifest = Manifest {
-        name: "bench.bin".to_owned(),
-        kind: Kind::File,
-        chunk_size: DEFAULT_CHUNK_SIZE,
-        files: vec![FileEntry {
-            path: "bench.bin".to_owned(),
-            size: chunks * u64::from(DEFAULT_CHUNK_SIZE),
-            executable: false,
-        }],
-        chunks: (0..chunks).map(|_| Hash::of(&chunk)).collect(),
-    };
+    let size = chunks * u64::from(DEFAULT_CHUNK_SIZE);
+    let manifest = Manifest::new(
+        "bench.bin",
+        DEFAULT_CHUNK_SIZE,
+        vec![entry(String::new(), EntryKind::File { size })],
+        (0..chunks).map(|_| Hash::of(&chunk)).collect(),
+    );
     let artifact = Arc::new(Artifact::new(manifest).expect("the manifest is valid"));
     let dir = tempfile::tempdir().expect("cannot create a working directory");
     let store = DiskStore::resume(artifact, dir.path(), &|_| {}).expect("cannot create the file");

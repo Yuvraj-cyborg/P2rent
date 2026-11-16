@@ -56,7 +56,7 @@ async fn serve_request(
     .map_err(|_| Error::Transport("timed out waiting for a request".into()))??;
 
     match request {
-        Request::Manifest { artifact } => match node.share(artifact) {
+        Request::Manifest { artifact } => match node.share_of_artifact(artifact) {
             Some(share) => {
                 let encoded = share.artifact().encoded();
                 let len = encoded.len() as u64;
@@ -66,7 +66,7 @@ async fn serve_request(
             None => proto::write_frame(&mut send, &Response::NotFound).await?,
         },
 
-        Request::Status { artifact } => match node.share(artifact) {
+        Request::Status { content } => match node.share(content) {
             Some(share) => {
                 share.note_participant(PeerInfo {
                     node: connection.peer(),
@@ -86,8 +86,8 @@ async fn serve_request(
             None => proto::write_frame(&mut send, &Response::NotFound).await?,
         },
 
-        Request::Chunk { artifact, index } => {
-            let share = node.share(artifact).filter(|share| share.has(index));
+        Request::Chunk { content, index } => {
+            let share = node.share(content).filter(|share| share.has(index));
             let data = match share {
                 Some(share) => {
                     let reader = share.clone();
@@ -98,7 +98,7 @@ async fn serve_request(
                     match read {
                         Ok(data) => Some((share, data)),
                         Err(e) => {
-                            warn!(%artifact, index, "cannot read chunk from disk: {e}");
+                            warn!(%content, index, "cannot read chunk from disk: {e}");
                             None
                         }
                     }

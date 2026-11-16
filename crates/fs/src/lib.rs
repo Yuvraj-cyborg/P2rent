@@ -21,7 +21,7 @@ pub use index::{Indexed, index, measure};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use model::artifact::{Kind, MIN_CHUNK_SIZE, PART_SUFFIX};
+    use model::artifact::{EntryKind, MIN_CHUNK_SIZE, PART_SUFFIX};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -57,14 +57,29 @@ mod tests {
         let first = index(&root, MIN_CHUNK_SIZE, &count).unwrap();
         let second = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
 
-        let manifest = first.artifact.manifest();
-        assert_eq!(manifest.kind, Kind::Directory);
-        assert_eq!(manifest.name, "bundle");
-        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(!first.artifact.is_file());
+        assert_eq!(first.artifact.name(), "bundle");
+        let entries = first.artifact.entries();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        // The root, then everything under it, directories included.
         assert_eq!(
             paths,
-            ["a.bin", "empty", "nested/b.bin", "nested/deep/c.bin"]
+            [
+                "",
+                "a.bin",
+                "empty",
+                "nested",
+                "nested/b.bin",
+                "nested/deep",
+                "nested/deep/c.bin"
+            ]
         );
+        let directories: Vec<&str> = entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Directory)
+            .map(|e| e.path.as_str())
+            .collect();
+        assert_eq!(directories, ["", "nested", "nested/deep"]);
         // a.bin: 4 chunks, empty: none, b.bin: 1, c.bin: 1.
         assert_eq!(first.artifact.chunk_count(), 6);
         assert_eq!(first.artifact.id(), second.artifact.id());
@@ -78,7 +93,8 @@ mod tests {
         let file = tmp.path().join("model.bin");
         fs::write(&file, bytes(CS * 2, 1)).unwrap();
         let before = index(&file, MIN_CHUNK_SIZE, &|_| {}).unwrap();
-        assert_eq!(before.artifact.manifest().kind, Kind::File);
+        assert!(before.artifact.is_file());
+        assert_eq!(before.artifact.entries().len(), 1);
 
         fs::write(&file, bytes(CS * 2, 9)).unwrap();
         let after = index(&file, MIN_CHUNK_SIZE, &|_| {}).unwrap();
@@ -133,11 +149,11 @@ mod tests {
 
         copy(&source, &dest, total - 1);
         assert!(dest.is_complete());
-        dest.flush().unwrap();
-        dest.flush().unwrap();
+        dest.seal().unwrap();
+        dest.seal().unwrap();
         assert!(resume(&artifact, &out).is_complete());
 
-        for entry in &artifact.manifest().files {
+        for entry in artifact.entries().iter().filter(|entry| entry.is_file()) {
             assert_eq!(
                 fs::read(source.root().join(&entry.path)).unwrap(),
                 fs::read(out.join("bundle").join(&entry.path)).unwrap(),
@@ -329,33 +345,216 @@ mod tests {
         assert!(DiskStore::resume(artifact, &out, &|_| {}).is_err());
     }
 
-    #[cfg(unix)]
+    /// Copies every chunk of `source` into a new store under `out`, and
+    /// finishes it.
+    fn transfer(
+        artifact: &Arc<model::artifact::Artifact>,
+        source: &DiskStore,
+        out: &std::path::Path,
+    ) -> DiskStore {
+        let dest = resume(artifact, out);
+        for chunk in 0..artifact.chunk_count() {
+            copy(source, &dest, chunk);
+        }
+        dest.seal().unwrap();
+        dest
+    }
+
     #[test]
-    fn an_executable_file_arrives_executable() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_tree_arrives_with_its_empty_directories() {
         let tmp = tempfile::tempdir().unwrap();
         let root = sample_tree(tmp.path());
-        let script = root.join("run.sh");
-        fs::write(&script, b"#!/bin/sh\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(root.join("hollow/inner")).unwrap();
 
         let indexed = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
         let artifact = Arc::new(indexed.artifact);
         let source = DiskStore::whole(artifact.clone(), indexed.root);
         let out = tmp.path().join("out");
-        let dest = resume(&artifact, &out);
-        for chunk in 0..artifact.chunk_count() {
-            copy(&source, &dest, chunk);
+        transfer(&artifact, &source, &out);
+
+        assert!(out.join("bundle/hollow/inner").is_dir());
+        assert!(out.join("bundle/nested/deep").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_arrives_with_its_links_permissions_and_times() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = sample_tree(tmp.path());
+        let chmod = |path: &str, mode| {
+            fs::set_permissions(root.join(path), fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let touch = |path: &str, seconds| {
+            let time = SystemTime::UNIX_EPOCH + Duration::new(seconds, 123_456_789);
+            fs::File::open(root.join(path))
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        };
+        std::os::unix::fs::symlink("nested/b.bin", root.join("latest")).unwrap();
+        std::os::unix::fs::symlink("../a.bin", root.join("nested/up")).unwrap();
+        std::os::unix::fs::symlink("nowhere", root.join("dangling")).unwrap();
+        fs::write(root.join("run.sh"), b"#!/bin/sh\n").unwrap();
+        chmod("run.sh", 0o750);
+        chmod("a.bin", 0o600);
+        chmod("empty", 0o444);
+        touch("a.bin", 1_000_000_000);
+        touch("empty", 86_400);
+        // Directories last: changing what is in one changes its time.
+        chmod("nested/deep", 0o700);
+        touch("nested/deep", 1_234_567_890);
+        touch("nested", 1_111_111_111);
+
+        let indexed = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+        assert_eq!(indexed.skipped, 0);
+        let artifact = Arc::new(indexed.artifact);
+        let source = DiskStore::whole(artifact.clone(), indexed.root);
+        let out = tmp.path().join("out");
+        let dest = transfer(&artifact, &source, &out);
+        assert_eq!(dest.skipped_links(), 0);
+
+        let arrived = out.join("bundle");
+        for link in ["latest", "nested/up", "dangling"] {
+            assert_eq!(
+                fs::read_link(arrived.join(link)).unwrap(),
+                fs::read_link(root.join(link)).unwrap(),
+                "{link}"
+            );
+        }
+        assert_eq!(
+            fs::read(arrived.join("latest")).unwrap(),
+            fs::read(root.join("nested/b.bin")).unwrap()
+        );
+        for path in [
+            "run.sh",
+            "a.bin",
+            "empty",
+            "nested/b.bin",
+            "nested/deep",
+            "nested",
+        ] {
+            let was = fs::metadata(root.join(path)).unwrap();
+            let is = fs::metadata(arrived.join(path)).unwrap();
+            assert_eq!(
+                is.permissions().mode() & 0o777,
+                was.permissions().mode() & 0o777,
+                "permissions of {path}"
+            );
+            assert_eq!(
+                is.modified().unwrap(),
+                was.modified().unwrap(),
+                "time of {path}"
+            );
         }
 
-        let mode = |path: &str| {
-            fs::metadata(out.join("bundle").join(path))
+        // Opening it again changes nothing, and replaces no link.
+        let again = resume(&artifact, &out);
+        assert!(again.is_complete());
+        again.seal().unwrap();
+        assert_eq!(
+            fs::metadata(arrived.join("nested"))
                 .unwrap()
-                .permissions()
-                .mode()
+                .modified()
+                .unwrap(),
+            fs::metadata(root.join("nested"))
+                .unwrap()
+                .modified()
+                .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexing_leaves_out_a_link_that_points_outside_the_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = sample_tree(tmp.path());
+        let before = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+
+        std::os::unix::fs::symlink("/etc/passwd", root.join("absolute")).unwrap();
+        std::os::unix::fs::symlink("../outside", root.join("above")).unwrap();
+        std::os::unix::fs::symlink("../../outside", root.join("nested/above")).unwrap();
+
+        let after = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+        assert_eq!(after.skipped, 3);
+        assert_eq!(after.artifact.content_id(), before.artifact.content_id());
+    }
+
+    /// Nothing is written through a link: one standing where a directory of
+    /// the artifact belongs is refused, and one standing where a file
+    /// belongs is replaced, not followed.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_way_is_never_written_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (artifact, source, out) = sample(tmp.path());
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("victim"), b"untouched").unwrap();
+
+        fs::create_dir_all(out.join("bundle")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, out.join("bundle/nested")).unwrap();
+        let refused = DiskStore::resume(artifact.clone(), &out, &|_| {}).unwrap_err();
+        assert!(refused.to_string().contains("not a directory"), "{refused}");
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
+
+        fs::remove_file(out.join("bundle/nested")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("victim"), out.join("bundle/a.bin")).unwrap();
+        transfer(&artifact, &source, &out);
+        assert_eq!(fs::read(elsewhere.join("victim")).unwrap(), b"untouched");
+        assert!(
+            !fs::symlink_metadata(out.join("bundle/a.bin"))
+                .unwrap()
+                .is_symlink()
+        );
+    }
+
+    /// Two names that this file system treats as one cannot both be stored.
+    /// Where it tells them apart, both arrive.
+    #[test]
+    fn names_the_file_system_cannot_tell_apart_are_refused() {
+        use model::artifact::{Artifact, Entry, EntryMetadata, Hash, Manifest};
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("probe"), b"").unwrap();
+        let ignores_case = tmp.path().join("PROBE").exists();
+
+        let plain = EntryMetadata {
+            mode: 0o644,
+            modified: None,
         };
-        assert_ne!(mode("run.sh") & 0o111, 0);
-        assert_eq!(mode("a.bin") & 0o111, 0);
+        let entry = |path: &str, kind| {
+            (
+                Entry {
+                    path: path.into(),
+                    kind,
+                },
+                plain,
+            )
+        };
+        let contents = bytes(10, 1);
+        let manifest = Manifest::new(
+            "tree",
+            MIN_CHUNK_SIZE,
+            vec![
+                entry("", EntryKind::Directory),
+                entry("README", EntryKind::File { size: 10 }),
+                entry("readme", EntryKind::File { size: 10 }),
+            ],
+            vec![Hash::of(&contents); 2],
+        );
+        let artifact = Arc::new(Artifact::new(manifest).unwrap());
+        let opened = DiskStore::resume(artifact, &tmp.path().join("out"), &|_| {});
+
+        if ignores_case {
+            let refused = opened.unwrap_err().to_string();
+            assert!(refused.contains("the same name"), "{refused}");
+        } else {
+            let dest = opened.unwrap();
+            assert!(dest.write_chunk(0, &contents).unwrap());
+            assert!(dest.write_chunk(1, &contents).unwrap());
+            assert!(dest.is_complete());
+        }
     }
 
     #[test]
@@ -369,7 +568,7 @@ mod tests {
         fs::write(part(&root.join("nested/folder")).join("inside"), b"x").unwrap();
 
         let after = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
-        assert_eq!(after.artifact.id(), before.artifact.id());
+        assert_eq!(after.artifact.content_id(), before.artifact.content_id());
         assert_eq!(after.skipped, before.skipped + 2);
     }
 }

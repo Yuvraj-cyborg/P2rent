@@ -18,7 +18,8 @@ logic small enough to prove.
 ```
 crates/
 ├── model/src/
-│   ├── artifact/      hash.rs  manifest.rs  layout.rs  bitfield.rs  wire.rs
+│   ├── artifact/      hash.rs  manifest.rs  path.rs  layout.rs  bitfield.rs  wire.rs
+│   ├── assembly.rs
 │   ├── schedule.rs
 │   └── hex.rs
 ├── fs/src/            index.rs  disk.rs  io.rs
@@ -40,9 +41,18 @@ xtask/                 development tasks written in Rust (`cargo xtask`)
 
 ## Data model
 
-An **artifact** is a file or a directory tree. Its **manifest** lists every
-file (relative path, size, execute bit) and the BLAKE3 digest of every chunk.
-The **artifact id** is a domain-separated BLAKE3 hash of the encoded manifest.
+An **artifact** is a file or a directory tree. Its **manifest** has two
+halves. The **content** lists every entry (files with their sizes,
+directories, and links with their targets) and the BLAKE3 digest of every
+chunk. The **metadata** holds the root's name and, for each entry, its
+permission bits and the time it was last modified.
+
+There are two identifiers. The **content id** is a hash of the content
+alone, and names the swarm: any node holding those bytes can supply them,
+whatever its copy is called. The **artifact id** is a hash of the content id
+and the metadata, and is what a ticket carries, so a ticket pins both. The
+encoding begins with a format version, and a manifest in a version a build
+does not know is refused by name. [protocol.md](protocol.md) has the format.
 
 Files are chunked independently at a fixed size, so chunk *n* of a file always
 starts at byte *n × chunk size*. Two consequences follow:
@@ -52,11 +62,15 @@ starts at byte *n × chunk size*. Two consequences follow:
 - a downloader can write chunks in any order into pre-sized files.
 
 Manifests come from untrusted peers. `Manifest::validate` runs before a
-manifest is used for anything and rejects path components that are empty,
-`.`, `..`, longer than 246 bytes, that end in `.mux-part`, or that contain a
-separator, drive colon or NUL; paths that are unsorted, duplicated or that
-name something as both a file and a directory; and chunk counts that disagree
-with the declared file sizes.
+manifest is used for anything and rejects names that are empty, `.`, `..`,
+longer than 246 bytes, that end in `.mux-part`, or that contain a separator,
+drive colon or NUL; paths that are out of order or repeated; an entry whose
+directory is not itself listed as a directory, which rules out anything
+under a file or behind a link; a link whose target climbs above the root;
+permission bits beyond read, write and execute; and chunk counts that
+disagree with the declared file sizes. The rules on bytes live in
+`artifact::path`, and the ones about a single name and about the order of
+paths are proven.
 
 ## Storage
 
@@ -79,6 +93,13 @@ chunk of it is in place.
 
 Chunks are read from part files as well as whole ones, so a node serves what
 it holds while it downloads the rest.
+
+Directories are created first, and each must be a real directory: a link
+standing where one belongs is an error, so nothing is ever written through a
+link to somewhere else. Links are created by the same rename as files. A
+file gets its recorded time and permissions just before its rename. A
+directory gets them when the download completes, the deepest first, because
+filling a directory changes its time and a read-only one cannot be filled.
 
 Resuming needs no state file. `DiskStore::resume` re-hashes whatever is at
 the destination. A whole file is kept. A part file keeps every chunk that is

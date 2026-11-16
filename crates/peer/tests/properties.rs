@@ -57,8 +57,8 @@ fn peer_info() -> impl Strategy<Value = PeerInfo> {
 fn request() -> impl Strategy<Value = Request> {
     prop_oneof![
         hash().prop_map(|artifact| Request::Manifest { artifact }),
-        hash().prop_map(|artifact| Request::Status { artifact }),
-        (hash(), any::<u64>()).prop_map(|(artifact, index)| Request::Chunk { artifact, index }),
+        hash().prop_map(|content| Request::Status { content }),
+        (hash(), any::<u64>()).prop_map(|(content, index)| Request::Chunk { content, index }),
     ]
 }
 

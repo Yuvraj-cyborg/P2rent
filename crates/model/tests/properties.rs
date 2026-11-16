@@ -1,6 +1,8 @@
 //! Properties of the data model, checked on generated inputs.
 
-use model::artifact::{Artifact, Bitfield, FileEntry, Hash, Kind, MIN_CHUNK_SIZE, Manifest};
+use model::artifact::{
+    Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Timestamp,
+};
 use model::hex;
 use model::schedule::{ChunkState, Schedule};
 use proptest::collection::{btree_set, vec};
@@ -21,53 +23,94 @@ fn length_and_indices() -> impl Strategy<Value = (u64, BTreeSet<u64>)> {
     (0u64..300).prop_flat_map(|len| (Just(len), btree_set(0..len.max(1), 0..64)))
 }
 
-/// A valid directory manifest: sorted, unique paths in which nothing is both
-/// a file and a directory, and one digest per chunk.
+/// What a generated entry is, before it has a path.
+#[derive(Clone, Debug)]
+enum Sort {
+    File(u64),
+    EmptyDirectory,
+    /// A link to the entry's sibling of this number.
+    Link(u8),
+}
+
+/// A valid directory manifest: the root, a few directories, and files, empty
+/// directories and links inside them, in path order, with permissions and
+/// times, and one digest per chunk.
 fn manifest() -> impl Strategy<Value = Manifest> {
-    let path = prop_oneof![
-        (0u8..20).prop_map(|n| format!("f{n}")),
-        (0u8..4, 0u8..20).prop_map(|(d, n)| format!("d{d}/f{n}")),
-    ];
     let size = prop_oneof![
         Just(0u64),
         0u64..40_000,
         (0u64..10).prop_map(|n| n * u64::from(MIN_CHUNK_SIZE)),
     ];
-    vec((path, size, any::<bool>()), 1..12).prop_map(|entries| {
-        let mut seen = BTreeSet::new();
-        let mut files: Vec<FileEntry> = entries
-            .into_iter()
-            .filter(|(path, _, _)| seen.insert(path.clone()))
-            .map(|(path, size, executable)| FileEntry {
-                path,
-                size,
-                executable,
-            })
-            .collect();
-        files.sort_by(|a, b| a.path.cmp(&b.path));
-        let chunks: u64 = files
-            .iter()
-            .map(|file| file.size.div_ceil(u64::from(MIN_CHUNK_SIZE)))
-            .sum();
-        Manifest {
-            name: "tree".into(),
-            kind: Kind::Directory,
-            chunk_size: MIN_CHUNK_SIZE,
-            files,
-            chunks: (0..chunks).map(|i| Hash::of(&i.to_le_bytes())).collect(),
+    let sort = prop_oneof![
+        4 => size.prop_map(Sort::File),
+        1 => Just(Sort::EmptyDirectory),
+        1 => (0u8..20).prop_map(Sort::Link),
+    ];
+    // Where an entry goes: at the top, or in one of four directories.
+    let place = prop_oneof![Just(None), (0u8..4).prop_map(Some)];
+    let metadata = (
+        0u16..=0o777,
+        proptest::option::of((any::<i64>(), 0u32..1_000_000_000)),
+    )
+        .prop_map(|(mode, modified)| EntryMetadata {
+            mode,
+            modified: modified.map(|(seconds, nanos)| Timestamp { seconds, nanos }),
+        });
+    vec((place, 0u8..20, sort, metadata), 0..12).prop_map(|generated| {
+        let plain = EntryMetadata {
+            mode: 0o755,
+            modified: None,
+        };
+        let directory = |path: String| {
+            let kind = EntryKind::Directory;
+            (path.clone(), (Entry { path, kind }, plain))
+        };
+        // Keyed by path, which sorts them and drops repeats.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.extend([directory(String::new())]);
+        for (place, number, sort, metadata) in generated {
+            let (prefix, target_prefix) = match place {
+                None => (String::new(), String::new()),
+                Some(d) => {
+                    entries.extend([directory(format!("d{d}"))]);
+                    (format!("d{d}/"), String::new())
+                }
+            };
+            let path = format!("{prefix}e{number}");
+            let kind = match sort {
+                Sort::File(size) => EntryKind::File { size },
+                Sort::EmptyDirectory => EntryKind::Directory,
+                Sort::Link(sibling) => EntryKind::Symlink {
+                    target: format!("{target_prefix}e{sibling}"),
+                },
+            };
+            entries
+                .entry(path.clone())
+                .or_insert((Entry { path, kind }, metadata));
         }
+        let entries: Vec<(Entry, EntryMetadata)> = entries.into_values().collect();
+        let chunks: u64 = entries
+            .iter()
+            .map(|(entry, _)| entry.size().div_ceil(u64::from(MIN_CHUNK_SIZE)))
+            .sum();
+        Manifest::new(
+            "tree",
+            MIN_CHUNK_SIZE,
+            entries,
+            (0..chunks).map(|i| Hash::of(&i.to_le_bytes())).collect(),
+        )
     })
 }
 
-/// Every chunk as (file, offset, length), worked out the slow, obvious way.
+/// Every chunk as (entry, offset, length), worked out the slow, obvious way.
 fn naive_layout(manifest: &Manifest) -> Vec<(usize, u64, u32)> {
-    let chunk_size = u64::from(manifest.chunk_size);
+    let chunk_size = u64::from(manifest.content.chunk_size);
     let mut layout = Vec::new();
-    for (file, entry) in manifest.files.iter().enumerate() {
+    for (index, entry) in manifest.content.entries.iter().enumerate() {
         let mut offset = 0;
-        while offset < entry.size {
-            let len = (entry.size - offset).min(chunk_size);
-            layout.push((file, offset, u32::try_from(len).unwrap()));
+        while offset < entry.size() {
+            let len = (entry.size() - offset).min(chunk_size);
+            layout.push((index, offset, u32::try_from(len).unwrap()));
             offset += len;
         }
     }
@@ -162,6 +205,27 @@ proptest! {
         let decoded = Artifact::decode(artifact.id(), artifact.encoded().to_vec()).unwrap();
         prop_assert_eq!(decoded.manifest(), &manifest);
         prop_assert_eq!(decoded.id(), artifact.id());
+        prop_assert_eq!(decoded.content_id(), artifact.content_id());
+    }
+
+    /// Names, permissions and times are not content: change only them and
+    /// the swarm is the same.
+    #[test]
+    fn the_content_id_depends_on_content_alone(
+        manifest in manifest(),
+        name in "[a-z]{1,8}",
+        mode in 0u16..=0o777,
+        seconds in any::<i64>(),
+    ) {
+        let original = Artifact::new(manifest.clone()).unwrap();
+        let mut changed = manifest;
+        changed.metadata.name = name;
+        for metadata in &mut changed.metadata.entries {
+            metadata.mode = mode;
+            metadata.modified = Some(Timestamp { seconds, nanos: 0 });
+        }
+        let changed = Artifact::new(changed).unwrap();
+        prop_assert_eq!(changed.content_id(), original.content_id());
     }
 
     #[test]
@@ -191,7 +255,7 @@ proptest! {
 
     #[test]
     fn file_chunks_split_the_index_range(manifest in manifest()) {
-        let files = manifest.files.len();
+        let files = manifest.content.entries.len();
         let artifact = Artifact::new(manifest).unwrap();
         let mut next = 0;
         for file in 0..files {

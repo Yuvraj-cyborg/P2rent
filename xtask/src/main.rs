@@ -24,6 +24,7 @@ const RELEASE_WORKFLOW: &str = ".github/workflows/release.yml";
 const PROVEN_MODULES: &[&str] = &[
     "crate::artifact::bitfield",
     "crate::artifact::layout",
+    "crate::artifact::path",
     "crate::assembly",
     "crate::schedule",
 ];
