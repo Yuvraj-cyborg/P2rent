@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="mux" width="380">
+  <img src="assets/logo.png" alt="mux" width="360">
 </p>
 
 <p align="center">
