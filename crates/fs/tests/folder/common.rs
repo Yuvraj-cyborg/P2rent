@@ -27,14 +27,14 @@ pub(crate) struct Store {
 impl Store {
     /// Over files that are already whole, as after indexing them.
     pub(crate) fn whole(artifact: Arc<Artifact>, root: PathBuf) -> Self {
-        let folder = Folder::whole(artifact.clone(), root);
+        let folder = Folder::whole(artifact.tree().clone(), root);
         let store = engine::Store::whole(artifact, Arc::new(folder.clone()));
         Self { store, folder }
     }
 
     /// Opens the artifact inside `dir`, keeping what is already there.
     pub(crate) fn resume(artifact: Arc<Artifact>, dir: &Path) -> Result<Self, Failure> {
-        let folder = Folder::inside(artifact.clone(), dir);
+        let folder = Folder::inside(artifact.tree().clone(), dir);
         let place = Arc::new(folder.clone());
         let store = wait(engine::Store::resume(artifact, place, |_| {}))?;
         Ok(Self { store, folder })

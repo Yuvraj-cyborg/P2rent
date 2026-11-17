@@ -127,8 +127,10 @@ fn on_disk(chunks: u64, written: bool) -> OnDisk {
     );
     let artifact = Arc::new(Artifact::new(manifest).expect("the manifest is valid"));
     let dir = tempfile::tempdir().expect("cannot create a working directory");
-    let folder = Folder::inside(artifact.clone(), dir.path());
-    let held = folder.begin(&|_| {}).expect("cannot create the file");
+    let folder = Folder::inside(artifact.tree().clone(), dir.path());
+    let held = folder
+        .begin(&|index| artifact.chunk_hash(index), &|_| {})
+        .expect("cannot create the file");
     let mut disk = OnDisk {
         assembly: Assembly::new(artifact.layout().clone(), held),
         artifact,

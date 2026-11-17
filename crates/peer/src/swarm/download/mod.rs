@@ -190,7 +190,7 @@ pub async fn download(
 
     progress.set_phase(Phase::Scanning);
     let scan_progress = progress.clone();
-    let folder = Arc::new(Folder::inside(artifact.clone(), out_dir));
+    let folder = Arc::new(Folder::inside(artifact.tree().clone(), out_dir));
     let examined = move |bytes| {
         scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
     };

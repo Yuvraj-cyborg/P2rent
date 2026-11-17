@@ -1,7 +1,7 @@
 use super::io;
-use model::artifact::{Artifact, Bitfield, EntryKind, Hash, PART_SUFFIX};
+use model::artifact::{Bitfield, EntryKind, Hash, PART_SUFFIX, Tree};
 use model::assembly::Assembly;
-use model::place::{Capabilities, Failure, Pending, Sink, Source};
+use model::place::{Capabilities, Expected, Failure, Pending, Sink, Source};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// An artifact's files in a local folder.
+/// A tree's files in a local folder.
 ///
 /// A file that is whole lives under its final name. A file that is still
 /// being filled lives in a part file beside it, named with
@@ -29,7 +29,7 @@ pub struct Folder(Arc<Inner>);
 
 #[derive(Debug)]
 struct Inner {
-    artifact: Arc<Artifact>,
+    tree: Arc<Tree>,
     root: PathBuf,
     /// Whether each entry has its final name. Set after the rename, so a
     /// reader that sees it finds the file there.
@@ -37,7 +37,7 @@ struct Inner {
     /// Directories that have had a file renamed into them since they were
     /// last flushed. See [`Sink::finish`].
     unflushed: Mutex<BTreeSet<PathBuf>>,
-    /// Links the artifact holds that this system cannot create.
+    /// Links the tree holds that this system cannot create.
     skipped_links: AtomicUsize,
 }
 
@@ -45,27 +45,27 @@ impl Folder {
     /// Files that are already whole, as after indexing them. Nothing is
     /// read: the caller vouches for the content.
     ///
-    /// `root` is the file itself for a file artifact, or the directory that
-    /// holds the tree for a directory artifact.
-    pub fn whole(artifact: Arc<Artifact>, root: PathBuf) -> Self {
-        Self::over(artifact, root, true)
+    /// `root` is the file itself for a tree that is one file, or the
+    /// directory that holds the tree.
+    pub fn whole(tree: Arc<Tree>, root: PathBuf) -> Self {
+        Self::over(tree, root, true)
     }
 
-    /// The artifact inside `dir`, under its own name, to be filled in.
+    /// The tree inside `dir`, under its own name, to be filled in.
     /// Nothing is touched until [`Sink::begin`].
-    pub fn inside(artifact: Arc<Artifact>, dir: &Path) -> Self {
-        let root = dir.join(artifact.name());
-        Self::over(artifact, root, false)
+    pub fn inside(tree: Arc<Tree>, dir: &Path) -> Self {
+        let root = dir.join(tree.name());
+        Self::over(tree, root, false)
     }
 
-    fn over(artifact: Arc<Artifact>, root: PathBuf, in_place: bool) -> Self {
+    fn over(tree: Arc<Tree>, root: PathBuf, in_place: bool) -> Self {
         Self(Arc::new(Inner {
-            in_place: (0..artifact.entries().len())
+            in_place: (0..tree.entries().len())
                 .map(|_| AtomicBool::new(in_place))
                 .collect(),
             unflushed: Mutex::default(),
             skipped_links: AtomicUsize::new(0),
-            artifact,
+            tree,
             root,
         }))
     }
@@ -75,7 +75,7 @@ impl Folder {
         &self.0.root
     }
 
-    /// How many links of the artifact were left out because this system
+    /// How many links of the tree were left out because this system
     /// cannot create them.
     pub fn skipped_links(&self) -> usize {
         self.0.skipped_links.load(Ordering::Relaxed)
@@ -89,7 +89,8 @@ impl Folder {
     /// link standing where one belongs is refused, so nothing is ever
     /// written through a link to somewhere else.
     ///
-    /// Whatever is already there is hashed. A file under its final name
+    /// Whatever is already there is hashed, and a chunk is right if it has
+    /// the digest `expected` gives for it. A file under its final name
     /// stays as it is if every chunk of it is right. If not, it is left
     /// untouched until its replacement is whole, and the chunks of it that
     /// are right are copied into the part file instead of being fetched. A
@@ -103,17 +104,21 @@ impl Folder {
     ///
     /// Returns an error if a file cannot be read or created, if something of
     /// another kind is in the way, or if this file system treats two of the
-    /// artifact's names as one.
-    fn prepare(&self, examined: &(dyn Fn(u64) + Sync)) -> Result<Bitfield> {
-        let artifact = &self.0.artifact;
-        let entries = artifact.entries().len();
+    /// tree's names as one.
+    fn prepare(
+        &self,
+        expected: &Expected<'_>,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Bitfield> {
+        let tree = &self.0.tree;
+        let entries = tree.entries().len();
 
         // Directories first. Paths are in order, so each comes after the
         // directory that holds it.
         if let Some(dir) = self.0.root.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        for (entry, described) in artifact.entries().iter().enumerate() {
+        for (entry, described) in tree.entries().iter().enumerate() {
             if described.kind == EntryKind::Directory {
                 ensure_directory(&self.final_path(entry))?;
             }
@@ -121,10 +126,10 @@ impl Folder {
 
         let found: Vec<Found> = (0..entries)
             .into_par_iter()
-            .map(|entry| self.survey(entry, examined))
+            .map(|entry| self.survey(entry, expected, examined))
             .collect::<Result<_>>()?;
 
-        let mut held = Bitfield::new(artifact.chunk_count());
+        let mut held = Bitfield::new(tree.chunk_count());
         for (entry, file) in found.iter().enumerate() {
             for &index in &file.valid {
                 held.set(index);
@@ -135,14 +140,14 @@ impl Folder {
 
         // A part file with every chunk right is a download that stopped just
         // before its rename. A file with no chunks has nothing to wait for.
-        let assembly = Assembly::new(artifact.layout().clone(), held.clone());
+        let assembly = Assembly::new(tree.layout().clone(), held.clone());
         for entry in 0..entries {
             if !self.is_in_place(entry) && assembly.is_whole(entry) {
                 self.put_in_place(entry)?;
             }
         }
         let mut skipped = 0;
-        for (entry, described) in artifact.entries().iter().enumerate() {
+        for (entry, described) in tree.entries().iter().enumerate() {
             if let EntryKind::Symlink { target } = &described.kind {
                 skipped += usize::from(!self.place_link(entry, target)?);
             }
@@ -184,7 +189,7 @@ impl Folder {
     fn put_in_place(&self, file: usize) -> Result<()> {
         let part = self.part_path(file);
         let written = OpenOptions::new().write(true).open(&part)?;
-        if let Some(metadata) = self.0.artifact.metadata(file) {
+        if let Some(metadata) = self.0.tree.metadata(file) {
             if let Some(time) = metadata.modified.and_then(io::system_time) {
                 written.set_modified(time)?;
             }
@@ -221,13 +226,13 @@ impl Folder {
     ///
     /// Returns an error if a directory cannot be changed or flushed.
     fn seal(&self) -> Result<()> {
-        let entries = self.0.artifact.entries();
+        let entries = self.0.tree.entries();
         if (0..entries.len()).all(|entry| self.is_in_place(entry)) {
             // Children before parents: filling a directory changes its
             // time, and one that may not be written cannot be filled.
             for (entry, described) in entries.iter().enumerate().rev() {
                 if described.kind == EntryKind::Directory
-                    && let Some(metadata) = self.0.artifact.metadata(entry)
+                    && let Some(metadata) = self.0.tree.metadata(entry)
                 {
                     io::restore_directory(&self.final_path(entry), metadata)?;
                 }
@@ -281,13 +286,13 @@ impl Folder {
         Ok(())
     }
 
-    /// Refuses a destination where two of the artifact's names are one file
+    /// Refuses a destination where two of the tree's names are one file
     /// or one directory. That happens on a file system that ignores letter
     /// case or the form of accented letters, and two downloads writing into
     /// one file would both be wrong.
     fn check_distinct(&self) -> Result<()> {
         let mut seen = std::collections::HashMap::new();
-        for entry in 0..self.0.artifact.entries().len() {
+        for entry in 0..self.0.tree.entries().len() {
             if let Some(identity) = self.identity(entry)?
                 && let Some(other) = seen.insert(identity, entry)
             {
@@ -303,7 +308,7 @@ impl Folder {
     #[cfg(unix)]
     fn identity(&self, entry: usize) -> Result<Option<(u64, u64)>> {
         use std::os::unix::fs::MetadataExt;
-        let on_disk = match self.0.artifact.entries()[entry].kind {
+        let on_disk = match self.0.tree.entries()[entry].kind {
             EntryKind::Directory => self.final_path(entry),
             // A part file is always this folder's own. A whole file that
             // was already there may be a hard link, which is harmless.
@@ -318,11 +323,11 @@ impl Folder {
     /// for every way of writing it.
     #[cfg(not(unix))]
     fn identity(&self, entry: usize) -> Result<Option<String>> {
-        Ok(Some(self.0.artifact.entries()[entry].path.to_lowercase()))
+        Ok(Some(self.0.tree.entries()[entry].path.to_lowercase()))
     }
 
     fn clash(&self, one: usize, other: usize) -> Error {
-        let entries = self.0.artifact.entries();
+        let entries = self.0.tree.entries();
         Error::new(
             ErrorKind::AlreadyExists,
             format!(
@@ -334,23 +339,28 @@ impl Folder {
 
     /// Finds out what is already on disk for one file, and makes sure there
     /// is a file to write the rest into.
-    fn survey(&self, file: usize, examined: &(dyn Fn(u64) + Sync)) -> Result<Found> {
-        let artifact = &self.0.artifact;
-        let EntryKind::File { size } = artifact.entries()[file].kind else {
+    fn survey(
+        &self,
+        file: usize,
+        expected: &Expected<'_>,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Found> {
+        let tree = &self.0.tree;
+        let EntryKind::File { size } = tree.entries()[file].kind else {
             // A directory is already there, and a link is made afterwards.
             return Ok(Found {
                 valid: Vec::new(),
                 in_place: true,
             });
         };
-        let chunks = artifact.file_chunks(file);
+        let chunks = tree.file_chunks(file);
         let path = self.final_path(file);
         let part = self.part_path(file);
 
         // Whatever has the final name is only ever read.
         let existing = open_regular(&path)?;
         let reusable = match &existing {
-            Some(old) => self.verify(file, old, examined)?,
+            Some(old) => self.verify(file, old, expected, examined)?,
             None => Vec::new(),
         };
         if let Some(old) = &existing
@@ -382,7 +392,7 @@ impl Folder {
         // Nothing has been written to a new part file, so there is nothing
         // in it to check.
         let mut valid = if started {
-            self.verify(file, &target, examined)?
+            self.verify(file, &target, expected, examined)?
         } else {
             Vec::new()
         };
@@ -392,7 +402,7 @@ impl Folder {
             let copied = reusable
                 .into_par_iter()
                 .filter(|index| valid.binary_search(index).is_err())
-                .map(|index| Ok(self.copy(index, old, &target)?.then_some(index)))
+                .map(|index| Ok(self.copy(index, expected, old, &target)?.then_some(index)))
                 .collect::<Result<Vec<Option<u64>>>>()?;
             valid.extend(copied.into_iter().flatten());
         }
@@ -408,22 +418,23 @@ impl Folder {
         &self,
         file: usize,
         on_disk: &File,
+        expected: &Expected<'_>,
         examined: &(dyn Fn(u64) + Sync),
     ) -> Result<Vec<u64>> {
-        let artifact = &self.0.artifact;
+        let tree = &self.0.tree;
         let len = on_disk.metadata()?.len();
-        let valid = artifact
+        let valid = tree
             .file_chunks(file)
             .into_par_iter()
             .map_init(Vec::new, |buf: &mut Vec<u8>, index| {
-                let location = artifact.locate(index).ok_or_else(out_of_range)?;
+                let location = tree.locate(index).ok_or_else(out_of_range)?;
                 examined(u64::from(location.len));
                 if location.offset + u64::from(location.len) > len {
                     return Ok(None);
                 }
                 buf.resize(location.len as usize, 0);
                 io::read_exact_at(on_disk, buf, location.offset)?;
-                let matches = Some(Hash::of(buf)) == artifact.chunk_hash(index);
+                let matches = expected(index) == Some(Hash::of(buf));
                 Ok(matches.then_some(index))
             })
             .collect::<Result<Vec<Option<u64>>>>()?;
@@ -432,12 +443,12 @@ impl Folder {
 
     /// Copies chunk `index` from one file to the same place in another, if
     /// it is still right when read. Returns whether it was copied.
-    fn copy(&self, index: u64, from: &File, to: &File) -> Result<bool> {
-        let artifact = &self.0.artifact;
-        let location = artifact.locate(index).ok_or_else(out_of_range)?;
+    fn copy(&self, index: u64, expected: &Expected<'_>, from: &File, to: &File) -> Result<bool> {
+        let tree = &self.0.tree;
+        let location = tree.locate(index).ok_or_else(out_of_range)?;
         let mut buf = vec![0; location.len as usize];
         io::read_exact_at(from, &mut buf, location.offset)?;
-        if Some(Hash::of(&buf)) != artifact.chunk_hash(index) {
+        if expected(index) != Some(Hash::of(&buf)) {
             return Ok(false);
         }
         io::write_all_at(to, &buf, location.offset)?;
@@ -467,7 +478,7 @@ impl Folder {
         // Paths were validated with the manifest: every name is a plain
         // name, so the result stays inside `root`. The root's own path is
         // empty.
-        let relative = &self.0.artifact.entries()[entry].path;
+        let relative = &self.0.tree.entries()[entry].path;
         if !relative.is_empty() {
             path.extend(relative.split('/'));
         }
@@ -531,8 +542,8 @@ impl Sink for Folder {
         }
     }
 
-    fn begin(&self, examined: &(dyn Fn(u64) + Sync)) -> Placed<Bitfield> {
-        placed(self.prepare(examined))
+    fn begin(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Placed<Bitfield> {
+        placed(self.prepare(expected, examined))
     }
 
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Placed<()> {
