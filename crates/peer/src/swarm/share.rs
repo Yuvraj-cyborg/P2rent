@@ -1,6 +1,5 @@
 use crate::net::{NodeId, PeerInfo};
-use crate::sync;
-use engine::Store;
+use engine::{Store, sync};
 use model::artifact::{Artifact, Bitfield};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

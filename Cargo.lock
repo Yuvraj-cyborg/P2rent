@@ -505,8 +505,12 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 name = "engine"
 version = "0.2.0"
 dependencies = [
+ "loom",
  "model",
+ "proptest",
+ "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -920,7 +924,6 @@ dependencies = [
  "dirs",
  "engine",
  "fs",
- "loom",
  "model",
  "postcard",
  "proptest",

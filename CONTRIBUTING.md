@@ -70,7 +70,7 @@ same ones locally.
 | `features` | `just features` | Every combination of features builds. |
 | `miri` | `just miri` | The tests that touch neither disk nor network, run under Miri to detect undefined behaviour. |
 | `fuzz` | `just fuzz` | Every parser of bytes from other machines, fed random input for ten seconds each as a smoke test. |
-| `loom` | `just loom` | The download's shared state, under every interleaving of two fetchers. |
+| `loom` | `just loom` | A transfer's shared state, under every interleaving of two fetchers. |
 | `bench` | `just bench origin/main` | The instructions each hot path executes, compared with the base branch. A rise of more than 5% fails. Needs Valgrind, so it runs on Linux only and is not part of `just ci`. |
 
 The checks that are this project's own analysis run locally, with

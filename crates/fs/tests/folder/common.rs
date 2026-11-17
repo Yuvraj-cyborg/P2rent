@@ -65,7 +65,8 @@ impl Store {
     }
 
     pub(crate) fn write_chunk(&self, index: u64, data: &[u8]) -> Result<bool, Failure> {
-        wait(self.store.write_chunk(index, data.to_vec()))
+        let put = wait(self.store.write_chunk(index, data.to_vec()))?;
+        Ok(put != engine::Put::Refused)
     }
 
     pub(crate) fn seal(&self) -> Result<(), Failure> {

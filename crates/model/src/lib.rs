@@ -21,6 +21,7 @@ mod error;
 pub mod hex;
 pub mod location;
 pub mod place;
+pub mod retry;
 pub mod schedule;
 pub mod ticket;
 

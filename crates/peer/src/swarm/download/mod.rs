@@ -1,42 +1,33 @@
-//! Multi-source download.
+//! Downloading from a swarm.
 //!
 //! A download fetches the manifest from any bootstrap peer, checks what is
-//! already on disk, then pulls the missing chunks from as many peers as it
-//! can find. Every chunk is verified against the manifest before it is
-//! written, and is offered to other peers as soon as it lands. A file gets
-//! its final name only when every one of its chunks is in place.
+//! already on disk, then has the engine pull the missing chunks from as
+//! many peers as it can find. Every chunk is verified against the manifest
+//! before it is written, and is offered to other peers as soon as it lands.
+//! A file gets its final name only when every one of its chunks is in
+//! place.
 
-mod claims;
-mod peer;
-mod session;
+mod supplier;
 
-use self::peer::Outcome;
-use self::session::Session;
+use self::supplier::Swarm;
 use super::{Node, Share, Ticket};
 use crate::error::{Error, Result};
 use crate::net::{NodeId, PeerInfo};
-use engine::Store;
+use engine::{Store, sync};
 use fs::Folder;
 use model::artifact::{Artifact, Hash};
-use std::collections::HashMap;
+use model::place::{Event, Observer};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MANIFEST_ATTEMPTS: usize = 3;
-const MANAGER_TICK: Duration = Duration::from_millis(250);
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Most peers a download will keep track of.
-const MAX_KNOWN_PEERS: usize = 512;
 
 /// Limits for one download.
 #[derive(Debug, Clone)]
@@ -81,7 +72,7 @@ pub struct Progress {
     scanned: AtomicU64,
     resumed: AtomicU64,
     fetched: AtomicU64,
-    pub(crate) peers: AtomicUsize,
+    peers: AtomicUsize,
 }
 
 impl Progress {
@@ -129,8 +120,20 @@ impl Progress {
         self.phase.store(phase as u8, Ordering::Relaxed);
     }
 
-    pub(crate) fn add_fetched(&self, bytes: u64) {
-        self.fetched.fetch_add(bytes, Ordering::Relaxed);
+    /// Counts what the engine reports.
+    fn observe(&self, event: Event) {
+        match event {
+            Event::Opened { .. } => {
+                self.peers.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::Closed { .. } => {
+                self.peers.fetch_sub(1, Ordering::Relaxed);
+            }
+            Event::Stored { bytes, .. } => {
+                self.fetched.fetch_add(bytes, Ordering::Relaxed);
+            }
+            Event::Committed { .. } => {}
+        }
     }
 }
 
@@ -202,30 +205,51 @@ pub async fn download(
     progress.resumed.store(resumed, Ordering::Relaxed);
 
     let share = node.register(Arc::new(Share::new(store)));
-    progress.set_phase(Phase::Downloading);
 
-    let (discovered_tx, discovered_rx) = mpsc::unbounded_channel();
-    let session = Session::new(
-        node.clone(),
-        share.clone(),
-        options,
-        progress.clone(),
-        discovered_tx,
-    );
+    progress.set_phase(Phase::Downloading);
+    let swarm = Swarm {
+        node: node.clone(),
+        artifact,
+        known: Arc::default(),
+    };
+    let suppliers = bootstrap
+        .into_iter()
+        .map(|peer| swarm.supplier(peer))
+        .collect();
+    let limits = engine::Options {
+        max_suppliers: options.max_peers,
+        requests_per_supplier: options.requests_per_peer,
+        stall_timeout: options.stall_timeout,
+    };
+    let watching = progress.clone();
+    let observer: Observer = Arc::new(move |event| watching.observe(event));
+    let me = *node.node_id().as_bytes();
+    let summary = engine::transfer(share.store(), me, suppliers, limits, observer).await?;
+
     // Each file was flushed and renamed into place as its last chunk
     // arrived. What is left is to give the directories their times and
     // permissions, and to make the renames themselves last.
-    let peers = manage(&session, bootstrap, discovered_rx).await?;
     share.store().finish().await?;
     progress.set_phase(Phase::Done);
 
+    let known = sync::lock(&swarm.known);
+    let peers = summary
+        .usable
+        .iter()
+        .map(|id| NodeId::from_bytes(*id))
+        .filter_map(|node| known.get(&node).map(|&addr| PeerInfo { node, addr }))
+        .collect();
     Ok(Report {
         skipped_links: folder.skipped_links(),
         root: folder.root().to_owned(),
         share,
         resumed_bytes: resumed,
         fetched_bytes: progress.fetched_bytes(),
-        sources: session.fetched_from(),
+        sources: summary
+            .sources
+            .into_iter()
+            .map(|(id, bytes)| (NodeId::from_bytes(id), bytes))
+            .collect(),
         peers,
         elapsed: started.elapsed(),
     })
@@ -318,123 +342,4 @@ async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<Art
         }
     }
     Err(Error::ManifestUnavailable)
-}
-
-struct Slot {
-    addr: SocketAddr,
-    active: bool,
-    banned: bool,
-    failures: u32,
-    retry_at: Instant,
-}
-
-impl Slot {
-    fn new(addr: SocketAddr) -> Self {
-        Self {
-            addr,
-            active: false,
-            banned: false,
-            failures: 0,
-            retry_at: Instant::now(),
-        }
-    }
-}
-
-/// Runs the download to completion: starts a task per peer, feeds it newly
-/// discovered peers, retries the ones that fail and drops the ones that lie.
-/// Returns every usable peer it came to know.
-async fn manage(
-    session: &Arc<Session>,
-    bootstrap: Vec<PeerInfo>,
-    mut discovered: mpsc::UnboundedReceiver<PeerInfo>,
-) -> Result<Vec<PeerInfo>> {
-    let own = session.node.node_id();
-    let mut slots: HashMap<NodeId, Slot> = bootstrap
-        .into_iter()
-        .map(|peer| (peer.node, Slot::new(peer.addr)))
-        .collect();
-    let mut tasks: JoinSet<Outcome> = JoinSet::new();
-    let mut running: HashMap<tokio::task::Id, NodeId> = HashMap::new();
-    let mut ticker = tokio::time::interval(MANAGER_TICK);
-
-    while !session.is_complete() {
-        let now = Instant::now();
-        let mut free = session
-            .options
-            .max_peers
-            .max(1)
-            .saturating_sub(running.len());
-        for (&node, slot) in &mut slots {
-            if free == 0 {
-                break;
-            }
-            if slot.active || slot.banned || slot.retry_at > now {
-                continue;
-            }
-            slot.active = true;
-            let peer = PeerInfo {
-                node,
-                addr: slot.addr,
-            };
-            let handle = tasks.spawn(peer::run(session.clone(), peer));
-            running.insert(handle.id(), node);
-            free -= 1;
-        }
-
-        tokio::select! {
-            Some(peer) = discovered.recv() => {
-                let known = slots.len();
-                if peer.node == own {
-                    // Peers may list us; there is nothing to do.
-                } else if let Some(slot) = slots.get_mut(&peer.node) {
-                    if !slot.active {
-                        slot.addr = peer.addr;
-                    }
-                } else if known < MAX_KNOWN_PEERS {
-                    debug!(peer = %peer.node.short(), addr = %peer.addr, "discovered peer");
-                    slots.insert(peer.node, Slot::new(peer.addr));
-                }
-            }
-            Some(joined) = tasks.join_next_with_id() => {
-                let (id, outcome) = match joined {
-                    Ok((id, outcome)) => (id, outcome),
-                    Err(e) => (e.id(), Outcome::Failed(format!("peer task crashed: {e}"))),
-                };
-                let Some(node) = running.remove(&id) else { continue };
-                let Some(slot) = slots.get_mut(&node) else { continue };
-                slot.active = false;
-                match outcome {
-                    Outcome::Finished => {}
-                    Outcome::Failed(reason) => {
-                        slot.failures += 1;
-                        let delay = Duration::from_secs(1 << slot.failures.min(5)).min(MAX_RETRY_DELAY);
-                        slot.retry_at = Instant::now() + delay;
-                        debug!(peer = %node.short(), "peer failed ({reason}); retrying in {delay:?}");
-                    }
-                    Outcome::Banned(reason) => {
-                        slot.banned = true;
-                        warn!(peer = %node.short(), "dropping peer: {reason}");
-                    }
-                    Outcome::Fatal(error) => return Err(error),
-                }
-            }
-            _ = ticker.tick() => {}
-            () = session.wake.notified() => {}
-        }
-
-        let idle = session.last_progress().elapsed();
-        if idle > session.options.stall_timeout {
-            return Err(Error::Stalled(session.options.stall_timeout));
-        }
-    }
-
-    tasks.shutdown().await;
-    Ok(slots
-        .into_iter()
-        .filter(|(_, slot)| !slot.banned)
-        .map(|(node, slot)| PeerInfo {
-            node,
-            addr: slot.addr,
-        })
-        .collect())
 }
