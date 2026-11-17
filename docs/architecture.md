@@ -23,6 +23,7 @@ crates/
 │   ├── assembly.rs
 │   ├── schedule.rs
 │   ├── location.rs
+│   ├── mirror/        mod.rs  step.rs
 │   ├── notes.rs
 │   ├── place.rs
 │   ├── retry.rs
@@ -44,7 +45,7 @@ crates/
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
-benches/               instructions.rs  transfer.rs  web.rs (see docs/performance.md)
+benches/               instructions.rs  transfer.rs  web.rs  delta.rs (see docs/performance.md)
 fuzz/                  fuzz targets, a workspace of their own
 proofs/                Lean proofs of the logic in `model`
 xtask/                 development tasks written in Rust (`cargo xtask`)
@@ -268,6 +269,51 @@ run of chunks. A server that does not say how large its file is cannot be
 used. Redirects are followed, a proxy named in the environment is used, and
 certificates are checked against those the system trusts. `headers.rs`
 reads what servers send, and is fuzzed.
+
+## Sync
+
+A sync makes a destination hold what a source holds. `model::mirror` works
+out what to do, and touches no disk.
+
+```
+source tree ─┐
+             ├─► pair by path ─► decide, for each path ─► plan: one step for each path
+destination ─┘                     (proven)
+```
+
+`mirror::plan` goes through the two trees side by side, in the order of
+their paths. For each path it finds what the two have there and whether
+they hold the same, and `mirror::step::decide` answers with one step: add,
+replace, touch, keep, remove or blocked.
+
+`decide` is the part where a mistake loses data, so it is kept free of
+paths, sizes and times, and is proven in Lean: with leave to remove, the
+destination ends up with exactly what the source has; a step removes only
+where the source has nothing; and where the two already match the step is
+to keep, so a second sync does nothing. The pairing around it is checked by
+property tests against a plain map from paths to what is at them.
+
+Two files hold the same if they have the same size and were last changed in
+the same second. Before two trees are compared, each is put as the local
+system keeps it (`fs::as_kept`), so that what a system has no way to keep
+is not found different on every run.
+
+`mux::sync` carries a plan out on a local folder, in an order that loses
+nothing:
+
+```
+look at both places ─► plan ─► stop if a rule forbids it
+   ─► move to the trash what is removed, or is in the way of another kind
+   ─► give each file that will be replaced a second name in the trash
+   ─► copy what is added or replaced, and every directory (engine::copy over engine::part)
+   ─► set the permissions of what is only touched
+```
+
+A file that is replaced keeps its name until the new one is renamed over
+it, and its second name in the trash keeps it after that. `engine::part` is
+a source that holds some of the entries of another, so the copy is the
+ordinary one: part files, notes to carry on from, and a directory's time
+put right after what was done inside it.
 
 ## Network
 
