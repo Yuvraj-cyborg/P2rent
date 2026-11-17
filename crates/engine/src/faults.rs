@@ -1166,10 +1166,9 @@ struct Watched {
 
 impl Watched {
     fn new(sample: &Arc<Sample>, random_access: bool) -> Arc<Self> {
-        let filled = Setup::new(sample).run(&[Made::new(1, Script::honest(sample), sample)]);
-        assert!(filled.has_every_file(sample));
+        let tree = sample.artifact.tree().clone();
         Arc::new(Self {
-            place: filled.place,
+            place: Memory::holding(tree, &sample.files).unwrap(),
             random_access,
             opened: Mutex::default(),
         })
