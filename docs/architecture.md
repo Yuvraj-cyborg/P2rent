@@ -330,12 +330,19 @@ kind of failure the supplier reports:
 | The supplier | The manager |
 | --- | --- |
 | cannot be reached, or breaks off | tries it again after a wait that doubles each time, up to 30 seconds. A supplier that was delivering starts again from the shortest wait. |
-| sends a chunk that fails verification | drops it for good |
+| sends a chunk that fails verification, or cannot be used at all | drops it for good |
 | says it holds a chunk and then does not have it | stops asking it for that chunk |
 | has nothing that is wanted, while another supplier waits for a turn | gives its turn to the one that has waited longest |
 
 The last two rows and the order of turns exist because a property test
 found transfers that stalled without them: see `engine/src/faults.rs`.
+
+A transfer ends in one of four ways. Every chunk is stored. Or the store
+fails, or what is being read changes, and the transfer ends there. Or
+nothing arrives for the whole of the stall timeout. Or every supplier has
+been dropped, so that nobody is left who could deliver: then it ends at
+once, saying what the last one was dropped for, once the chunks that had
+already arrived are stored.
 
 A pipeline reserves a chunk with a `Claim`. Dropping a claim without
 completing it returns the chunk to the pool, so cancellation and errors
@@ -347,7 +354,8 @@ that runs to its end whatever becomes of the supplier.
 
 Pipelines start scanning at an offset derived from the ids of the two ends,
 so ends that start together collect different chunks first and then
-exchange them.
+exchange them. A copy from a source has nobody to exchange with, and starts
+at the first chunk.
 
 A supplier is asked for its next chunk only when the store has taken the
 last one. So the memory held for chunk data is bounded by

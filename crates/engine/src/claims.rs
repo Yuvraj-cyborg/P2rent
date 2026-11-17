@@ -57,6 +57,14 @@ impl Claims {
         })
     }
 
+    /// Whether any chunk is reserved: on its way, or arrived and being
+    /// stored.
+    pub(crate) fn any_in_flight(&self) -> bool {
+        let schedule = self.schedule();
+        (0..schedule.len())
+            .any(|index| matches!(schedule.state(index), Some(ChunkState::InFlight(_))))
+    }
+
     /// Reserves for `owner` a missing chunk that `available` holds,
     /// searching from `cursor`. See [`Schedule::claim`].
     pub(crate) fn claim(
@@ -107,6 +115,27 @@ impl Drop for Claim {
         if !self.settled {
             self.claims.release(self.index, self.owner);
         }
+    }
+}
+
+#[cfg(all(test, not(mux_loom)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_is_in_flight_from_its_claim_until_it_is_settled() {
+        let claims = Claims::new(&Bitfield::new(2), || {});
+        let held = Bitfield::full(2);
+        assert!(!claims.any_in_flight());
+
+        let kept = Claims::claim(&claims, 1, &held, &mut 0).unwrap();
+        let let_go = Claims::claim(&claims, 1, &held, &mut 0).unwrap();
+        assert!(claims.any_in_flight());
+        drop(let_go);
+        assert!(claims.any_in_flight());
+        claims.complete(kept);
+        assert!(!claims.any_in_flight());
+        assert!(!claims.is_complete());
     }
 }
 

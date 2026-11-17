@@ -79,6 +79,12 @@ pub enum Error {
     #[error("{0}")]
     Changed(String),
 
+    /// Nothing is left that could deliver: every supplier was dropped, for
+    /// sending something wrong or for being of no use, or none was given.
+    /// Holds why the last one was dropped.
+    #[error("nothing is left to fetch from: {0}")]
+    Unsupplied(String),
+
     /// The place being written to failed.
     #[error(transparent)]
     Place(#[from] Failure),
@@ -92,6 +98,7 @@ pub enum Error {
 /// # Errors
 ///
 /// Returns [`Error::Stalled`] if no chunk arrives within the stall timeout,
+/// [`Error::Unsupplied`] as soon as every supplier has been dropped,
 /// [`Error::Changed`] if a supplier finds that what it reads has changed,
 /// and [`Error::Place`] if the store cannot keep what arrived.
 pub async fn transfer(
@@ -110,6 +117,7 @@ pub async fn transfer(
     let mut tasks: JoinSet<Ended> = JoinSet::new();
     let mut running: HashMap<tokio::task::Id, SupplierId> = HashMap::new();
     let mut ticker = tokio::time::interval(MANAGER_TICK);
+    let mut last_dropped = String::from("no supplier was given");
 
     while !run.is_complete() {
         run.start_due(&mut slots, &mut tasks, &mut running);
@@ -154,6 +162,7 @@ pub async fn transfer(
                     Ended::Dropped(reason) => {
                         slot.dropped = true;
                         warn!(supplier = %short(&id), "dropping supplier: {reason}");
+                        last_dropped = reason;
                     }
                     Ended::Fatal(Failure::Changed(what)) => {
                         run.store.abandon().await?;
@@ -166,8 +175,18 @@ pub async fn transfer(
             () = run.wake.notified() => {}
         }
 
+        // Looked at before the store's failure, which is recorded before
+        // the chunk that met it stops being in flight: so a failure that
+        // ends the transfer is never taken for a want of suppliers.
+        let spent = tasks.is_empty()
+            && discovered.is_empty()
+            && slots.values().all(|slot| slot.dropped)
+            && !run.claims.any_in_flight();
         if let Some(failure) = run.failure() {
             return Err(failure.into());
+        }
+        if spent && !run.is_complete() {
+            return Err(Error::Unsupplied(last_dropped));
         }
         if run.idle() > run.options.stall_timeout {
             return Err(Error::Stalled(run.options.stall_timeout));
