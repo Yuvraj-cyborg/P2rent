@@ -121,6 +121,9 @@ have them.
   copy would do, `mux probe` says what is at a place, and `--json` writes
   either for a program to read.
   [docs/commands.md](docs/commands.md) has the details and the exit codes.
+- **`mux sync --dry-run` says what it would take to make a folder match.**
+  It compares two places and lists what to add, replace and remove. The
+  rule for each path is proven in Lean. Carrying the plan out comes next.
 
 ## Installation
 

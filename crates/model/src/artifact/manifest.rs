@@ -378,6 +378,12 @@ impl Tree {
         &self.entries
     }
 
+    /// What is recorded about each entry besides its content, in the order
+    /// of the entries.
+    pub fn recorded(&self) -> &[EntryMetadata] {
+        &self.metadata
+    }
+
     /// What is recorded about entry `entry` besides its content, or `None`
     /// if there is no such entry.
     pub fn metadata(&self, entry: usize) -> Option<EntryMetadata> {
