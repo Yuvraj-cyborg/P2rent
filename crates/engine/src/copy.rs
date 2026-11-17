@@ -51,7 +51,8 @@ pub struct Copied {
 
 /// Copies what `sources` hold into a place for it, which `open` makes from
 /// the tree they describe. Files are cut into chunks of `chunk_size` to be
-/// fetched.
+/// fetched. The tree is called what the first source calls it, or `name`
+/// if one is given.
 ///
 /// A file that is already there, with the size and the time the first
 /// source gives, is left alone and not read. What an earlier copy left
@@ -71,6 +72,7 @@ pub struct Copied {
 /// [`Error::Stalled`] if nothing arrives within the stall timeout.
 pub async fn copy<P, F>(
     sources: Vec<Arc<dyn Source>>,
+    name: Option<String>,
     chunk_size: u32,
     open: F,
     options: Options,
@@ -81,15 +83,24 @@ where
     F: FnOnce(&Arc<Tree>) -> Arc<P>,
 {
     let described = describe(&sources).await?;
-    let tree = Tree::new(described.name, chunk_size, described.entries).map_err(|e| {
+    let name = name.unwrap_or(described.name);
+    let tree = Tree::new(name, chunk_size, described.entries).map_err(|e| {
         Failure::Corrupt(format!(
             "the source describes a tree that cannot be stored: {e}"
         ))
     })?;
     let tree = Arc::new(tree);
+    let files = tree.entries().iter().filter(|entry| entry.is_file());
+    observer(Event::Planned {
+        bytes: tree.total_size(),
+        files: files.count() as u64,
+    });
     let place = open(&tree);
 
     if is_current(&tree, &place).await? {
+        observer(Event::Kept {
+            bytes: tree.total_size(),
+        });
         return Ok(Copied {
             tree,
             artifact: None,
@@ -110,6 +121,7 @@ where
         .filter_map(|index| tree.locate(index))
         .map(|chunk| u64::from(chunk.len))
         .sum();
+    observer(Event::Kept { bytes: held });
     let count = sources.len();
     let suppliers = sources
         .into_iter()
@@ -306,6 +318,23 @@ mod tests {
         sources: Vec<Told>,
         options: Options,
     ) -> (Result<Copied, Error>, Memory) {
+        let (copied, place, _) = copy_as(place, sources, None, options);
+        (copied, place.unwrap())
+    }
+
+    /// The same, under the name `name` if one is given. Also returns what
+    /// the copy reported as it went.
+    fn copy_as(
+        place: Option<Memory>,
+        sources: Vec<Told>,
+        name: Option<&str>,
+        options: Options,
+    ) -> (Result<Copied, Error>, Option<Memory>, Vec<Event>) {
+        let events: Arc<Mutex<Vec<Event>>> = Arc::default();
+        let seen: Observer = {
+            let events = events.clone();
+            Arc::new(move |event| events.lock().unwrap().push(event))
+        };
         let sources = sources
             .into_iter()
             .map(|source| Arc::new(source) as Arc<dyn Source>)
@@ -328,13 +357,15 @@ mod tests {
             .unwrap();
         let copied = runtime.block_on(copy(
             sources,
+            name.map(str::to_owned),
             MIN_CHUNK_SIZE,
             open,
             options,
-            Arc::new(|_| {}),
+            seen,
         ));
-        let place = made.lock().unwrap().clone().unwrap();
-        (copied, place)
+        let place = made.lock().unwrap().clone();
+        let events = events.lock().unwrap().clone();
+        (copied, place, events)
     }
 
     fn holds_the_sample(place: &Memory, sample: &Sample) -> bool {
@@ -359,6 +390,45 @@ mod tests {
         assert_eq!(copied.verification, Some(Verification::Consistent));
         assert_eq!(copied.artifact.as_deref(), Some(&*sample.artifact));
         assert_eq!(copied.tree.name(), "sample");
+    }
+
+    /// A copy says what there is to copy before it moves anything, and
+    /// can be given another name than the source has for it.
+    #[test]
+    fn a_copy_says_what_there_is_and_takes_the_name_it_is_given() {
+        let sample = Sample::new().unwrap();
+        let total = sample.artifact.total_size();
+        let from = || vec![source(&sample, &sample.files, known(&sample, false))];
+
+        let (copied, _, events) = copy_as(None, from(), None, Options::default());
+        assert_eq!(copied.unwrap().tree.name(), "sample");
+        // Four files: the directories are not counted.
+        let planned = Event::Planned {
+            bytes: total,
+            files: 4,
+        };
+        assert_eq!(events.first(), Some(&planned));
+        // Nothing was there, so nothing was kept.
+        assert!(events.contains(&Event::Kept { bytes: 0 }), "{events:?}");
+        let stored = events.iter().filter_map(|event| match event {
+            Event::Stored { bytes, .. } => Some(bytes),
+            _ => None,
+        });
+        assert_eq!(stored.sum::<u64>(), total);
+
+        let (copied, place, _) = copy_as(None, from(), Some("renamed"), Options::default());
+        assert_eq!(copied.unwrap().tree.name(), "renamed");
+        assert!(holds_the_sample(&place.unwrap(), &sample));
+
+        // A name that no file can have is refused before anything is read,
+        // and before there is a place to put it.
+        let (copied, place, events) = copy_as(None, from(), Some("a/b"), Options::default());
+        assert!(
+            matches!(copied, Err(Error::Place(Failure::Corrupt(_)))),
+            "{copied:?}"
+        );
+        assert!(place.is_none());
+        assert_eq!(events, []);
     }
 
     /// A file is taken for the one the source holds on its size and time,
@@ -424,6 +494,49 @@ mod tests {
             (total - two_chunks, two_chunks)
         );
         assert_eq!(second.from, [total - two_chunks]);
+    }
+
+    /// What a copy keeps of what was there is reported before it fetches:
+    /// the chunks an interrupted copy noted, and everything, if every file
+    /// is there already.
+    #[test]
+    fn a_copy_says_how_much_it_keeps() {
+        let sample = Sample::new().unwrap();
+        let total = sample.artifact.total_size();
+        let two_chunks = u64::from(MIN_CHUNK_SIZE) * 2;
+        let short = Told {
+            reach: two_chunks,
+            ..source(&sample, &sample.files, known(&sample, false))
+        };
+        let one_at_a_time = Options {
+            requests_per_supplier: 1,
+            ..Options::default()
+        };
+        let (_, place, _) = copy_as(None, vec![short], None, one_at_a_time);
+        let whole = source(&sample, &sample.files, known(&sample, false));
+        let (_, _, events) = copy_as(place, vec![whole], None, Options::default());
+        let kept = events
+            .iter()
+            .position(|event| *event == Event::Kept { bytes: two_chunks });
+        let stored = events
+            .iter()
+            .position(|event| matches!(event, Event::Stored { .. }));
+        assert!(kept.is_some() && kept < stored, "{events:?}");
+
+        let timed = || Told {
+            modified: Some(Timestamp {
+                seconds: 7,
+                nanos: 0,
+            }),
+            ..source(&sample, &sample.files, known(&sample, false))
+        };
+        let (_, place, _) = copy_as(None, vec![timed()], None, Options::default());
+        let (_, _, events) = copy_as(place, vec![timed()], None, Options::default());
+        let planned = Event::Planned {
+            bytes: total,
+            files: 4,
+        };
+        assert_eq!(events, [planned, Event::Kept { bytes: total }]);
     }
 
     #[test]
