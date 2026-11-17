@@ -190,7 +190,9 @@ permanently drops any peer whose data fails verification.
 
 A worker reserves a chunk with a `Claim`. Dropping a claim without completing
 it returns the chunk to the pool, so cancellation and errors cannot strand a
-chunk. Workers start scanning at an offset derived from the two node ids, so
+chunk. The schedule records which connection is fetching each chunk. It is
+proven that only that connection can settle the chunk, and that a chunk
+becomes done in one way only: its fetcher reports it verified. Workers start scanning at an offset derived from the two node ids, so
 simultaneous downloaders collect different chunks first and then exchange
 them.
 
