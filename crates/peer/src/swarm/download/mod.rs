@@ -10,14 +10,13 @@
 mod supplier;
 
 use self::supplier::Swarm;
-use super::{Node, Share, Ticket};
+use super::{Node, Share, Ticket, Whereabouts};
 use crate::error::{Error, Result};
 use crate::net::{NodeId, PeerInfo};
 use engine::{Store, sync};
 use fs::Folder;
 use model::artifact::{Artifact, Hash};
 use model::place::{Event, Observer};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -207,10 +206,12 @@ pub async fn download(
     let share = node.register(Arc::new(Share::new(artifact.clone(), store)));
 
     progress.set_phase(Phase::Downloading);
+    let named = bootstrap.iter().filter_map(|peer| peer.relay.clone());
     let swarm = Swarm {
         node: node.clone(),
         artifact,
         known: Arc::default(),
+        relays: named.chain(node.endpoint().relay()).collect(),
     };
     let suppliers = bootstrap
         .into_iter()
@@ -237,7 +238,7 @@ pub async fn download(
         .usable
         .iter()
         .map(|id| NodeId::from_bytes(*id))
-        .filter_map(|node| known.get(&node).map(|&addr| PeerInfo { node, addr }))
+        .filter_map(|node| known.get(&node).cloned())
         .collect();
     Ok(Report {
         skipped_links: folder.skipped_links(),
@@ -264,7 +265,7 @@ pub async fn announce(node: Arc<Node>, content: Hash, peers: Vec<PeerInfo>) {
         ticker.tick().await;
         for peer in &peers {
             let attempt = async {
-                let connection = node.endpoint().connect(peer.addr, peer.node).await?;
+                let connection = node.endpoint().connect(peer).await?;
                 let status = connection.status(content).await;
                 connection.close();
                 status
@@ -278,31 +279,29 @@ pub async fn announce(node: Arc<Node>, content: Hash, peers: Vec<PeerInfo>) {
     }
 }
 
-/// Turns the ticket's `host:port` entries into socket addresses.
+/// The peers a ticket names, each with every place the ticket gives for
+/// it: its addresses, looked up if they are names, and its relay.
 async fn resolve(node: &Node, ticket: &Ticket) -> Vec<PeerInfo> {
-    let want_v4 = node.local_addr().is_ipv4();
-    let mut peers = Vec::new();
+    let mut peers: Vec<PeerInfo> = Vec::new();
     for entry in &ticket.peers {
         if entry.node == node.node_id() {
             continue;
         }
-        let resolved: Vec<SocketAddr> = match tokio::net::lookup_host(entry.addr.as_str()).await {
-            Ok(addrs) => addrs.collect(),
-            Err(e) => {
-                warn!("cannot resolve {}: {e}", entry.addr);
-                continue;
+        let known = peers.iter().position(|peer| peer.node == entry.node);
+        let index = known.unwrap_or_else(|| {
+            peers.push(PeerInfo::of(entry.node));
+            peers.len() - 1
+        });
+        let peer = &mut peers[index];
+        match &entry.at {
+            None => {}
+            Some(Whereabouts::Relay(url)) => peer.relay = Some(url.clone()),
+            Some(Whereabouts::Address(addr)) => {
+                match tokio::net::lookup_host(addr.as_str()).await {
+                    Ok(addrs) => peer.addrs.extend(addrs),
+                    Err(e) => warn!("cannot resolve {addr}: {e}"),
+                }
             }
-        };
-        // Prefer an address the local socket can actually dial.
-        let addr = resolved
-            .iter()
-            .find(|addr| addr.is_ipv4() == want_v4)
-            .or(resolved.first());
-        if let Some(&addr) = addr {
-            peers.push(PeerInfo {
-                node: entry.node,
-                addr,
-            });
         }
     }
     peers
@@ -315,7 +314,7 @@ async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<Art
         }
         for peer in peers {
             let request = async {
-                let connection = node.endpoint().connect(peer.addr, peer.node).await?;
+                let connection = node.endpoint().connect(peer).await?;
                 let encoded = connection.manifest(id).await;
                 connection.close();
                 encoded

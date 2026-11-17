@@ -1,8 +1,8 @@
 use super::server;
 use super::share::Share;
-use super::{Ticket, TicketPeer};
+use super::{Ticket, TicketPeer, Whereabouts};
 use crate::error::Result;
-use crate::net::{Endpoint, Identity, NodeId};
+use crate::net::{Endpoint, Identity, NodeId, Options};
 use engine::{Store, sync};
 use fs::Folder;
 use model::artifact::{Artifact, Hash};
@@ -21,14 +21,14 @@ pub struct Node {
 }
 
 impl Node {
-    /// Binds `addr` and starts answering peers.
+    /// Opens the node's sockets and starts answering peers.
     ///
     /// # Errors
     ///
-    /// Returns an error if `addr` cannot be bound.
-    pub async fn bind(identity: &Identity, addr: SocketAddr) -> Result<Arc<Self>> {
+    /// Returns an error if the address to listen on cannot be bound.
+    pub async fn bind(identity: &Identity, options: &Options) -> Result<Arc<Self>> {
         let node = Arc::new(Self {
-            endpoint: Endpoint::bind(identity, addr).await?,
+            endpoint: Endpoint::bind(identity, options).await?,
             shares: RwLock::new(HashMap::new()),
         });
         tokio::spawn(server::run(node.clone()));
@@ -40,9 +40,15 @@ impl Node {
         self.endpoint.node_id()
     }
 
-    /// The address the node listens on.
-    pub fn local_addr(&self) -> SocketAddr {
-        self.endpoint.local_addr()
+    /// The addresses the node listens on.
+    pub fn local_addrs(&self) -> Vec<SocketAddr> {
+        self.endpoint.local_addrs()
+    }
+
+    /// Waits until the node has reached a relay, if it is to use one. From
+    /// then on a ticket can say which.
+    pub async fn online(&self) {
+        self.endpoint.online().await;
     }
 
     pub(crate) fn endpoint(&self) -> &Endpoint {
@@ -80,19 +86,22 @@ impl Node {
             .cloned()
     }
 
-    /// A ticket naming this node as the peer to contact, reachable at each of
-    /// `addrs` (`host:port`).
+    /// A ticket naming this node as the peer to ask: at each of `addrs`
+    /// (`host:port`), and by way of its relay if it has reached one. With
+    /// neither, the ticket names the node alone, to be looked up by its
+    /// id.
     pub fn ticket(&self, artifact: Hash, addrs: &[String]) -> Ticket {
-        Ticket {
-            artifact,
-            peers: addrs
-                .iter()
-                .map(|addr| TicketPeer {
-                    node: self.node_id(),
-                    addr: addr.clone(),
-                })
-                .collect(),
+        let node = self.node_id();
+        let addresses = addrs.iter().cloned().map(Whereabouts::Address);
+        let relay = self.endpoint.relay().map(Whereabouts::Relay);
+        let mut peers: Vec<TicketPeer> = addresses
+            .chain(relay)
+            .map(|at| TicketPeer { node, at: Some(at) })
+            .collect();
+        if peers.is_empty() {
+            peers.push(TicketPeer { node, at: None });
         }
+        Ticket { artifact, peers }
     }
 
     /// Closes all connections and stops serving. Returns once the other

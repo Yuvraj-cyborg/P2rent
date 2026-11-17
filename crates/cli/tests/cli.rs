@@ -71,7 +71,14 @@ fn payload() -> Vec<u8> {
 fn seed(key: &Path, source: &Path) -> (KillOnDrop, String) {
     let mut seeder = KillOnDrop(
         mux(key)
-            .args(["seed", "--listen", "127.0.0.1:0", "--chunk-size", "64K"])
+            .args([
+                "seed",
+                "--no-relay",
+                "--listen",
+                "127.0.0.1:0",
+                "--chunk-size",
+                "64K",
+            ])
             .arg(source)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -94,7 +101,14 @@ fn seed(key: &Path, source: &Path) -> (KillOnDrop, String) {
 fn get(key: &Path, ticket: &str, out: &Path) -> Command {
     let mut command = mux(key);
     command
-        .args(["get", ticket, "--listen", "127.0.0.1:0", "--out"])
+        .args([
+            "get",
+            ticket,
+            "--no-relay",
+            "--listen",
+            "127.0.0.1:0",
+            "--out",
+        ])
         .arg(out)
         .stderr(Stdio::null());
     command
@@ -292,7 +306,7 @@ fn seed_says_what_it_left_out() {
 
     let mut seeder = KillOnDrop(
         mux(&tmp.path().join("seed.key"))
-            .args(["seed", "--listen", "127.0.0.1:0"])
+            .args(["seed", "--no-relay", "--listen", "127.0.0.1:0"])
             .arg(&source)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

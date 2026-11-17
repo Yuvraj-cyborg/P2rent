@@ -283,6 +283,21 @@ answers is that node.
 One UDP socket both dials and accepts, so the address a peer observes for a
 node is also the address at which that node can be reached.
 
+A node behind a router cannot be dialled at an address. `Relays` says how it
+is reached then:
+
+| `Relays` | A node is reached | Others learn |
+| --- | --- | --- |
+| `Public`, the default | through the public relays run by the makers of iroh, and found by its id in their directory | the relays and the directory learn its id and its addresses |
+| `At(url)` | through the relay at that address, which a ticket has to name | that relay learns its id and its addresses |
+| `Off` | at an address, or not at all | nothing |
+
+A relay passes on packets that are encrypted between the two nodes, and
+cannot read them. Wherever a direct route between the two can be opened,
+the connection moves to it, and the relay only carries the first packets.
+A node told to open no sockets (`direct: false`) is reached through a relay
+alone, and no other node learns its address.
+
 The key file holds the private key in PKCS#8. Files written by earlier
 versions, which used another library, are read as they are, and a machine
 keeps its node id.
@@ -392,6 +407,8 @@ chunk, because that waiter may have been stopped a moment before.
   which stops in the middle of a file, stops sending, sends the wrong part,
   and changes the file as it is read.
 - `tests/connection.rs` checks mutual authentication and id pinning.
+- `tests/relay.rs` runs a relay in the test, and transfers between nodes
+  that have no socket of their own.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
 - `tests/cli.rs` runs the compiled binary as separate processes, and kills

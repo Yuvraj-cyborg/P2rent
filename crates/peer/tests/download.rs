@@ -2,9 +2,10 @@
 
 mod common;
 
-use common::{CHUNK, assert_same_tree, get, node, pattern, seed};
+use common::{CHUNK, addr_of, assert_same_tree, get, node, pattern, seed};
 use model::artifact::Hash;
 use peer::Error;
+use peer::swarm::Ticket;
 use std::fs;
 
 #[tokio::test]
@@ -172,7 +173,7 @@ async fn an_unknown_artifact_is_reported() {
     let seeder = node().await;
     let ticket = seeder.ticket(
         Hash::of(b"nobody has this"),
-        &[seeder.local_addr().to_string()],
+        &[addr_of(&seeder).to_string()],
     );
     let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::ManifestUnavailable), "{error}");
@@ -181,7 +182,26 @@ async fn an_unknown_artifact_is_reported() {
 #[tokio::test]
 async fn a_ticket_without_peers_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
-    let ticket = node().await.ticket(Hash::of(b"x"), &[]);
+    let ticket = Ticket {
+        artifact: Hash::of(b"x"),
+        peers: Vec::new(),
+    };
     let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::InvalidTicket(_)), "{error}");
+}
+
+/// A ticket may name a node by its id alone. A node that looks nobody up
+/// and is told no address has no way to it.
+#[tokio::test]
+async fn a_node_named_by_its_id_alone_is_not_found_without_a_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seeder = node().await;
+    let ticket = seeder.ticket(Hash::of(b"x"), &[]);
+    assert_eq!(
+        ticket.to_string(),
+        format!("mux://{}?peer={}", Hash::of(b"x"), seeder.node_id())
+    );
+
+    let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
+    assert!(matches!(error, Error::ManifestUnavailable), "{error}");
 }

@@ -1,9 +1,8 @@
-use super::ui;
+use super::{Reach, ui};
 use anyhow::Context;
 use mux::net::Identity;
 use mux::swarm::{DownloadOptions, Node, Phase, Progress, Report, Ticket, TicketPeer};
 use mux::swarm::{announce, download};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,13 +20,13 @@ pub(super) struct Args {
     #[arg(long)]
     seed: bool,
 
-    /// Additional peer to try (repeatable)
-    #[arg(long = "peer", value_name = "NODE@HOST:PORT")]
+    /// Additional peer to try, by its node id and, if known, where it is
+    /// (repeatable)
+    #[arg(long = "peer", value_name = "NODE[@HOST:PORT]")]
     peers: Vec<TicketPeer>,
 
-    /// Address to listen on; other downloaders fetch from this node here
-    #[arg(long, default_value = "0.0.0.0:0", value_name = "ADDR")]
-    listen: SocketAddr,
+    #[command(flatten)]
+    reach: Reach,
 
     /// Peers to download from at once
     #[arg(long, default_value_t = 8, value_name = "N")]
@@ -42,9 +41,9 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     let mut ticket = args.ticket;
     ticket.peers.extend(args.peers);
 
-    let node = Node::bind(identity, args.listen)
+    let node = Node::bind(identity, &args.reach.options())
         .await
-        .with_context(|| format!("cannot listen on {}", args.listen))?;
+        .context("cannot open a socket to listen on")?;
     let options = DownloadOptions {
         max_peers: args.max_peers,
         stall_timeout: Duration::from_secs(args.stall_timeout),
@@ -57,7 +56,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     if args.seed {
         let content = report.share.artifact().content_id();
         let announcer = tokio::spawn(announce(node.clone(), content, report.peers.clone()));
-        let status = ui::spinner(format!("seeding on {} (Ctrl-C to stop)", node.local_addr()));
+        let status = ui::spinner(format!("seeding as {} (Ctrl-C to stop)", node.node_id()));
         let _ = tokio::signal::ctrl_c().await;
         status.finish_and_clear();
         announcer.abort();

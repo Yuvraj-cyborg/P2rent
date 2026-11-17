@@ -71,6 +71,11 @@ skip = [
     { crate = "windows_x86_64_gnu@0.42", reason = "windows-sys 0.45" },
     { crate = "windows_x86_64_gnullvm@0.42", reason = "windows-sys 0.45" },
     { crate = "windows_x86_64_msvc@0.42", reason = "windows-sys 0.45" },
+    # Not shipped: the relay that the tests of `peer` run in their own
+    # process, to pass packets between two nodes that cannot dial each other.
+    { crate = "hashbrown@0.14", reason = "the test relay keeps its clients in a dashmap" },
+    { crate = "pem@3", reason = "the test relay can fetch certificates, with tokio-rustls-acme" },
+    { crate = "synstructure@0.13", reason = "the test relay reads certificates, with asn1-rs" },
 ]
 
 [sources]

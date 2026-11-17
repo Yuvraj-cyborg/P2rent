@@ -27,13 +27,17 @@ fn bitfield() -> impl Strategy<Value = Bitfield> {
     })
 }
 
-/// An address as peers exchange it: an IP address and a port. IPv6 scope
-/// ids and flow labels mean something only on the machine that holds them,
-/// and the wire format does not carry them.
+/// A peer as peers tell each other of it: its id, addresses made of an IP
+/// address and a port, and perhaps a relay. IPv6 scope ids and flow labels
+/// mean something only on the machine that holds them, and the wire format
+/// does not carry them.
 fn peer_info() -> impl Strategy<Value = PeerInfo> {
-    (node(), any::<IpAddr>(), any::<u16>()).prop_map(|(node, ip, port)| PeerInfo {
+    let addr = (any::<IpAddr>(), any::<u16>()).prop_map(|(ip, port)| SocketAddr::new(ip, port));
+    let relay = proptest::option::of("https://[a-z]{1,12}\\.example/");
+    (node(), vec(addr, 0..4), relay).prop_map(|(node, addrs, relay)| PeerInfo {
         node,
-        addr: SocketAddr::new(ip, port),
+        addrs,
+        relay,
     })
 }
 

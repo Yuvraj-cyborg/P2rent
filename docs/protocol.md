@@ -61,10 +61,11 @@ for byte.
 
 - `have` is `All` or a bitfield with one bit per chunk, least significant bit
   first within each byte.
-- `peers` lists up to 32 other participants as `(node id, socket address)`,
-  most recently seen first. A participant is any node that sent a `Status`
-  request for the content in the last two minutes; the address is the one
-  observed on that connection.
+- `peers` lists up to 32 other participants, most recently seen first. Each
+  is `(node id, socket addresses, relay)`. A participant is any node that
+  sent a `Status` request for the content in the last two minutes. The
+  addresses and the relay are those its connection was seen to go by, and
+  either may be missing: the node id is always enough to try.
 - A `Chunk` response whose length differs from the length implied by the
   manifest is a protocol error.
 
