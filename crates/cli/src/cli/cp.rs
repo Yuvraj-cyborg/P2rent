@@ -52,21 +52,29 @@ pub(super) async fn run(args: Args) -> anyhow::Result<()> {
     let to = mux::locate(to)?;
     for source in from {
         let source = mux::locate(source)?;
-        match (&source, &to) {
+        let sources = match (&source, &to) {
             #[cfg(feature = "web")]
-            (Location::Web(url), Location::Local(path)) => from_web(url, path, &args).await?,
+            (Location::Web(url), Location::Local(_)) => on_the_web(url, &args).await,
+            (Location::Local(path), Location::Local(to)) => in_a_folder(path, to, &args).await,
             _ => bail!(
-                "`cp` cannot copy from {source} to {to} yet. It copies a web address into a \
-                 folder. For another machine there are `mux seed` and `mux get`."
+                "`cp` cannot copy from {source} to {to} yet. It copies a web address or a \
+                 folder into a folder. For another machine there are `mux seed` and `mux get`."
             ),
-        }
+        };
+        let Location::Local(to) = &to else {
+            bail!("{to} is not a folder");
+        };
+        let sources = sources.with_context(|| format!("cannot copy from {source}"))?;
+        copy(sources, to, &args)
+            .await
+            .with_context(|| format!("cannot copy from {source}"))?;
     }
     Ok(())
 }
 
-/// Copies the file at a web address into a folder.
+/// The file at a web address, and at each mirror of it.
 #[cfg(feature = "web")]
-async fn from_web(url: &str, to: &str, args: &Args) -> anyhow::Result<()> {
+async fn on_the_web(url: &str, args: &Args) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let asking = mux::web::Options {
         digest: args.hash,
         ..mux::web::Options::default()
@@ -75,10 +83,42 @@ async fn from_web(url: &str, to: &str, args: &Args) -> anyhow::Result<()> {
     for address in std::iter::once(url).chain(args.mirror.iter().map(String::as_str)) {
         let origin = mux::web::Origin::find(address, &asking)
             .await
-            .with_context(|| format!("cannot copy from {address}"))?;
+            .with_context(|| format!("{address} cannot be used"))?;
         sources.push(Arc::new(origin));
     }
+    Ok(sources)
+}
 
+/// The file or the folder at `path`, as it is now. It is looked at, and
+/// none of it is read yet.
+async fn in_a_folder(path: &str, to: &str, args: &Args) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+    if args.hash.is_some() || !args.mirror.is_empty() {
+        bail!("--hash and --mirror are for a source on the web");
+    }
+    let from = PathBuf::from(path);
+    let scanned = tokio::task::spawn_blocking(move || mux::store::scan(&from, DEFAULT_CHUNK_SIZE))
+        .await
+        .context("looking at the source was cut short")??;
+    // A copy into the folder that is being copied would be copied too.
+    let (into, _) = destination(to);
+    if into
+        .canonicalize()
+        .is_ok_and(|into| into.starts_with(&scanned.root))
+    {
+        bail!("{to} is inside {path}: a folder cannot be copied into itself");
+    }
+    if scanned.skipped > 0 {
+        eprintln!(
+            "note: left out {} that cannot be copied (special files, links that leave the folder, unfinished copies)",
+            ui::plural(scanned.skipped, "thing")
+        );
+    }
+    let folder = Folder::whole(Arc::new(scanned.tree), scanned.root);
+    Ok(vec![Arc::new(folder)])
+}
+
+/// Copies what `sources` hold to `to`, and says what was done.
+async fn copy(sources: Vec<Arc<dyn Source>>, to: &str, args: &Args) -> anyhow::Result<()> {
     let (folder, name) = destination(to);
     let limits = engine::Options {
         requests_per_supplier: args.streams.max(1),
@@ -97,7 +137,7 @@ async fn from_web(url: &str, to: &str, args: &Args) -> anyhow::Result<()> {
     )
     .await;
     showing.done();
-    let copied = copied.with_context(|| format!("cannot copy from {url}"))?;
+    let copied = copied?;
 
     let saved = folder.join(copied.tree.name());
     let checked = match copied.verification {
