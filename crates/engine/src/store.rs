@@ -1,4 +1,4 @@
-use model::artifact::{Artifact, Bitfield, Hash};
+use model::artifact::{Artifact, Bitfield, Hash, Tree};
 use model::assembly::Assembly;
 use model::place::{Failure, Sink, Source};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
@@ -55,8 +55,9 @@ impl Store {
         place: Arc<P>,
         examined: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Arc<Self>, Failure> {
-        let opened = place.clone();
-        let held = waiting(move || opened.begin(&examined)).await?;
+        let (opened, digests) = (place.clone(), artifact.clone());
+        let held =
+            waiting(move || opened.begin(&|index| digests.chunk_hash(index), &examined)).await?;
         Ok(Self::over(artifact, place.clone(), Some(place), held))
     }
 
@@ -80,6 +81,11 @@ impl Store {
     /// The artifact this store holds.
     pub fn artifact(&self) -> &Arc<Artifact> {
         &self.artifact
+    }
+
+    /// The tree this store holds: the artifact without its digests.
+    pub fn tree(&self) -> &Arc<Tree> {
+        self.artifact.tree()
     }
 
     /// Whether chunk `index` is in the place and verified.

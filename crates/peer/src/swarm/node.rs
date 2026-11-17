@@ -57,7 +57,7 @@ impl Node {
     /// Offers a complete artifact whose files live at `root`. Chunks are
     /// served straight from those files.
     pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf) -> Arc<Share> {
-        let files = Arc::new(Folder::whole(artifact.clone(), root));
+        let files = Arc::new(Folder::whole(artifact.tree().clone(), root));
         self.register(Arc::new(Share::new(Store::whole(artifact, files))))
     }
 

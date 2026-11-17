@@ -10,8 +10,8 @@ use crate::conformance::{Memory, Sample};
 use crate::{Error, Options, Store, Summary, transfer};
 use model::artifact::Bitfield;
 use model::place::{
-    Capabilities, Event, Failure, Observer, Pending, Sink, Source, Status, Supplier, SupplierId,
-    Supply, Verification,
+    Capabilities, Event, Expected, Failure, Observer, Pending, Sink, Source, Status, Supplier,
+    SupplierId, Supply, Verification,
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -203,8 +203,12 @@ impl Sink for Hooked {
         Sink::capabilities(&self.place)
     }
 
-    fn begin(&self, examined: &(dyn Fn(u64) + Sync)) -> Result<Bitfield, Failure> {
-        self.place.begin(examined)
+    fn begin(
+        &self,
+        expected: &Expected<'_>,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Bitfield, Failure> {
+        self.place.begin(expected, examined)
     }
 
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure> {
@@ -258,7 +262,7 @@ impl Setup {
 
     /// Runs the transfer, with a clock that jumps to the next thing due.
     fn run(self, suppliers: &[Made]) -> Ran {
-        let place = Memory::new(self.sample.artifact.clone());
+        let place = Memory::new(self.sample.artifact.tree().clone());
         let hooked = Arc::new(Hooked {
             place: place.clone(),
             before_write: self.before_write,

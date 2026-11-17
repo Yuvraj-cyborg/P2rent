@@ -12,7 +12,7 @@
 //! A place is opened for one tree: the entries of one artifact. A file is
 //! named by its position among those entries.
 
-use crate::artifact::Bitfield;
+use crate::artifact::{Bitfield, Hash};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -51,6 +51,10 @@ pub enum Failure {
 /// reads can be waited for at once and any of them given up.
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + Send + 'a>>;
 
+/// Gives the digest a chunk must have for a place to count it as held, or
+/// `None` when no digest is known for that chunk, which is then not held.
+pub type Expected<'a> = dyn Fn(u64) -> Option<Hash> + Sync + 'a;
+
 /// What a place can do, so that the engine knows how it may be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
@@ -85,15 +89,19 @@ pub trait Sink: fmt::Debug + Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     /// Makes the place ready for the tree, and says which chunks it already
-    /// holds. A chunk is reported only if the place has checked it against
-    /// the tree's digests, so whatever an earlier transfer left behind is
-    /// kept if it is right and fetched again if it is not. `examined` is
-    /// called with the size of each chunk looked at.
+    /// holds. A chunk is reported only if the place has checked that its
+    /// bytes have the digest `expected` gives for it, so whatever an earlier
+    /// transfer left behind is kept if it is right and fetched again if it
+    /// is not. `examined` is called with the size of each chunk looked at.
     ///
     /// # Errors
     ///
     /// Returns a failure if the place cannot be made ready.
-    fn begin(&self, examined: &(dyn Fn(u64) + Sync)) -> Result<Bitfield, Failure>;
+    fn begin(
+        &self,
+        expected: &Expected<'_>,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Bitfield, Failure>;
 
     /// Writes `data` into `file` at `offset`. Nothing of it is visible
     /// under the file's final name until [`Sink::commit`].

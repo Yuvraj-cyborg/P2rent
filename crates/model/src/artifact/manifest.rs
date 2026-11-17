@@ -5,7 +5,9 @@ use crate::error::{Error, Result};
 use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::{Deref, Range};
 use serde::{Deserialize, Serialize};
 
 /// Smallest chunk size a manifest may use.
@@ -177,24 +179,12 @@ impl Manifest {
     /// Validates the manifest and returns the chunk layout it describes.
     fn checked_layout(&self) -> Result<Layout> {
         let content = &self.content;
-        if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&content.chunk_size) {
-            return Err(invalid(format!(
-                "chunk size {} is outside {MIN_CHUNK_SIZE}..={MAX_CHUNK_SIZE}",
-                content.chunk_size
-            )));
-        }
-        if !is_safe_component(&self.metadata.name) {
-            return Err(invalid(format!(
-                "unsafe artifact name {:?}",
-                self.metadata.name
-            )));
-        }
-        self.validate_tree()?;
-        self.validate_metadata()?;
-
-        let sizes: Vec<u64> = content.entries.iter().map(Entry::size).collect();
-        let layout = Layout::new(&sizes, content.chunk_size)
-            .ok_or_else(|| invalid("total size overflows"))?;
+        let layout = checked_layout(
+            &self.metadata.name,
+            content.chunk_size,
+            &content.entries,
+            &self.metadata.entries,
+        )?;
         if layout.chunk_count() != content.chunks.len() as u64 {
             return Err(invalid(format!(
                 "file sizes imply {} chunks but {} digests are listed",
@@ -204,101 +194,204 @@ impl Manifest {
         }
         Ok(layout)
     }
-
-    /// Checks the shape of the tree: a root, then safe paths in order, each
-    /// inside a directory of the artifact. Because a path's parent has to be
-    /// a listed directory, nothing can lie under a file or behind a link.
-    fn validate_tree(&self) -> Result<()> {
-        let Some((root, rest)) = self.content.entries.split_first() else {
-            return Err(invalid("an artifact has at least its root"));
-        };
-        if !root.path.is_empty() {
-            return Err(invalid("the first entry is the root, with an empty path"));
-        }
-        let mut directories: BTreeSet<&str> = BTreeSet::new();
-        match root.kind {
-            EntryKind::File { .. } if rest.is_empty() => {}
-            EntryKind::File { .. } => {
-                return Err(invalid("a file artifact holds exactly one file"));
-            }
-            EntryKind::Directory => {
-                directories.insert("");
-            }
-            EntryKind::Symlink { .. } => return Err(invalid("the root cannot be a link")),
-        }
-
-        let mut previous = "";
-        for entry in rest {
-            let path = entry.path.as_str();
-            if !path::is_safe_path(path.as_bytes()) {
-                return Err(invalid(format!("unsafe path {path:?}")));
-            }
-            if !path::precedes(previous.as_bytes(), path.as_bytes()) {
-                return Err(invalid("paths must be sorted and unique"));
-            }
-            previous = path;
-
-            let inside = path
-                .get(..path::parent_len(path.as_bytes()))
-                .is_some_and(|parent| directories.contains(parent));
-            if !inside {
-                return Err(invalid(format!(
-                    "{path:?} is not inside a directory of the artifact"
-                )));
-            }
-            match &entry.kind {
-                EntryKind::File { .. } => {}
-                EntryKind::Directory => {
-                    directories.insert(path);
-                }
-                EntryKind::Symlink { target } => {
-                    if !path::is_safe_target(target.as_bytes(), path::depth(path.as_bytes())) {
-                        return Err(invalid(format!(
-                            "link {path:?} points outside the artifact, at {target:?}"
-                        )));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_metadata(&self) -> Result<()> {
-        if self.metadata.entries.len() != self.content.entries.len() {
-            return Err(invalid(
-                "permissions and times are listed for a different number of entries",
-            ));
-        }
-        for metadata in &self.metadata.entries {
-            if metadata.mode & !PERMISSION_BITS != 0 {
-                return Err(invalid(format!(
-                    "mode {:o} has bits beyond the permissions",
-                    metadata.mode
-                )));
-            }
-            if metadata
-                .modified
-                .is_some_and(|time| time.nanos >= 1_000_000_000)
-            {
-                return Err(invalid(
-                    "a time has a second's worth of nanoseconds or more",
-                ));
-            }
-        }
-        Ok(())
-    }
 }
 
-/// A validated manifest together with its identifiers and chunk layout.
-#[derive(Debug)]
-pub struct Artifact {
-    id: Hash,
-    content_id: Hash,
-    manifest: Manifest,
-    encoded: Vec<u8>,
+/// Checks everything about a tree that the rest of the program relies on,
+/// and returns how its files are cut into chunks.
+fn checked_layout(
+    name: &str,
+    chunk_size: u32,
+    entries: &[Entry],
+    metadata: &[EntryMetadata],
+) -> Result<Layout> {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) {
+        return Err(invalid(format!(
+            "chunk size {chunk_size} is outside {MIN_CHUNK_SIZE}..={MAX_CHUNK_SIZE}"
+        )));
+    }
+    if !is_safe_component(name) {
+        return Err(invalid(format!("unsafe artifact name {name:?}")));
+    }
+    check_entries(entries)?;
+    check_metadata(metadata, entries.len())?;
+
+    let sizes: Vec<u64> = entries.iter().map(Entry::size).collect();
+    Layout::new(&sizes, chunk_size).ok_or_else(|| invalid("total size overflows"))
+}
+
+/// Checks the shape of the tree: a root, then safe paths in order, each
+/// inside a directory of the artifact. Because a path's parent has to be a
+/// listed directory, nothing can lie under a file or behind a link.
+fn check_entries(entries: &[Entry]) -> Result<()> {
+    let Some((root, rest)) = entries.split_first() else {
+        return Err(invalid("an artifact has at least its root"));
+    };
+    if !root.path.is_empty() {
+        return Err(invalid("the first entry is the root, with an empty path"));
+    }
+    let mut directories: BTreeSet<&str> = BTreeSet::new();
+    match root.kind {
+        EntryKind::File { .. } if rest.is_empty() => {}
+        EntryKind::File { .. } => {
+            return Err(invalid("a file artifact holds exactly one file"));
+        }
+        EntryKind::Directory => {
+            directories.insert("");
+        }
+        EntryKind::Symlink { .. } => return Err(invalid("the root cannot be a link")),
+    }
+
+    let mut previous = "";
+    for entry in rest {
+        let path = entry.path.as_str();
+        if !path::is_safe_path(path.as_bytes()) {
+            return Err(invalid(format!("unsafe path {path:?}")));
+        }
+        if !path::precedes(previous.as_bytes(), path.as_bytes()) {
+            return Err(invalid("paths must be sorted and unique"));
+        }
+        previous = path;
+
+        let inside = path
+            .get(..path::parent_len(path.as_bytes()))
+            .is_some_and(|parent| directories.contains(parent));
+        if !inside {
+            return Err(invalid(format!(
+                "{path:?} is not inside a directory of the artifact"
+            )));
+        }
+        match &entry.kind {
+            EntryKind::File { .. } => {}
+            EntryKind::Directory => {
+                directories.insert(path);
+            }
+            EntryKind::Symlink { target } => {
+                if !path::is_safe_target(target.as_bytes(), path::depth(path.as_bytes())) {
+                    return Err(invalid(format!(
+                        "link {path:?} points outside the artifact, at {target:?}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_metadata(metadata: &[EntryMetadata], entries: usize) -> Result<()> {
+    if metadata.len() != entries {
+        return Err(invalid(
+            "permissions and times are listed for a different number of entries",
+        ));
+    }
+    for metadata in metadata {
+        if metadata.mode & !PERMISSION_BITS != 0 {
+            return Err(invalid(format!(
+                "mode {:o} has bits beyond the permissions",
+                metadata.mode
+            )));
+        }
+        if metadata
+            .modified
+            .is_some_and(|time| time.nanos >= 1_000_000_000)
+        {
+            return Err(invalid(
+                "a time has a second's worth of nanoseconds or more",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// What an artifact is made of apart from the digests of its bytes: the
+/// name of the root, every entry and what is recorded about it, and how the
+/// files are cut into chunks.
+///
+/// A place holds a tree. A source that knows no digests can still say what
+/// tree it has, which is why the two are apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tree {
+    name: String,
+    chunk_size: u32,
+    entries: Vec<Entry>,
+    metadata: Vec<EntryMetadata>,
     layout: Layout,
 }
 
+impl Tree {
+    /// The name the root is stored under.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The size every chunk has, except the last of each file.
+    pub fn chunk_size(&self) -> u32 {
+        self.chunk_size
+    }
+
+    /// Every file, directory and link, the root first.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// What is recorded about entry `entry` besides its content, or `None`
+    /// if there is no such entry.
+    pub fn metadata(&self, entry: usize) -> Option<EntryMetadata> {
+        self.metadata.get(entry).copied()
+    }
+
+    /// Whether the tree is a single file and not a directory.
+    pub fn is_file(&self) -> bool {
+        self.entries.first().is_some_and(Entry::is_file)
+    }
+
+    /// Sum of all file sizes, in bytes.
+    pub fn total_size(&self) -> u64 {
+        self.layout.total_size()
+    }
+
+    /// Number of chunks across all files.
+    pub fn chunk_count(&self) -> u64 {
+        self.layout.chunk_count()
+    }
+
+    /// Global chunk indices belonging to one entry. Empty for a directory or
+    /// a link.
+    pub fn file_chunks(&self, entry: usize) -> Range<u64> {
+        let (start, end) = self.layout.file_chunks(entry);
+        start..end
+    }
+
+    /// Where chunk `index` lives, or `None` if it is out of range. The file
+    /// it names is the index of an entry.
+    pub fn locate(&self, index: u64) -> Option<ChunkLocation> {
+        self.layout.locate(index)
+    }
+
+    /// How the entries are cut into chunks. A directory or a link has none.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+}
+
+/// A validated tree together with the digest of each of its chunks and the
+/// identifiers that follow from them. Everything a [`Tree`] says is said of
+/// an artifact too.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Artifact {
+    id: Hash,
+    content_id: Hash,
+    tree: Arc<Tree>,
+    chunks: Vec<Hash>,
+    encoded: Vec<u8>,
+}
+
+impl Deref for Artifact {
+    type Target = Tree;
+
+    fn deref(&self) -> &Tree {
+        &self.tree
+    }
+}
 // Each id is derived under a context that names the format, so an id of one
 // kind or one format can never be taken for another.
 const ID_CONTEXT: &str = "mux 2026 manifest v1";
@@ -330,13 +423,38 @@ impl Artifact {
             ));
         }
         let (content_id, id) = ids(&content, &encoded[HEADER_BYTES + content.len()..]);
-        Ok(Self {
+        Ok(Self::assembled(id, content_id, manifest, layout, encoded))
+    }
+
+    fn assembled(
+        id: Hash,
+        content_id: Hash,
+        manifest: Manifest,
+        layout: Layout,
+        encoded: Vec<u8>,
+    ) -> Self {
+        let Content {
+            chunk_size,
+            entries,
+            chunks,
+        } = manifest.content;
+        let Metadata {
+            name,
+            entries: metadata,
+        } = manifest.metadata;
+        Self {
             id,
             content_id,
-            manifest,
+            tree: Arc::new(Tree {
+                name,
+                chunk_size,
+                entries,
+                metadata,
+                layout,
+            }),
+            chunks,
             encoded,
-            layout,
-        })
+        }
     }
 
     /// Decodes manifest bytes received from a peer, accepting them only if
@@ -380,13 +498,7 @@ impl Artifact {
             metadata: whole(postcard::take_from_bytes(metadata).map_err(cannot_decode)?)?,
         };
         let layout = manifest.checked_layout()?;
-        Ok(Self {
-            id,
-            content_id,
-            manifest,
-            encoded,
-            layout,
-        })
+        Ok(Self::assembled(id, content_id, manifest, layout, encoded))
     }
 
     /// The artifact id: the hash of the content id and the metadata. A
@@ -402,72 +514,19 @@ impl Artifact {
         self.content_id
     }
 
-    /// The validated manifest.
-    pub fn manifest(&self) -> &Manifest {
-        &self.manifest
-    }
-
     /// The exact bytes that hash to [`Artifact::id`], as sent to peers.
     pub fn encoded(&self) -> &[u8] {
         &self.encoded
     }
 
-    /// The name the root is stored under.
-    pub fn name(&self) -> &str {
-        &self.manifest.metadata.name
-    }
-
-    /// Every file, directory and link, the root first.
-    pub fn entries(&self) -> &[Entry] {
-        &self.manifest.content.entries
-    }
-
-    /// What is recorded about entry `entry` besides its content, or `None`
-    /// if there is no such entry.
-    pub fn metadata(&self, entry: usize) -> Option<EntryMetadata> {
-        self.manifest.metadata.entries.get(entry).copied()
-    }
-
-    /// Whether the artifact is a single file and not a directory tree.
-    pub fn is_file(&self) -> bool {
-        self.entries().first().is_some_and(Entry::is_file)
-    }
-
-    /// Sum of all file sizes, in bytes.
-    pub fn total_size(&self) -> u64 {
-        self.layout.total_size()
-    }
-
-    /// Number of chunks across all files.
-    pub fn chunk_count(&self) -> u64 {
-        self.manifest.content.chunks.len() as u64
+    /// The tree, without the digests.
+    pub fn tree(&self) -> &Arc<Tree> {
+        &self.tree
     }
 
     /// Expected digest of chunk `index`, or `None` if it is out of range.
     pub fn chunk_hash(&self, index: u64) -> Option<Hash> {
-        self.manifest
-            .content
-            .chunks
-            .get(usize::try_from(index).ok()?)
-            .copied()
-    }
-
-    /// Global chunk indices belonging to one entry. Empty for a directory or
-    /// a link.
-    pub fn file_chunks(&self, entry: usize) -> core::ops::Range<u64> {
-        let (start, end) = self.layout.file_chunks(entry);
-        start..end
-    }
-
-    /// Where chunk `index` lives, or `None` if it is out of range. The file
-    /// it names is the index of an entry.
-    pub fn locate(&self, index: u64) -> Option<ChunkLocation> {
-        self.layout.locate(index)
-    }
-
-    /// How the entries are cut into chunks. A directory or a link has none.
-    pub fn layout(&self) -> &Layout {
-        &self.layout
+        self.chunks.get(usize::try_from(index).ok()?).copied()
     }
 }
 
@@ -789,8 +848,7 @@ mod tests {
         let bytes = artifact.encoded().to_vec();
 
         let decoded = Artifact::decode(artifact.id(), bytes.clone()).unwrap();
-        assert_eq!(decoded.manifest(), artifact.manifest());
-        assert_eq!(decoded.content_id(), artifact.content_id());
+        assert_eq!(decoded, artifact);
 
         assert!(Artifact::decode(Hash::of(b"other"), bytes.clone()).is_err());
         let mut tampered = bytes;
@@ -824,10 +882,11 @@ mod tests {
     /// refused.
     #[test]
     fn the_encoding_is_framed_and_nothing_else_decodes() {
-        let artifact = Artifact::new(tree(vec![file("a", 1)])).unwrap();
+        let manifest = tree(vec![file("a", 1)]);
+        let artifact = Artifact::new(manifest.clone()).unwrap();
         let bytes = artifact.encoded().to_vec();
-        let content = postcard::to_allocvec(&artifact.manifest().content).unwrap();
-        let metadata = postcard::to_allocvec(&artifact.manifest().metadata).unwrap();
+        let content = postcard::to_allocvec(&manifest.content).unwrap();
+        let metadata = postcard::to_allocvec(&manifest.metadata).unwrap();
         assert_eq!(bytes[0], FORMAT_VERSION);
         assert_eq!(bytes[1..9], (content.len() as u64).to_le_bytes());
         assert_eq!(bytes[9..9 + content.len()], content);
