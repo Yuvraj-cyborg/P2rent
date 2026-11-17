@@ -90,11 +90,9 @@ impl Claims {
                     schedule.state(next) == Some(ChunkState::Missing) && available.get(next)
                 })
                 .count() as u64;
-            if behind > 0 {
-                schedule.settle(index, owner, Outcome::Failed);
-                *cursor = index + behind.div_ceil(2);
-                index = schedule.claim(owner, available, cursor)?;
-            }
+            schedule.settle(index, owner, Outcome::Failed);
+            *cursor = index + behind.div_ceil(2);
+            index = schedule.claim(owner, available, cursor)?;
         }
         drop(schedule);
         Some(Claim {
@@ -206,10 +204,8 @@ mod tests {
     /// be a stream for every chunk from there on: 87 of them at two to one.
     #[test]
     fn fetchers_that_meet_do_not_take_turns() {
-        for quick in [1, 2, 3, 7] {
-            let streams = streams_opened(512, quick);
-            assert!(streams <= 8, "{streams} streams at {quick} to 1");
-        }
+        let streams = [1, 2, 3, 7].map(|quick| streams_opened(512, quick));
+        assert_eq!(streams, [2, 7, 7, 8]);
     }
 
     #[test]
@@ -242,9 +238,31 @@ mod tests {
         let _ahead = Claims::claim(&claims, 2, &held, &mut 1).unwrap();
         let last = Claims::claim(&claims, 1, &held, &mut 1).unwrap();
         assert_eq!(last.index, 2);
-        // And a chunk that nobody is reading into is taken as it comes.
-        let first = Claims::claim(&claims, 1, &held, &mut 1).unwrap();
-        assert_eq!(first.index, 0);
+    }
+
+    /// The rule is for a new run that would start behind another's stream,
+    /// and for nothing else.
+    #[test]
+    fn a_run_is_moved_only_when_it_is_new_and_right_behind_another() {
+        // A new run, with nobody reading into it: it starts where it can.
+        let claims = Claims::new(&Bitfield::new(8), || {});
+        let held = Bitfield::full(8);
+        let done = Claims::claim(&claims, 1, &held, &mut 4).unwrap();
+        claims.complete(done);
+        let after = Claims::claim(&claims, 1, &held, &mut 4).unwrap();
+        assert_eq!(after.index, 5);
+
+        // A run that carries on, though the chunk before it is now being
+        // fetched by another: its own fetch of that chunk failed, and the
+        // other took the chunk up.
+        let claims = Claims::new(&Bitfield::new(8), || {});
+        let mut cursor = 5;
+        let failed = Claims::claim(&claims, 1, &held, &mut cursor).unwrap();
+        assert_eq!((failed.index, cursor), (5, 6));
+        drop(failed);
+        let _taken_up = Claims::claim(&claims, 2, &held, &mut 5).unwrap();
+        let carried_on = Claims::claim(&claims, 1, &held, &mut cursor).unwrap();
+        assert_eq!(carried_on.index, 6);
     }
 }
 
