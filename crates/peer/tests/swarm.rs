@@ -54,13 +54,10 @@ async fn status_lists_other_participants() {
         .await
         .unwrap();
 
-    let observer = Endpoint::bind(&Identity::generate(), common::localhost())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
-    let connection = observer
-        .connect(origin.local_addr(), origin.node_id())
-        .await
-        .unwrap();
+    let connection = observer.connect(&peer_info(&origin)).await.unwrap();
     let status = connection
         .status(artifact.content_id())
         .await
@@ -101,13 +98,10 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     ));
 
     // Wait until the liar knows about the honest node.
-    let observer = Endpoint::bind(&Identity::generate(), common::localhost())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
-    let connection = observer
-        .connect(liar.local_addr(), liar.node_id())
-        .await
-        .unwrap();
+    let connection = observer.connect(&peer_info(&liar)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let status = connection
@@ -238,13 +232,10 @@ async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
     assert_eq!(wanted.content_id(), other.content_id());
 
     // The second node holds the content, but not the first node's manifest.
-    let observer = Endpoint::bind(&Identity::generate(), common::localhost())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
-    let connection = observer
-        .connect(second.local_addr(), second.node_id())
-        .await
-        .unwrap();
+    let connection = observer.connect(&peer_info(&second)).await.unwrap();
     assert!(connection.manifest(wanted.id()).await.unwrap().is_none());
     assert!(connection.manifest(other.id()).await.unwrap().is_some());
     assert!(

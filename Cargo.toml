@@ -31,6 +31,7 @@ gungraun = "0.20"
 httpdate = "1"
 indicatif = "0.18"
 iroh = { version = "1.4", default-features = false, features = ["tls-ring"] }
+iroh-relay = { version = "1.4", default-features = false, features = ["server"] }
 nix = { version = "0.32", default-features = false, features = ["resource"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 proptest = "1.12"

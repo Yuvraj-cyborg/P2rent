@@ -5,7 +5,7 @@ mod endpoint;
 mod identity;
 pub mod proto;
 
-pub use endpoint::{Connection, Endpoint, Incoming};
+pub use endpoint::{Connection, Endpoint, Incoming, Options, Relays};
 pub use identity::Identity;
 pub use model::ticket::NodeId;
 pub use proto::PeerInfo;

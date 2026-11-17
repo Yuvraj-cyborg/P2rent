@@ -2,8 +2,8 @@
 
 use super::node::Node;
 use crate::error::{Error, Result};
+use crate::net::Connection;
 use crate::net::proto::{self, Have, Request, Response, Status};
-use crate::net::{Connection, PeerInfo};
 use iroh::endpoint::{RecvStream, SendStream};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +30,7 @@ pub(crate) async fn run(node: Arc<Node>) {
 }
 
 async fn serve_connection(node: Arc<Node>, connection: Connection) {
-    debug!(peer = %connection.peer().short(), addr = ?connection.remote_addr(), "peer connected");
+    debug!(peer = %connection.peer().short(), at = ?connection.peer_info(), "peer connected");
     while let Ok((send, recv)) = connection.accept_request().await {
         let node = node.clone();
         let connection = connection.clone();
@@ -68,12 +68,7 @@ async fn serve_request(
 
         Request::Status { content } => match node.share(content) {
             Some(share) => {
-                // Only a peer whose address is seen can be passed on to
-                // others.
-                if let Some(addr) = connection.remote_addr() {
-                    let node = connection.peer();
-                    share.note_participant(PeerInfo { node, addr });
-                }
+                share.note_participant(connection.peer_info());
                 let have = share.have();
                 let status = Status {
                     have: if have.is_full() {

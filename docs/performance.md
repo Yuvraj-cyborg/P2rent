@@ -117,6 +117,7 @@ under about 15% as noise.
 | Machine | Throughput | CPU seconds per GiB | Indexing |
 | --- | ---: | ---: | ---: |
 | Linux, Intel Core i5-10200H (4 cores), data on tmpfs, 17 November 2026 | 441 MiB/s | 6.82 | 11,114 MiB/s |
+| The same machine, with connections made by iroh, 18 November 2026 | 472 MiB/s | 6.52 | 10,592 MiB/s |
 
 The sections that follow come from one laptop (Apple M4) and a Linux
 container running on it.
@@ -264,6 +265,39 @@ figures:
 | 1 GiB in 2000 files | 431 MiB/s, 6.88 CPU s/GiB | 434 MiB/s, 6.95 CPU s/GiB |
 | One 1 GiB file from two seeders | 654 MiB/s, 6.68 CPU s/GiB | 646 MiB/s, 6.65 CPU s/GiB |
 
+## Connections by iroh
+
+`peer` made its connections with quinn until
+[#19](https://github.com/yuvichh/mux/issues/19) moved it to
+[iroh](https://github.com/n0-computer/iroh), which reaches machines behind
+routers and has a QUIC of its own. The same loopback transfer, before and
+after:
+
+| Machine | quinn | iroh |
+| --- | ---: | ---: |
+| Linux, Intel Core i5-10200H, 1 GiB on tmpfs, median of five | 441 MiB/s, 6.82 CPU s/GiB | 472 MiB/s, 6.52 CPU s/GiB |
+| macOS, Apple M4, 512 MiB, median of five | about 1,350 MiB/s (measured when large datagrams went in) | 328 MiB/s, 9.84 CPU s/GiB |
+
+On Linux nothing was lost. On macOS loopback the rate fell to a quarter,
+and the reason is the size of a datagram. With quinn a datagram grew to
+8952 bytes where the route could carry it, and on macOS, which pays for
+each packet with a system call, that was worth nearly four times the
+throughput. An iroh endpoint accepts datagrams of up to 1472 bytes and has
+no setting for more.
+
+This is the cost on a route with a large MTU, which is loopback and a
+network of jumbo frames. On the usual 1500-byte network a datagram could
+not grow past 1472 bytes before either, and the figure to compare with is
+the 365 MiB/s that macOS reached at that size.
+
+What iroh adds to the binary and to the list of crates that ship is in the
+pull request for #19.
+
+One transfer was made between two machines on different networks, each
+behind a router, with a ticket that named the seeder by its key and gave no
+address: 20 MiB in 22.0 seconds, at the 1 MiB/s that link gives, and the
+checksums were equal.
+
 ## Web downloads
 
 `just fetch URL` fetches one web address into a folder, three times, and
@@ -343,6 +377,8 @@ not.
 ## Not yet measured
 
 - Two machines over a real network, at 1, 10 or 25 Gbit/s.
+- How much of a transfer between machines behind routers goes direct, and
+  how much by way of a relay.
 - x86 servers, where BLAKE3 and AES-GCM have different costs.
 - Windows.
 - Links with latency. Each peer is asked for four chunks at a time, which may

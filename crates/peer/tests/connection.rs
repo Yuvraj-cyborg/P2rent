@@ -1,46 +1,52 @@
 //! Connections are mutually authenticated by node id.
 
 use peer::Error;
-use peer::net::{Endpoint, Identity};
-use std::net::SocketAddr;
+use peer::net::{Endpoint, Identity, NodeId, Options, PeerInfo, Relays};
 use std::time::{Duration, Instant};
 
-fn localhost() -> SocketAddr {
-    "127.0.0.1:0".parse().unwrap()
+/// An endpoint reached at one local address and through no relay.
+async fn endpoint(identity: &Identity) -> Endpoint {
+    let options = Options {
+        listen: Some("127.0.0.1:0".parse().unwrap()),
+        relays: Relays::Off,
+        direct: true,
+    };
+    Endpoint::bind(identity, &options).await.unwrap()
+}
+
+/// How to dial `endpoint`, as the node `node`.
+fn at(endpoint: &Endpoint, node: NodeId) -> PeerInfo {
+    PeerInfo::at(node, endpoint.local_addrs()[0])
 }
 
 #[tokio::test]
 async fn both_sides_learn_the_other_node_id() {
     let server_identity = Identity::generate();
     let client_identity = Identity::generate();
-    let server = Endpoint::bind(&server_identity, localhost()).await.unwrap();
-    let client = Endpoint::bind(&client_identity, localhost()).await.unwrap();
-    let addr = server.local_addr();
+    let server = endpoint(&server_identity).await;
+    let client = endpoint(&client_identity).await;
 
     let accept = tokio::spawn({
         let server = server.clone();
         async move { server.accept().await.unwrap().establish().await.unwrap() }
     });
     let outbound = client
-        .connect(addr, server_identity.node_id())
+        .connect(&at(&server, server_identity.node_id()))
         .await
         .unwrap();
     let inbound = accept.await.unwrap();
 
     assert_eq!(outbound.peer(), server_identity.node_id());
     assert_eq!(inbound.peer(), client_identity.node_id());
-    assert_eq!(inbound.remote_addr(), Some(client.local_addr()));
+    // Each side sees where the other is, and nothing of a relay.
+    assert_eq!(inbound.peer_info(), at(&client, client_identity.node_id()));
+    assert_eq!(outbound.peer_info(), at(&server, server_identity.node_id()));
 }
 
 #[tokio::test]
 async fn connecting_to_the_wrong_node_fails() {
-    let server = Endpoint::bind(&Identity::generate(), localhost())
-        .await
-        .unwrap();
-    let client = Endpoint::bind(&Identity::generate(), localhost())
-        .await
-        .unwrap();
-    let addr = server.local_addr();
+    let server = endpoint(&Identity::generate()).await;
+    let client = endpoint(&Identity::generate()).await;
 
     tokio::spawn({
         let server = server.clone();
@@ -52,7 +58,10 @@ async fn connecting_to_the_wrong_node_fails() {
     });
 
     let someone_else = Identity::generate().node_id();
-    let error = client.connect(addr, someone_else).await.unwrap_err();
+    let error = client
+        .connect(&at(&server, someone_else))
+        .await
+        .unwrap_err();
     let Error::Transport(why) = &error else {
         panic!("{error}");
     };
@@ -66,18 +75,15 @@ async fn connecting_to_the_wrong_node_fails() {
 #[tokio::test]
 async fn datagrams_grow_when_the_route_allows() {
     let server_identity = Identity::generate();
-    let server = Endpoint::bind(&server_identity, localhost()).await.unwrap();
-    let client = Endpoint::bind(&Identity::generate(), localhost())
-        .await
-        .unwrap();
-    let addr = server.local_addr();
+    let server = endpoint(&server_identity).await;
+    let client = endpoint(&Identity::generate()).await;
 
     let accept = tokio::spawn({
         let server = server.clone();
         async move { server.accept().await.unwrap().establish().await.unwrap() }
     });
     let outbound = client
-        .connect(addr, server_identity.node_id())
+        .connect(&at(&server, server_identity.node_id()))
         .await
         .unwrap();
     let inbound = accept.await.unwrap();

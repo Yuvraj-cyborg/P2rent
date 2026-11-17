@@ -27,6 +27,8 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# A relay to run inside a test.
+iroh-relay.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
