@@ -684,6 +684,14 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_starts_at_the_first_chunk() {
+        use crate::copy::{HERE, THE_SOURCE};
+        assert_ne!(HERE, THE_SOURCE);
+        let points: Vec<u64> = starting_points(&HERE, &THE_SOURCE, 8, 4).collect();
+        assert_eq!(points, [0, 2, 4, 6]);
+    }
+
+    #[test]
     fn pipelines_start_evenly_spread_round_the_chunks() {
         let (me, supplier) = (id(0), id(100));
         let origin = stagger(&me, &supplier) % 8;
