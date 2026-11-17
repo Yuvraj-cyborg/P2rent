@@ -1,6 +1,9 @@
 # Settings for `just mutants`.
 
 exclude_re = [
+    # The test of claims under every interleaving is built only by
+    # `just loom`, so `cargo test` cannot notice a change to it.
+    "interleavings::",
     # Kani proofs are not compiled by `cargo test`, so no test can notice a
     # change to one. `just kani` checks them.
     "proofs::",
