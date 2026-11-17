@@ -5,7 +5,7 @@
 //! certificate, rustls checks that the handshake was signed by the key inside
 //! it, and the caller then compares that key with the node id it expected.
 
-use super::identity::{Identity, NodeId};
+use super::identity::{self, Identity};
 use super::proto::ALPN;
 use crate::error::{Error, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -22,7 +22,7 @@ struct NodeVerifier {
 
 impl NodeVerifier {
     fn require_node_certificate(certificate: &CertificateDer<'_>) -> Result<(), rustls::Error> {
-        NodeId::from_certificate(certificate)
+        identity::node_of(certificate)
             .map(drop)
             .map_err(|e| rustls::Error::General(e.to_string()))
     }

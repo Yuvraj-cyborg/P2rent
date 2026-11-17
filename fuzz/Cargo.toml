@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT"
 publish = false
-description = "Fuzz targets for everything that parses bytes from other machines"
+description = "Fuzz targets for everything that parses bytes from other machines or text from a person"
 
 [package.metadata]
 cargo-fuzz = true
@@ -36,6 +36,13 @@ bench = false
 [[bin]]
 name = "ticket"
 path = "fuzz_targets/ticket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "location"
+path = "fuzz_targets/location.rs"
 test = false
 doc = false
 bench = false

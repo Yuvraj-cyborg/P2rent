@@ -1,10 +1,60 @@
+//! Tickets: the text one machine hands another so it can fetch something.
+
+use crate::artifact::Hash;
 use crate::error::{Error, Result};
-use crate::net::NodeId;
-use model::artifact::Hash;
-use std::fmt;
-use std::str::FromStr;
+use crate::hex;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
+use core::str::FromStr;
+use serde::{Deserialize, Serialize};
 
 const SCHEME: &str = "mux://";
+
+/// A node's Ed25519 public key. This is the only name a node has.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NodeId([u8; 32]);
+
+impl NodeId {
+    /// Wraps a raw Ed25519 public key.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw Ed25519 public key.
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// First eight hex digits, for log lines.
+    pub fn short(&self) -> String {
+        hex::encode(&self.0[..4])
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&hex::encode(&self.0))
+    }
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "NodeId({})", self.short())
+    }
+}
+
+impl FromStr for NodeId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        hex::decode_32(s)
+            .map(Self)
+            .ok_or_else(|| invalid("a node id is 64 hex characters"))
+    }
+}
 
 /// Everything needed to join a swarm: the artifact id and where to find the
 /// first peers.
@@ -103,6 +153,16 @@ mod tests {
 
     fn node(byte: u8) -> NodeId {
         NodeId::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn a_node_id_prints_as_hex() {
+        let id = node(0xab);
+        assert_eq!(id.to_string(), "ab".repeat(32));
+        assert_eq!(id.to_string().parse::<NodeId>().unwrap(), id);
+        assert_eq!(id.short(), "abababab");
+        assert_eq!(format!("{id:?}"), "NodeId(abababab)");
+        assert!("abab".parse::<NodeId>().is_err());
     }
 
     #[test]
