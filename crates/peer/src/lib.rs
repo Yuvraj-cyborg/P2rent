@@ -12,7 +12,6 @@
 mod error;
 pub mod net;
 pub mod swarm;
-mod sync;
 
 pub use error::{Error, Result};
 

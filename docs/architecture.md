@@ -6,9 +6,9 @@ this table.
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
 | `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, the schedule of which chunk to fetch next, and how a place is named: locations and tickets | nothing else |
-| `engine` | What is the same for every place: checking a chunk before it is stored, knowing which chunks are held, and having a file committed when its last chunk is in | model |
+| `engine` | What is the same for every place and every supplier: fetching chunks from many suppliers at once, checking a chunk before it is stored, and having a file committed when its last chunk is in | model |
 | `fs` | Local folders: hashing files into artifacts; reading and writing byte ranges; part files that are renamed into place when committed | model |
-| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, engine, fs |
+| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, and a peer as a supplier of chunks | model, engine, fs |
 | `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the others | all of the above |
 
 `model` touches no disk, network or clock and does not use `std`.
@@ -24,9 +24,10 @@ crates/
 │   ├── schedule.rs
 │   ├── location.rs
 │   ├── place.rs
+│   ├── retry.rs
 │   ├── ticket.rs
 │   └── hex.rs
-├── engine/src/        store.rs  conformance.rs
+├── engine/src/        store.rs  transfer.rs  claims.rs  conformance.rs  faults.rs
 ├── fs/
 │   ├── src/           index.rs  folder.rs  io.rs
 │   └── tests/folder/  what a store over a folder leaves on disk
@@ -34,8 +35,7 @@ crates/
 │   ├── src/
 │   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
 │   │   ├── swarm/     node.rs  share.rs  server.rs
-│   │   │   └── download/  mod.rs  session.rs  claims.rs  peer.rs
-│   │   └── sync.rs    locks that recover from poisoning
+│   │   │   └── download/  mod.rs  supplier.rs
 │   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
@@ -113,13 +113,14 @@ Printing a location gives text that reads back as the same place. That and
 ## Places
 
 A **place** is somewhere data is read from or written to. `model::place` has
-the two traits a backend implements, and nothing else about a place is known
+the traits a backend implements, and nothing else about a place is known
 to the rest of the program.
 
 | Trait | Does |
 | --- | --- |
 | `Source` | Reads a range of bytes of one file. |
 | `Sink` | Makes the place ready and says which chunks it already holds; writes bytes at an offset; commits a file; aborts a file; finishes the tree. |
+| `Supplier` | Is reached, says which chunks it holds and which other suppliers it knows of, and hands over a chunk. |
 
 A file being written is kept apart from the file under its final name until
 it is committed. A failure says which of four things it is (the place is
@@ -217,32 +218,69 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
                                                               │
         ┌─────────────────────────────────────────────────────┘
         ▼
-   register share (start serving) ──► manager ──► done
+   register share (start serving) ──► the engine's transfer ──► done
                                          │
-                      one task per peer, each with N workers
-                      worker: claim chunk → fetch → hash → write to part file
-                              last chunk of a file → fsync, rename into place
+                      one supplier for each peer
                       done: fsync the directories
 ```
 
-The manager keeps up to `max_peers` peer tasks running, adds peers reported
-through status replies, retries failed peers with exponential backoff and
-permanently drops any peer whose data fails verification.
+`peer` knows the wire protocol and nothing about fetching. A peer is a
+**supplier**: something that can be reached, asked which chunks it holds and
+whom else it knows, and asked for a chunk. The engine does the rest, and
+would do the same for a supplier that is a web server or a folder.
 
-A worker reserves a chunk with a `Claim`. Dropping a claim without completing
-it returns the chunk to the pool, so cancellation and errors cannot strand a
-chunk. The schedule records which connection is fetching each chunk. It is
-proven that only that connection can settle the chunk, and that a chunk
-becomes done in one way only: its fetcher reports it verified. Workers start scanning at an offset derived from the two node ids, so
-simultaneous downloaders collect different chunks first and then exchange
-them.
+## Transfer
 
-Memory held for chunk data is bounded by
-`max_peers × requests_per_peer × chunk_size` (32 MiB with the defaults).
+`engine::transfer` fills a store from suppliers.
+
+```
+manager ──► one task per supplier, each with N pipelines
+            pipeline: claim chunk → fetch → hand to the store
+            store: hash → write → last chunk of a file → commit it
+```
+
+The manager keeps up to `max_suppliers` supplier tasks running and adds
+suppliers that others tell of. What it does with a supplier follows from the
+kind of failure the supplier reports:
+
+| The supplier | The manager |
+| --- | --- |
+| cannot be reached, or breaks off | tries it again after a wait that doubles each time, up to 30 seconds. A supplier that was delivering starts again from the shortest wait. |
+| sends a chunk that fails verification | drops it for good |
+| says it holds a chunk and then does not have it | stops asking it for that chunk |
+| has nothing that is wanted, while another supplier waits for a turn | gives its turn to the one that has waited longest |
+
+The last two rows and the order of turns exist because a property test
+found transfers that stalled without them: see `engine/src/faults.rs`.
+
+A pipeline reserves a chunk with a `Claim`. Dropping a claim without
+completing it returns the chunk to the pool, so cancellation and errors
+cannot strand a chunk. The schedule records which supplier is fetching each
+chunk. It is proven that only that supplier can settle the chunk, and that a
+chunk becomes done in one way only: its fetcher reports it verified. Once a
+chunk has arrived, storing it, counting it and marking it done are one step
+that runs to its end whatever becomes of the supplier.
+
+Pipelines start scanning at an offset derived from the ids of the two ends,
+so ends that start together collect different chunks first and then
+exchange them.
+
+A supplier is asked for its next chunk only when the store has taken the
+last one. So the memory held for chunk data is bounded by
+`max_suppliers × requests_per_supplier × chunk_size` (32 MiB with the
+defaults), however slow the destination is.
+
+Everything that happens is reported as a typed event: a supplier opened or
+closed, a chunk stored, a file committed. A finished transfer says how far
+its bytes were checked. Today that is always *verified*: the digest of every
+chunk was known before the transfer began.
 
 ## Testing
 
 - Unit tests sit beside the code they cover.
+- `engine/src/faults.rs` runs transfers from made-up suppliers that lie,
+  stall, break off and are slow, on a clock of its own. Whatever they do, a
+  transfer ends with the right bytes or with an error.
 - `tests/connection.rs` checks mutual authentication and id pinning.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.

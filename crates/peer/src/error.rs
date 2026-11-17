@@ -74,6 +74,15 @@ impl From<model::Error> for Error {
     }
 }
 
+impl From<engine::Error> for Error {
+    fn from(e: engine::Error) -> Self {
+        match e {
+            engine::Error::Stalled(idle) => Error::Stalled(idle),
+            engine::Error::Place(failure) => Error::Place(failure),
+        }
+    }
+}
+
 impl From<fs::Error> for Error {
     fn from(e: fs::Error) -> Self {
         match e {
