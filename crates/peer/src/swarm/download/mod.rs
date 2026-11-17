@@ -34,8 +34,6 @@ const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
 pub struct DownloadOptions {
     /// Peers to download from at the same time.
     pub max_peers: usize,
-    /// Chunks requested in parallel from each peer.
-    pub requests_per_peer: usize,
     /// Give up when no chunk has arrived for this long.
     pub stall_timeout: Duration,
 }
@@ -44,7 +42,6 @@ impl Default for DownloadOptions {
     fn default() -> Self {
         Self {
             max_peers: 8,
-            requests_per_peer: 4,
             stall_timeout: Duration::from_secs(60),
         }
     }
@@ -221,8 +218,10 @@ pub async fn download(
         .collect();
     let limits = engine::Options {
         max_suppliers: options.max_peers,
-        requests_per_supplier: options.requests_per_peer,
         stall_timeout: options.stall_timeout,
+        // A peer is asked for as many chunks at once as its route has room
+        // for, and not for a set number.
+        ..engine::Options::default()
     };
     let watching = progress.clone();
     let observer: Observer = Arc::new(move |event| watching.observe(event));

@@ -67,6 +67,11 @@ pub struct Capabilities {
     /// Any range of a file can be reached, in any order. Without this a
     /// file is one stream from its first byte to its last.
     pub random_access: bool,
+    /// Every request travels on one connection, so one more request costs
+    /// nothing but its bytes. The engine then keeps as many in flight as
+    /// the route has room for ([`crate::pace`]), where otherwise it keeps
+    /// to a set number. It means nothing without `random_access`.
+    pub multiplexed: bool,
 }
 
 /// What is known about a file before any of it has been read, when the

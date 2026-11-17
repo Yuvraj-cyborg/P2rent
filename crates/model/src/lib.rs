@@ -22,6 +22,7 @@ pub mod hex;
 pub mod location;
 pub mod mirror;
 pub mod notes;
+pub mod pace;
 pub mod place;
 pub mod retry;
 pub mod schedule;

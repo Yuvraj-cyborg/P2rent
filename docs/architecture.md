@@ -343,6 +343,13 @@ contains the node's bitfield and the other participants it knows; asking for
 status is also what registers the requester as a participant. This is the
 whole of peer discovery: there is no tracker.
 
+A peer may have many requests for chunks waiting on one connection. At most
+four of them are reading from disk at a time, and the chunks go out one
+after another in the order they were asked for: a slice of each in turn
+cost a fifth more CPU at both ends. An answer that is small, the manifest
+or the status, goes out ahead of every chunk: on a slow link a chunk is on
+its way for a long time.
+
 ### Downloading
 
 ```
@@ -412,10 +419,29 @@ so ends that start together collect different chunks first and then
 exchange them. A copy from a source has nobody to exchange with, and starts
 at the first chunk.
 
+How many pipelines a supplier has depends on what a request costs it.
+
+- Where each request is a connection of its own, as to a web server, there
+  are `requests_per_supplier` of them, spread evenly round the chunks.
+- Where every request travels on one connection, as to another machine, the
+  number follows how long a chunk takes to come (`model::pace`). It starts
+  at one. A chunk that comes within two seconds adds one, and a chunk that
+  takes more than eight takes one away. These pipelines take the chunks in
+  a row between them.
+
+A request takes a round trip before its first byte comes back. With a set
+few requests in flight, a fast route to a far machine stood idle for most
+of each round trip: at 1 Gbit/s and 100 ms, four chunks at a time used 28%
+of the link. With too many, a slow route shares itself between them and
+none finishes in time. [docs/performance.md](performance.md#links-like-real-ones)
+has the figures.
+
 A supplier is asked for its next chunk only when the store has taken the
-last one. So the memory held for chunk data is bounded by
-`max_suppliers × requests_per_supplier × chunk_size` (32 MiB with the
-defaults), however slow the destination is.
+last one. So the memory held for chunk data is bounded by what is asked for
+at once, however slow the destination is:
+`max_suppliers × requests_per_supplier × chunk_size` where the number is
+set (32 MiB with the defaults), and 64 MiB for each supplier where it
+follows the route.
 
 Everything that happens is reported as a typed event: a supplier opened or
 closed, a chunk stored, a file committed.
