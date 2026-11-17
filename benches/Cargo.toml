@@ -1,6 +1,6 @@
 [package]
 name = "benches"
-description = "Benchmarks for mux: instruction counts for the hot paths, and a timed loopback transfer"
+description = "Benchmarks for mux: instruction counts for the hot paths, a timed loopback transfer, and a timed web download"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,16 @@ publish = false
 
 [dev-dependencies]
 blake3.workspace = true
+engine.workspace = true
 fs.workspace = true
 gungraun.workspace = true
 model.workspace = true
 peer.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+web.workspace = true
 
-# A safe wrapper around `getrusage`, so the transfer benchmark needs no
+# A safe wrapper around `getrusage`, so the timed benchmarks need no
 # `unsafe`.
 [target.'cfg(unix)'.dev-dependencies]
 nix.workspace = true
@@ -34,6 +36,12 @@ harness = false
 [[bench]]
 name = "transfer"
 path = "transfer.rs"
+harness = false
+
+# Times a download from a web address.
+[[bench]]
+name = "web"
+path = "web.rs"
 harness = false
 
 [lints]

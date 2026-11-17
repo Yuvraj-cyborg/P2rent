@@ -226,6 +226,20 @@ pub trait Sink: fmt::Debug + Send + Sync {
     /// Returns a failure if something is there and cannot be removed.
     fn abort(&self, file: usize) -> Result<(), Failure>;
 
+    /// Says whether what is committed for `file` can be taken for the file
+    /// without reading it: it has the size the tree gives, and was last
+    /// changed at the time the tree records. A place that cannot tell, or
+    /// a tree that records no time, says no.
+    ///
+    /// This is how a transfer with no digests leaves alone a file that is
+    /// already there. It is weaker than a digest, and is used only where
+    /// there is none.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if the place cannot be looked at.
+    fn is_current(&self, file: usize) -> Result<bool, Failure>;
+
     /// Finishes the tree once every file is committed, and makes what was
     /// committed last through a power cut.
     ///
@@ -284,6 +298,12 @@ pub struct Status {
 /// happens, to whoever wants to show or record it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
+    /// Bytes that were already at the destination have been looked at, to
+    /// find out which of them can be kept.
+    Examined {
+        /// How many.
+        bytes: u64,
+    },
     /// A supplier was reached and is in use.
     Opened {
         /// The supplier.

@@ -271,6 +271,24 @@ impl Sink for Memory {
         })
     }
 
+    /// A file in memory has no time of its own. It is taken for current
+    /// if it is committed at the right size and the tree records a time.
+    fn is_current(&self, file: usize) -> Result<bool, Failure> {
+        let size = self
+            .tree
+            .entries()
+            .get(file)
+            .map(model::artifact::Entry::size);
+        let timed = self
+            .tree
+            .metadata(file)
+            .is_some_and(|recorded| recorded.modified.is_some());
+        self.slot(file, |slot| {
+            let committed = slot.committed.as_ref().map(|bytes| bytes.len() as u64);
+            Ok(timed && committed.is_some() && committed == size)
+        })
+    }
+
     fn finish(&self) -> Result<(), Failure> {
         self.finished.store(true, Ordering::Relaxed);
         Ok(())

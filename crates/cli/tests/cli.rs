@@ -50,15 +50,12 @@ fn protocols_lists_what_this_build_can_use_and_needs_no_key() {
         .lines()
         .map(|line| line.split_whitespace().take(3).collect())
         .collect();
-    assert_eq!(
-        rows,
-        [
-            ["SCHEME", "READ", "WRITE"],
-            ["file", "yes", "yes"],
-            ["mux", "yes", "no"],
-            ["peer", "no", "yes"],
-        ]
-    );
+    let mut expected = vec![["SCHEME", "READ", "WRITE"], ["file", "yes", "yes"]];
+    if cfg!(feature = "web") {
+        expected.extend([["http", "yes", "no"], ["https", "yes", "no"]]);
+    }
+    expected.extend([["mux", "yes", "no"], ["peer", "no", "yes"]]);
+    assert_eq!(rows, expected);
     // Listing protocols is no reason to give this machine a key.
     assert!(!key.exists());
 }

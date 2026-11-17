@@ -343,7 +343,10 @@ impl Learned {
         let expected = |index: u64| noted.get(usize::try_from(index).ok()?).copied()?;
         let held = sink.begin(&expected, examined)?;
         for (file, (_, notes)) in described.iter().enumerate() {
-            if let Some(notes) = notes {
+            // A file that is whole already was committed as the place was
+            // made ready, and has nothing left to keep notes beside.
+            let unfinished = tree.file_chunks(file).any(|index| !held.get(index));
+            if let Some(notes) = notes.as_ref().filter(|_| unfinished) {
                 sink.note(file, 0, &notes.header())?;
             }
         }

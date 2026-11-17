@@ -1,0 +1,3 @@
+# The list of crates that ship holds their names, which are not prose.
+[files]
+extend-exclude = ["xtask/shipped-crates.txt"]

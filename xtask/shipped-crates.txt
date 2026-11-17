@@ -8,6 +8,9 @@ anstyle-query
 anstyle-wincon: x86_64-pc-windows-msvc
 anyhow
 arrayvec
+atomic-waker
+base64
+bitflags
 blake3
 bytes
 cfg-if
@@ -20,6 +23,8 @@ cobs
 colorchoice
 console
 constant_time_eq
+core-foundation: x86_64-apple-darwin, aarch64-apple-darwin
+core-foundation-sys: x86_64-apple-darwin, aarch64-apple-darwin
 cpufeatures: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
 crossbeam-deque
 crossbeam-epoch
@@ -27,25 +32,61 @@ crossbeam-utils
 deranged
 dirs
 dirs-sys
+displaydoc
 either
 encode_unicode: x86_64-pc-windows-msvc
+equivalent
 errno: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+fnv
+form_urlencoded
+futures-channel
+futures-core
+futures-sink
+futures-task
+futures-util
 getrandom
+h2
+hashbrown
 heck
+http
+http-body
+http-body-util
+httparse
+httpdate
+hyper
+hyper-rustls
+hyper-util
+icu_collections
+icu_locale_core
+icu_normalizer
+icu_normalizer_data
+icu_properties
+icu_properties_data
+icu_provider
+idna
+idna_adapter
+indexmap
 indicatif
+ipnet
 is_terminal_polyfill
+itoa
 lazy_static
 libc
+litemap
+log
 lru-slab
 mio
 nu-ansi-term
 num-conv
 once_cell
 once_cell_polyfill: x86_64-pc-windows-msvc
+openssl-probe: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 option-ext
+percent-encoding
 pin-project-lite
 portable-atomic
 postcard
+potential_utf
 powerfmt
 proc-macro2
 quinn
@@ -58,42 +99,71 @@ rand_pcg
 rayon
 rayon-core
 rcgen
+reqwest
 ring
 rustc-hash
 rustls
+rustls-native-certs: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 rustls-pki-types
+rustls-platform-verifier
 rustls-webpki
 same-file
+security-framework: x86_64-apple-darwin, aarch64-apple-darwin
+security-framework-sys: x86_64-apple-darwin, aarch64-apple-darwin
 serde
 serde_core
 serde_derive
 sharded-slab
 signal-hook-registry: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
 slab
+smallvec
 socket2
+stable_deref_trait
 strsim
 subtle
 syn
+sync_wrapper
+synstructure
 thiserror
 thiserror-impl
 thread_local
 time
 time-core
+tinystr
 tinyvec
 tokio
 tokio-macros
+tokio-rustls
+tokio-util
+tower
+tower-http
+tower-layer
+tower-service
 tracing
 tracing-attributes
 tracing-core
 tracing-subscriber
+try-lock
 unicode-ident
 unicode-width
 unit-prefix
 untrusted
+url
+utf8_iter
 utf8parse
+utf_types
 walkdir
+want
 winapi-util: x86_64-pc-windows-msvc
 windows-link: x86_64-pc-windows-msvc
 windows-sys: x86_64-pc-windows-msvc
+writeable
 yasna
+yoke
+yoke-derive
+zerofrom
+zerofrom-derive
 zeroize
+zerotrie
+zerovec
+zerovec-derive
