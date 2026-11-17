@@ -6,7 +6,7 @@ use common::{CHUNK, get, index, listing, node, options, pattern, peer_info, seed
 use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
-use peer::swarm::{DownloadOptions, Progress, announce, download};
+use peer::swarm::{Progress, announce, download};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,22 +148,23 @@ async fn forged_data_is_never_accepted() {
 
     let downloader = node();
     let out = tmp.path().join("out");
-    let impatient = DownloadOptions {
-        stall_timeout: Duration::from_millis(1500),
-        ..options()
-    };
     let progress = Arc::new(Progress::default());
     let error = download(
         &downloader,
         &ticket_for(&liar, &artifact),
         &out,
-        impatient,
+        options(),
         progress.clone(),
     )
     .await
     .unwrap_err();
 
-    assert!(matches!(error, Error::Stalled(_)), "{error}");
+    // The only peer was dropped for what it sent, and the download ends
+    // there, saying so, and not after waiting for a stall.
+    let Error::NoPeerLeft(why) = &error else {
+        panic!("{error}");
+    };
+    assert!(why.contains("failed verification"), "{why}");
     assert_eq!(progress.fetched_bytes(), 0);
     assert!(
         !out.join("model.bin").exists(),

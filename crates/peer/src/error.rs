@@ -62,6 +62,11 @@ pub enum Error {
     /// No chunk arrived for the whole of the stall timeout.
     #[error("download stalled: no peer made progress for {0:?}")]
     Stalled(std::time::Duration),
+
+    /// Every peer was dropped, for sending something wrong or for being of
+    /// no use. Holds why the last one was.
+    #[error("no peer is left to download from: {0}")]
+    NoPeerLeft(String),
 }
 
 impl From<model::Error> for Error {
@@ -78,6 +83,7 @@ impl From<engine::Error> for Error {
     fn from(e: engine::Error) -> Self {
         match e {
             engine::Error::Stalled(idle) => Error::Stalled(idle),
+            engine::Error::Unsupplied(why) => Error::NoPeerLeft(why),
             engine::Error::Changed(what) => Error::Place(model::place::Failure::Changed(what)),
             engine::Error::Place(failure) => Error::Place(failure),
         }
