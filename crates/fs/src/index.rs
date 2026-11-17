@@ -128,6 +128,41 @@ pub fn scan(path: &Path, chunk_size: u32) -> Result<Scanned> {
     })
 }
 
+/// `tree` as a folder on this system keeps it.
+///
+/// A sync compares what a source holds with what is found on disk. What
+/// this system has no way to keep would be found different every time, and
+/// no sync could make the difference go away. So it is put here as it will
+/// be found: on a system that is not Unix, of a file's permissions only
+/// whether it may be written, and of a directory neither its permissions
+/// nor its time. On Unix the tree is as it was.
+///
+/// # Errors
+///
+/// Returns an error only if `tree` is not a tree, which it is.
+pub fn as_kept(tree: &Tree) -> Result<Tree> {
+    let entries = tree.entries().iter().enumerate().map(|(index, entry)| {
+        let recorded = tree
+            .metadata(index)
+            .map(|recorded| io::as_kept(&entry.kind, recorded));
+        (entry.clone(), recorded)
+    });
+    let entries: Option<Vec<_>> = entries
+        .map(|(entry, recorded)| Some((entry, recorded?)))
+        .collect();
+    let entries = entries.ok_or_else(|| {
+        unsupported(
+            Path::new(tree.name()),
+            "has entries with nothing recorded of them",
+        )
+    })?;
+    Ok(Tree::new(
+        tree.name().to_owned(),
+        tree.chunk_size(),
+        entries,
+    )?)
+}
+
 /// The canonical form of `path`, and the name of what is there.
 fn named(path: &Path) -> Result<(PathBuf, String)> {
     let root = path.canonicalize()?;

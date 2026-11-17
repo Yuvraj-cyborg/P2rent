@@ -55,6 +55,20 @@ pub(super) enum Line<'a> {
         parts: bool,
         digests: Vec<Digest>,
     },
+    /// One thing a sync would do, from a dry run.
+    Step { step: &'a str, path: &'a str },
+    /// Everything a sync would do, from a dry run, after its steps.
+    SyncPlan {
+        source: &'a str,
+        destination: &'a str,
+        add: usize,
+        replace: usize,
+        touch: usize,
+        remove: usize,
+        keep: usize,
+        blocked: usize,
+        bytes: u64,
+    },
     /// The command failed. This is its last line.
     Error {
         code: u8,
@@ -156,6 +170,27 @@ mod tests {
                     }],
                 },
                 r#"{"v":1,"event":"probe","place":"./a","name":"a","kind":"folder","bytes":5,"files":2,"checked":"consistent","parts":true,"digests":[{"path":"sub/b","digest":"sha256:00"}]}"#,
+            ),
+            (
+                Line::Step {
+                    step: "replace",
+                    path: "sub/b",
+                },
+                r#"{"v":1,"event":"step","step":"replace","path":"sub/b"}"#,
+            ),
+            (
+                Line::SyncPlan {
+                    source: "./a",
+                    destination: "./b",
+                    add: 1,
+                    replace: 2,
+                    touch: 3,
+                    remove: 4,
+                    keep: 5,
+                    blocked: 6,
+                    bytes: 7,
+                },
+                r#"{"v":1,"event":"sync_plan","source":"./a","destination":"./b","add":1,"replace":2,"touch":3,"remove":4,"keep":5,"blocked":6,"bytes":7}"#,
             ),
             (
                 Line::Error {

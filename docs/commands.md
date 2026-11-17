@@ -93,6 +93,56 @@ if a digest of every file is known: one given with `--hash`, or one a web
 server sends, which is then listed. `parts` says whether the place can be
 read at several points at once, or only in order from its start.
 
+## `mux sync`
+
+```console
+$ mux sync <SOURCE> <DESTINATION> --dry-run
+```
+
+Says what it would take to make the destination hold what the source holds.
+The destination is the folder that is made to match: `mux sync ./a ./b`
+makes `./b` match `./a`, where `mux cp ./a ./b/` puts a copy of `a` inside
+`b`.
+
+Today `sync` only says what it would do, and needs `--dry-run`. Doing it is
+the next step.
+
+```console
+$ mux sync ./weights /mnt/backup/weights --dry-run --delete
+remove	old-notes.txt
+add	run-7/config.json
+replace	run-7/model.bin
+```
+
+Standard output has one line for each path where there is something to do,
+with a tab between the step and the path. `.` is the destination itself.
+
+| Step | Meaning |
+| --- | --- |
+| `add` | The destination has nothing there. |
+| `replace` | The destination has something else there. |
+| `touch` | It holds the same, with other permissions or another time. |
+| `remove` | The source has nothing there. Only with `--delete`. |
+| `blocked` | The destination has a folder where the source has a file or a link, and without `--delete` nothing is removed, so it is left as it is. |
+
+Two files are taken to hold the same if they have the same size and were
+last changed in the same second. This is the check `rsync` makes by
+default. Parts of a second are not compared, because file systems keep them
+to different lengths. A source that gives no time for a file, as some web
+servers do, is replaced every time.
+
+What a system cannot keep is not compared. On Windows that is a file's
+permissions beyond whether it may be written, and a folder's permissions
+and time.
+
+| Option | Meaning |
+| --- | --- |
+| `--dry-run` | Say what would be done, and do none of it. |
+| `--delete` | Take away what the destination has and the source has not. Without it nothing is ever removed. |
+| `--json` | Write for a program: a `step` line for each step and a `sync_plan` line after them. |
+
+The decision for each path is proven: see [proofs](../proofs/README.md).
+
 ## For a program
 
 With `--json`, a command writes one JSON object on each line of standard
@@ -109,6 +159,8 @@ field away or changes what one means.
 | `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
 | `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
 | `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest` |
+| `step` | One thing a sync would do, with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
+| `sync_plan` | After the steps of a sync. | `source`, `destination`, how many paths get each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), and `bytes` to bring |
 | `error` | The command failed. It is the last line. | `code`, the exit code; `kind`, the same in a word; `message`; `hint`, or `null` |
 
 `checked` is `verified`, `consistent` or `already there`, as on standard

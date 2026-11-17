@@ -6,6 +6,7 @@ mod exit;
 mod get;
 mod probe;
 mod seed;
+mod sync;
 mod tell;
 mod ui;
 
@@ -47,6 +48,8 @@ enum Command {
     Cp(cp::Args),
     /// Say what is at a place, without copying it
     Probe(probe::Args),
+    /// Make a folder hold what a place holds
+    Sync(sync::Args),
     /// Offer files or directories to other machines
     Seed(seed::Args),
     /// Download an artifact from a swarm
@@ -94,6 +97,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Cp(args) => cp::run(args, cli.json).await,
         Command::Probe(args) => probe::run(&args, cli.json).await,
+        Command::Sync(args) => sync::run(&args, cli.json).await,
         Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?).await,
         Command::Get(args) => get::run(args, &identity(cli.key.as_deref())?).await,
         Command::Id => {

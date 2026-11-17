@@ -26,6 +26,7 @@ const PROVEN_MODULES: &[&str] = &[
     "crate::artifact::layout",
     "crate::artifact::path",
     "crate::assembly",
+    "crate::mirror::step",
     "crate::schedule",
 ];
 

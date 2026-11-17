@@ -1382,6 +1382,336 @@ def assembly.Assembly.add
         let v := index_mut_back left
         ok (none, { self with held := b1, missing := v })
 
+/-- [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Kind}::clone]:
+    Source: 'crates/model/src/mirror/step.rs', lines 10:9-10:14
+    Visibility: public -/
+def mirror.step.Kind.Insts.CoreCloneClone.clone
+  (self : mirror.step.Kind) : Result mirror.step.Kind := do
+  ok self
+
+/-- Trait implementation: [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:9-10:14 -/
+@[reducible]
+def mirror.step.Kind.Insts.CoreCloneClone : core.clone.Clone mirror.step.Kind
+  := {
+  clone := mirror.step.Kind.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::Copy for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:16-10:20 -/
+@[reducible]
+def mirror.step.Kind.Insts.CoreMarkerCopy : core.marker.Copy mirror.step.Kind
+  := {
+  cloneInst := mirror.step.Kind.Insts.CoreCloneClone
+}
+
+/-- [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Kind}::fmt]:
+    Source: 'crates/model/src/mirror/step.rs', lines 10:22-10:27
+    Visibility: public -/
+def mirror.step.Kind.Insts.CoreFmtDebug.fmt
+  (self : mirror.step.Kind) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | mirror.step.Kind.File => core.fmt.Formatter.write_str f (toStr "File")
+  | mirror.step.Kind.Directory =>
+    core.fmt.Formatter.write_str f (toStr "Directory")
+  | mirror.step.Kind.Link => core.fmt.Formatter.write_str f (toStr "Link")
+
+/-- Trait implementation: [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:22-10:27 -/
+@[reducible]
+def mirror.step.Kind.Insts.CoreFmtDebug : core.fmt.Debug mirror.step.Kind := {
+  fmt := mirror.step.Kind.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::StructuralPartialEq for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:29-10:38 -/
+@[reducible]
+def mirror.step.Kind.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq mirror.step.Kind := {
+}
+
+/-- [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Kind> for model::mirror::step::Kind}::eq]:
+    Source: 'crates/model/src/mirror/step.rs', lines 10:29-10:38
+    Visibility: public -/
+def mirror.step.Kind.Insts.CoreCmpPartialEqKind.eq
+  (self : mirror.step.Kind) (other : mirror.step.Kind) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Kind> for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:29-10:38 -/
+@[reducible]
+def mirror.step.Kind.Insts.CoreCmpPartialEqKind : core.cmp.PartialEq
+  mirror.step.Kind mirror.step.Kind := {
+  eq := mirror.step.Kind.Insts.CoreCmpPartialEqKind.eq
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::Eq for model::mirror::step::Kind}]
+    Source: 'crates/model/src/mirror/step.rs', lines 10:40-10:42 -/
+@[reducible]
+impl_def mirror.step.Kind.Insts.CoreCmpEq : core.cmp.Eq mirror.step.Kind := {
+  partialEqInst := mirror.step.Kind.Insts.CoreCmpPartialEqKind
+  assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
+    mirror.step.Kind.Insts.CoreCmpEq
+}
+
+/-- [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Pair}::clone]:
+    Source: 'crates/model/src/mirror/step.rs', lines 21:9-21:14
+    Visibility: public -/
+def mirror.step.Pair.Insts.CoreCloneClone.clone
+  (self : mirror.step.Pair) : Result mirror.step.Pair := do
+  ok self
+
+/-- Trait implementation: [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:9-21:14 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreCloneClone : core.clone.Clone mirror.step.Pair
+  := {
+  clone := mirror.step.Pair.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::Copy for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:16-21:20 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreMarkerCopy : core.marker.Copy mirror.step.Pair
+  := {
+  cloneInst := mirror.step.Pair.Insts.CoreCloneClone
+}
+
+/-- [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Pair}::fmt]:
+    Source: 'crates/model/src/mirror/step.rs', lines 21:22-21:27
+    Visibility: public -/
+def mirror.step.Pair.Insts.CoreFmtDebug.fmt
+  (self : mirror.step.Pair) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | mirror.step.Pair.OnlySource =>
+    core.fmt.Formatter.write_str f (toStr "OnlySource")
+  | mirror.step.Pair.OnlyDestination =>
+    core.fmt.Formatter.write_str f (toStr "OnlyDestination")
+  | mirror.step.Pair.Both __self_0 __self_1 __self_2 __self_3 =>
+    let __self_01 := Dyn.mk _ mirror.step.Kind.Insts.CoreFmtDebug __self_0
+    let __self_11 := Dyn.mk _ mirror.step.Kind.Insts.CoreFmtDebug __self_1
+    let __self_21 := Dyn.mk _ core.fmt.DebugBool __self_2
+    let __self_31 :=
+      Dyn.mk _ (core.fmt.DebugShared core.fmt.DebugBool) __self_3
+    core.fmt.Formatter.debug_struct_field4_finish f (toStr "Both") (toStr
+      "source") __self_01 (toStr "destination") __self_11 (toStr
+      "same_content") __self_21 (toStr "same_manner") __self_31
+
+/-- Trait implementation: [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:22-21:27 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreFmtDebug : core.fmt.Debug mirror.step.Pair := {
+  fmt := mirror.step.Pair.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::StructuralPartialEq for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:29-21:38 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq mirror.step.Pair := {
+}
+
+/-- [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Pair> for model::mirror::step::Pair}::eq]:
+    Source: 'crates/model/src/mirror/step.rs', lines 21:29-21:38
+    Visibility: public -/
+def mirror.step.Pair.Insts.CoreCmpPartialEqPair.eq
+  (self : mirror.step.Pair) (other : mirror.step.Pair) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  if self1 = other1
+  then
+    match self with
+    | mirror.step.Pair.OnlySource => ok true
+    | mirror.step.Pair.OnlyDestination => ok true
+    | mirror.step.Pair.Both __self_0 __self_1 __self_2 __self_3 =>
+      match other with
+      | mirror.step.Pair.OnlySource => ok true
+      | mirror.step.Pair.OnlyDestination => ok true
+      | mirror.step.Pair.Both __arg1_0 __arg1_1 __arg1_2 __arg1_3 =>
+        let b ← core.cmp.impls.PartialEqBool.eq __self_2 __arg1_2
+        if b
+        then
+          let b1 ← core.cmp.impls.PartialEqBool.eq __self_3 __arg1_3
+          if b1
+          then
+            let b2 ←
+              mirror.step.Kind.Insts.CoreCmpPartialEqKind.eq __self_0 __arg1_0
+            if b2
+            then
+              mirror.step.Kind.Insts.CoreCmpPartialEqKind.eq __self_1 __arg1_1
+            else ok false
+          else ok false
+        else ok false
+  else ok false
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Pair> for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:29-21:38 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreCmpPartialEqPair : core.cmp.PartialEq
+  mirror.step.Pair mirror.step.Pair := {
+  eq := mirror.step.Pair.Insts.CoreCmpPartialEqPair.eq
+}
+
+/-- [model::mirror::step::{impl core::cmp::Eq for model::mirror::step::Pair}::assert_fields_are_eq]:
+    Source: 'crates/model/src/mirror/step.rs', lines 21:40-21:42
+    Visibility: public -/
+def mirror.step.Pair.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : mirror.step.Pair) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::Eq for model::mirror::step::Pair}]
+    Source: 'crates/model/src/mirror/step.rs', lines 21:40-21:42 -/
+@[reducible]
+def mirror.step.Pair.Insts.CoreCmpEq : core.cmp.Eq mirror.step.Pair := {
+  partialEqInst := mirror.step.Pair.Insts.CoreCmpPartialEqPair
+  assert_fields_are_eq := mirror.step.Pair.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Step}::clone]:
+    Source: 'crates/model/src/mirror/step.rs', lines 44:9-44:14
+    Visibility: public -/
+def mirror.step.Step.Insts.CoreCloneClone.clone
+  (self : mirror.step.Step) : Result mirror.step.Step := do
+  ok self
+
+/-- Trait implementation: [model::mirror::step::{impl core::clone::Clone for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:9-44:14 -/
+@[reducible]
+def mirror.step.Step.Insts.CoreCloneClone : core.clone.Clone mirror.step.Step
+  := {
+  clone := mirror.step.Step.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::Copy for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:16-44:20 -/
+@[reducible]
+def mirror.step.Step.Insts.CoreMarkerCopy : core.marker.Copy mirror.step.Step
+  := {
+  cloneInst := mirror.step.Step.Insts.CoreCloneClone
+}
+
+/-- [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Step}::fmt]:
+    Source: 'crates/model/src/mirror/step.rs', lines 44:22-44:27
+    Visibility: public -/
+def mirror.step.Step.Insts.CoreFmtDebug.fmt
+  (self : mirror.step.Step) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | mirror.step.Step.Keep => core.fmt.Formatter.write_str f (toStr "Keep")
+  | mirror.step.Step.Add => core.fmt.Formatter.write_str f (toStr "Add")
+  | mirror.step.Step.Replace =>
+    core.fmt.Formatter.write_str f (toStr "Replace")
+  | mirror.step.Step.Touch => core.fmt.Formatter.write_str f (toStr "Touch")
+  | mirror.step.Step.Remove => core.fmt.Formatter.write_str f (toStr "Remove")
+  | mirror.step.Step.Blocked =>
+    core.fmt.Formatter.write_str f (toStr "Blocked")
+
+/-- Trait implementation: [model::mirror::step::{impl core::fmt::Debug for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:22-44:27 -/
+@[reducible]
+def mirror.step.Step.Insts.CoreFmtDebug : core.fmt.Debug mirror.step.Step := {
+  fmt := mirror.step.Step.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::marker::StructuralPartialEq for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:29-44:38 -/
+@[reducible]
+def mirror.step.Step.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq mirror.step.Step := {
+}
+
+/-- [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Step> for model::mirror::step::Step}::eq]:
+    Source: 'crates/model/src/mirror/step.rs', lines 44:29-44:38
+    Visibility: public -/
+def mirror.step.Step.Insts.CoreCmpPartialEqStep.eq
+  (self : mirror.step.Step) (other : mirror.step.Step) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::PartialEq<model::mirror::step::Step> for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:29-44:38 -/
+@[reducible]
+def mirror.step.Step.Insts.CoreCmpPartialEqStep : core.cmp.PartialEq
+  mirror.step.Step mirror.step.Step := {
+  eq := mirror.step.Step.Insts.CoreCmpPartialEqStep.eq
+}
+
+/-- Trait implementation: [model::mirror::step::{impl core::cmp::Eq for model::mirror::step::Step}]
+    Source: 'crates/model/src/mirror/step.rs', lines 44:40-44:42 -/
+@[reducible]
+impl_def mirror.step.Step.Insts.CoreCmpEq : core.cmp.Eq mirror.step.Step := {
+  partialEqInst := mirror.step.Step.Insts.CoreCmpPartialEqStep
+  assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
+    mirror.step.Step.Insts.CoreCmpEq
+}
+
+/-- [model::mirror::step::same_kind]:
+    Source: 'crates/model/src/mirror/step.rs', lines 66:0-71:1 -/
+def mirror.step.same_kind
+  (a : mirror.step.Kind) (b : mirror.step.Kind) : Result Bool := do
+  match a with
+  | mirror.step.Kind.File =>
+    match b with
+    | mirror.step.Kind.File => ok true
+    | mirror.step.Kind.Directory => ok false
+    | mirror.step.Kind.Link => ok false
+  | mirror.step.Kind.Directory =>
+    match b with
+    | mirror.step.Kind.File => ok false
+    | mirror.step.Kind.Directory => ok true
+    | mirror.step.Kind.Link => ok false
+  | mirror.step.Kind.Link =>
+    match b with
+    | mirror.step.Kind.File => ok false
+    | mirror.step.Kind.Directory => ok false
+    | mirror.step.Kind.Link => ok true
+
+/-- [model::mirror::step::is_directory]:
+    Source: 'crates/model/src/mirror/step.rs', lines 73:0-75:1 -/
+def mirror.step.is_directory (kind : mirror.step.Kind) : Result Bool := do
+  match kind with
+  | mirror.step.Kind.File => ok false
+  | mirror.step.Kind.Directory => ok true
+  | mirror.step.Kind.Link => ok false
+
+/-- [model::mirror::step::decide]:
+    Source: 'crates/model/src/mirror/step.rs', lines 80:0-111:1
+    Visibility: public -/
+def mirror.step.decide
+  (pair : mirror.step.Pair) (remove : Bool) : Result mirror.step.Step := do
+  match pair with
+  | mirror.step.Pair.OnlySource => ok mirror.step.Step.Add
+  | mirror.step.Pair.OnlyDestination =>
+    if remove
+    then ok mirror.step.Step.Remove
+    else ok mirror.step.Step.Keep
+  | mirror.step.Pair.Both source destination same_content same_manner =>
+    let b ← mirror.step.same_kind source destination
+    if b
+    then
+      if same_content
+      then
+        if same_manner
+        then ok mirror.step.Step.Keep
+        else ok mirror.step.Step.Touch
+      else ok mirror.step.Step.Replace
+    else
+      let b1 ← mirror.step.is_directory destination
+      if b1
+      then
+        if remove
+        then ok mirror.step.Step.Replace
+        else ok mirror.step.Step.Blocked
+      else ok mirror.step.Step.Replace
+
 /-- [model::schedule::{impl core::clone::Clone for model::schedule::ChunkState}::clone]:
     Source: 'crates/model/src/schedule.rs', lines 14:9-14:14
     Visibility: public -/
