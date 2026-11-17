@@ -179,23 +179,35 @@ async fn a_file_arrives_as_it_is_on_the_server() {
     assert_eq!(since.as_secs(), u64::try_from(DATE_SECONDS).unwrap());
 }
 
-/// One request carries a run of chunks. With a request for each chunk
-/// there would be forty-two.
+/// One request carries a run of chunks: read by one pipeline, the whole
+/// file is one request after the one that finds it. With a request for each
+/// chunk there would be forty-two.
 #[tokio::test]
 async fn a_run_of_chunks_is_one_request() {
-    let server = Server::start(serving(file())).await;
+    let file = file();
+    let server = Server::start(serving(file.clone())).await;
     let tmp = tempfile::tempdir().unwrap();
-    fetch(&server, "/sample.bin", tmp.path(), Options::default())
+    let origin = Origin::find(&server.url("/sample.bin"), &Options::default())
         .await
         .unwrap();
+    let one_at_a_time = engine::Options {
+        requests_per_supplier: 1,
+        ..engine::Options::default()
+    };
+    engine::copy(
+        Arc::new(origin),
+        MIN_CHUNK_SIZE,
+        |tree| Arc::new(Folder::inside(tree.clone(), tmp.path())),
+        one_at_a_time,
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
 
+    assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
     let asked = server.asked();
-    assert_eq!(
-        asked[0].as_deref(),
-        Some("bytes=0-0"),
-        "the first byte is asked for first"
-    );
-    assert!(asked.len() <= 12, "{} requests for 41 chunks", asked.len());
+    let asked: Vec<_> = asked.iter().map(|range| range.as_deref()).collect();
+    assert_eq!(asked, [Some("bytes=0-0"), Some("bytes=0-")]);
 }
 
 #[tokio::test]

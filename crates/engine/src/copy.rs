@@ -11,9 +11,16 @@ use model::place::{Event, Failure, Observer, Sink, Source, SupplierId, Verificat
 use std::sync::Arc;
 
 /// This end of a copy, and the source it copies from, as the transfer
-/// tells them apart.
-const HERE: SupplierId = [0; 32];
-const THE_SOURCE: SupplierId = [1; 32];
+/// tells them apart. A transfer starts fetching at a chunk that differs
+/// for each pair of ends, so that ends which trade chunks collect different
+/// ones first. A copy has nobody to trade with, and these two are chosen
+/// for it to start at the first chunk.
+pub(crate) const HERE: SupplierId = [0; 32];
+pub(crate) const THE_SOURCE: SupplierId = {
+    let mut id = [0; 32];
+    id[0] = 1;
+    id
+};
 
 /// What a copy did.
 #[derive(Debug)]

@@ -11,9 +11,9 @@ fuzz_target!(|data: &[u8]| {
     let Ok(text) = core::str::from_utf8(data) else {
         return;
     };
-    // The text is tried as each header, and split to try two at once.
-    let (left, right) = text.split_at(text.len() / 2);
-    let (left, right) = (left.trim_end_matches('\u{0}'), right);
+    // The text is tried as each header, and its first line and the rest
+    // as two headers at once.
+    let (left, right) = text.split_once('\n').unwrap_or((text, ""));
 
     if let Some(range) = headers::content_range(text) {
         assert!(range.first <= range.last);
