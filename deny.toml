@@ -7,6 +7,13 @@ all-features = true
 # Known vulnerabilities and unmaintained crates fail the check.
 version = 2
 yanked = "deny"
+# Unmaintained crates that iroh's watcher of network interfaces (netwatch)
+# depends on. Neither has a known vulnerability, and neither can be
+# replaced from here.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste, a macro helper used by the netlink crates when they are built" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono, used on Windows only, to read times from the system's management interface" },
+]
 
 [licenses]
 version = 2
@@ -26,6 +33,10 @@ allow = [
     # that Mozilla trusts (`webpki-root-certs`), which the TLS verifier
     # carries for systems that have no trust store of their own to ask.
     "CDLA-Permissive-2.0",
+    # Permissive licences of crates that iroh depends on.
+    "BSD-2-Clause",
+    "Zlib",
+    "Unlicense",
 ]
 
 [bans]
@@ -35,9 +46,31 @@ wildcards = "deny"
 # Duplicates this project cannot remove, because two upstream crates pin
 # different major versions. Anything not listed here fails the check.
 skip = [
-    { crate = "getrandom@0.2", reason = "ring is still on 0.2; quinn and rand use 0.4" },
+    { crate = "getrandom@0.2", reason = "ring is still on 0.2; rand uses 0.4" },
     { crate = "syn@2", reason = "tracing-attributes is still on 2; the other derive macros use 3" },
     { crate = "windows-sys@0.52", reason = "ring is still on 0.52; everything else uses 0.61" },
+    { crate = "base64@0.22", reason = "iroh reaches its relays over WebSocket with tokio-websockets, which is still on 0.22" },
+    { crate = "cpufeatures@0.2", reason = "iroh's QUIC encrypts with aes-gcm, which is on the older line of the RustCrypto crates" },
+    { crate = "crypto-common@0.1", reason = "aes-gcm again: the hashes are on the newer line" },
+    # iroh watches the network interfaces with netwatch, which depends on
+    # two versions of netdev. The older one brings the rest of these.
+    { crate = "netdev@0.45", reason = "netwatch depends on 0.45 and on 0.46" },
+    { crate = "netlink-packet-core@0.8", reason = "netdev 0.45 and netwatch" },
+    { crate = "netlink-packet-route@0.31", reason = "netdev 0.45 and netwatch" },
+    { crate = "netlink-sys@0.8", reason = "netdev 0.45 and netwatch" },
+    { crate = "jni@0.21", reason = "netdev, on Android; the TLS verifier uses 0.22" },
+    { crate = "jni-sys@0.3", reason = "jni 0.21" },
+    { crate = "thiserror@1", reason = "jni 0.21" },
+    { crate = "thiserror-impl@1", reason = "jni 0.21" },
+    { crate = "windows-sys@0.45", reason = "jni 0.21" },
+    { crate = "windows-targets@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_aarch64_gnullvm@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_aarch64_msvc@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_i686_gnu@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_i686_msvc@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_x86_64_gnu@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_x86_64_gnullvm@0.42", reason = "windows-sys 0.45" },
+    { crate = "windows_x86_64_msvc@0.42", reason = "windows-sys 0.45" },
 ]
 
 [sources]

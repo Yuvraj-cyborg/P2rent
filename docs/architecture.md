@@ -8,7 +8,7 @@ this table.
 | `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, the schedule of which chunk to fetch next, and how a place is named: locations and tickets | nothing else |
 | `engine` | What is the same for every place and every supplier: fetching chunks from many suppliers at once, checking a chunk before it is stored, and having a file committed when its last chunk is in | model |
 | `fs` | Local folders: hashing files into artifacts; reading and writing byte ranges; part files that are renamed into place when committed | model |
-| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, and a peer as a supplier of chunks | model, engine, fs |
+| `peer` | Node identity, connections between nodes (iroh), wire messages, and the swarm: what a node serves, how it answers peers, and a peer as a supplier of chunks | model, engine, fs |
 | `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the others | all of the above |
 
 `model` touches no disk, network or clock and does not use `std`.
@@ -37,7 +37,7 @@ crates/
 │   └── tests/origin/  a web server that misbehaves, and what is made of it
 ├── peer/
 │   ├── src/
-│   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
+│   │   ├── net/       identity.rs  endpoint.rs  proto.rs
 │   │   ├── swarm/     node.rs  share.rs  server.rs
 │   │   │   └── download/  mod.rs  supplier.rs
 │   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
@@ -274,14 +274,18 @@ reads what servers send, and is fuzzed.
 Each node has an Ed25519 key pair stored at `<config dir>/mux/node.key`.
 The public key is the node id.
 
-Connections are QUIC with TLS 1.3. There is no certificate authority: each
-side presents a self-signed certificate that only carries its public key.
-rustls verifies that the handshake was signed by that key, and the node id is
-then read from the parsed certificate. `Endpoint::connect` fails unless the
-peer's id is the one the caller asked for.
+Connections are made by [iroh](https://github.com/n0-computer/iroh): QUIC
+with TLS 1.3, in which each side proves that it holds the key its node id is
+the public half of. There are no certificates and no certificate authority.
+A node is dialled by its id, and `Endpoint::connect` fails unless whoever
+answers is that node.
 
 One UDP socket both dials and accepts, so the address a peer observes for a
 node is also the address at which that node can be reached.
+
+The key file holds the private key in PKCS#8. Files written by earlier
+versions, which used another library, are read as they are, and a machine
+keeps its node id.
 
 ## Swarm
 

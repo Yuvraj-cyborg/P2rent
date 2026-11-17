@@ -68,10 +68,10 @@ fn main() {
     for _ in 0..seeders {
         let runtime = Runtime::new().expect("cannot start a runtime");
         let node = runtime
-            .block_on(async { Node::bind(&Identity::generate()?, localhost) })
+            .block_on(Node::bind(&Identity::generate(), localhost))
             .expect("cannot start a seeder");
         node.seed(artifact.clone(), indexed.root.clone());
-        let addr = node.local_addr().unwrap().to_string();
+        let addr = node.local_addr().to_string();
         ticket
             .peers
             .extend(node.ticket(artifact.id(), &[addr]).peers);
@@ -87,7 +87,7 @@ fn main() {
         let cpu_before = cpu_time();
         let report = runtime
             .block_on(async {
-                let node = Node::bind(&Identity::generate()?, localhost)?;
+                let node = Node::bind(&Identity::generate(), localhost).await?;
                 let report = download(
                     &node,
                     &ticket,
@@ -96,7 +96,7 @@ fn main() {
                     Arc::new(Progress::default()),
                 )
                 .await;
-                node.shutdown();
+                node.shutdown().await;
                 report
             })
             .expect("download failed");
@@ -108,7 +108,7 @@ fn main() {
     timed.report();
 
     for (runtime, node) in seeding {
-        node.shutdown();
+        runtime.block_on(node.shutdown());
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
 }

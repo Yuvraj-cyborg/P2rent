@@ -43,6 +43,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     ticket.peers.extend(args.peers);
 
     let node = Node::bind(identity, args.listen)
+        .await
         .with_context(|| format!("cannot listen on {}", args.listen))?;
     let options = DownloadOptions {
         max_peers: args.max_peers,
@@ -56,10 +57,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     if args.seed {
         let content = report.share.artifact().content_id();
         let announcer = tokio::spawn(announce(node.clone(), content, report.peers.clone()));
-        let status = ui::spinner(format!(
-            "seeding on {} (Ctrl-C to stop)",
-            node.local_addr()?
-        ));
+        let status = ui::spinner(format!("seeding on {} (Ctrl-C to stop)", node.local_addr()));
         let _ = tokio::signal::ctrl_c().await;
         status.finish_and_clear();
         announcer.abort();
@@ -68,7 +66,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
             ui::bytes(report.share.uploaded_bytes())
         );
     }
-    node.shutdown();
+    node.shutdown().await;
     Ok(())
 }
 

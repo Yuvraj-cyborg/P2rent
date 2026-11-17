@@ -42,8 +42,9 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
 
     // Bind first so a busy port is reported before any hashing starts.
     let node = Node::bind(identity, args.listen)
+        .await
         .with_context(|| format!("cannot listen on {}", args.listen))?;
-    let bound = node.local_addr()?;
+    let bound = node.local_addr();
     let advertised = advertised_addresses(&args.advertise, bound);
 
     let mut shares: Vec<Arc<Share>> = Vec::new();
@@ -67,7 +68,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
         advertised.join(", ")
     );
     serve_until_interrupted(&shares).await;
-    node.shutdown();
+    node.shutdown().await;
     Ok(())
 }
 

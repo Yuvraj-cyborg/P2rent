@@ -131,7 +131,7 @@ if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
 
 ### From source
 
-This builds `mux` from the `main` branch. It needs Rust 1.88 or newer.
+This builds `mux` from the `main` branch. It needs Rust 1.91 or newer.
 
 ```console
 $ cargo install --git https://github.com/yuvichh/mux --locked cli
@@ -209,7 +209,7 @@ mux is not yet production software.
 | `crates/engine` | What is the same for every place data goes: checking chunks, and committing a file when it is whole. |
 | `crates/fs` | Local folders: hashing files, and reading and writing them. |
 | `crates/web` | Web addresses: reading a file in parts, carrying on after a break, and noticing a file that changes. |
-| `crates/peer` | Node identity, authenticated QUIC, the wire protocol and the swarm. |
+| `crates/peer` | Node identity, connections between machines, the wire protocol and the swarm. |
 | `crates/cli` | The `mux` command, and the `mux` library that gathers the others. |
 | `benches` | Benchmarks. |
 | `fuzz` | Fuzz targets for everything that parses bytes from another machine. |

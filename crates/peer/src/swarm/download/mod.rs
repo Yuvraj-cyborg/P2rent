@@ -280,7 +280,7 @@ pub async fn announce(node: Arc<Node>, content: Hash, peers: Vec<PeerInfo>) {
 
 /// Turns the ticket's `host:port` entries into socket addresses.
 async fn resolve(node: &Node, ticket: &Ticket) -> Vec<PeerInfo> {
-    let want_v4 = node.local_addr().map_or(true, |a| a.is_ipv4());
+    let want_v4 = node.local_addr().is_ipv4();
     let mut peers = Vec::new();
     for entry in &ticket.peers {
         if entry.node == node.node_id() {

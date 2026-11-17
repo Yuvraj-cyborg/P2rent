@@ -21,15 +21,14 @@ pub struct Node {
 }
 
 impl Node {
-    /// Binds `addr` and starts answering peers. Must be called from within a
-    /// Tokio runtime.
+    /// Binds `addr` and starts answering peers.
     ///
     /// # Errors
     ///
-    /// Returns an error if the endpoint cannot be created or `addr` cannot be bound.
-    pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Arc<Self>> {
+    /// Returns an error if `addr` cannot be bound.
+    pub async fn bind(identity: &Identity, addr: SocketAddr) -> Result<Arc<Self>> {
         let node = Arc::new(Self {
-            endpoint: Endpoint::bind(identity, addr)?,
+            endpoint: Endpoint::bind(identity, addr).await?,
             shares: RwLock::new(HashMap::new()),
         });
         tokio::spawn(server::run(node.clone()));
@@ -42,11 +41,7 @@ impl Node {
     }
 
     /// The address the node listens on.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operating system cannot report the address.
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> SocketAddr {
         self.endpoint.local_addr()
     }
 
@@ -100,8 +95,9 @@ impl Node {
         }
     }
 
-    /// Closes all connections and stops serving.
-    pub fn shutdown(&self) {
-        self.endpoint.close();
+    /// Closes all connections and stops serving. Returns once the other
+    /// ends have been told, or have not answered for a while.
+    pub async fn shutdown(&self) {
+        self.endpoint.close().await;
     }
 }

@@ -14,9 +14,9 @@ async fn downloads_a_file() {
     let data = pattern(CHUNK * 75 + 123, 1);
     fs::write(&source, &data).unwrap();
 
-    let seeder = node();
+    let seeder = node().await;
     let (artifact, ticket) = seed(&seeder, &source);
-    let downloader = node();
+    let downloader = node().await;
     let out = tmp.path().join("out");
     let report = get(&downloader, &ticket, &out).await.unwrap();
 
@@ -78,10 +78,10 @@ async fn downloads_a_directory_tree() {
     old("hollow/inner", 1_600_000_000);
     old("", 1_700_000_000);
 
-    let seeder = node();
+    let seeder = node().await;
     let (_, ticket) = seed(&seeder, &source);
     let out = tmp.path().join("out");
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
 
     // Files, empty directories, links, permissions and times all arrive.
     assert_same_tree(&source, &out.join("dataset"));
@@ -89,7 +89,7 @@ async fn downloads_a_directory_tree() {
     assert!(out.join("dataset/hollow/inner").is_dir());
 
     // Fetching it again finds everything in place and changes nothing.
-    let again = get(&node(), &ticket, &out).await.unwrap();
+    let again = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(again.fetched_bytes, 0);
     assert_same_tree(&source, &out.join("dataset"));
 }
@@ -100,7 +100,7 @@ async fn resumes_from_partial_data() {
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 40, 4);
     fs::write(&source, &data).unwrap();
-    let seeder = node();
+    let seeder = node().await;
     let (_, ticket) = seed(&seeder, &source);
 
     // The first 25 chunks are intact; the 26th was cut off mid-write.
@@ -108,7 +108,7 @@ async fn resumes_from_partial_data() {
     fs::create_dir_all(&out).unwrap();
     fs::write(out.join("model.bin"), &data[..CHUNK * 25 + 100]).unwrap();
 
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(report.resumed_bytes, (CHUNK * 25) as u64);
     assert_eq!(report.fetched_bytes, (CHUNK * 15) as u64);
     assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
@@ -120,14 +120,14 @@ async fn a_complete_copy_fetches_nothing() {
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 10, 5);
     fs::write(&source, &data).unwrap();
-    let seeder = node();
+    let seeder = node().await;
     let (_, ticket) = seed(&seeder, &source);
 
     let out = tmp.path().join("out");
     fs::create_dir_all(&out).unwrap();
     fs::write(out.join("model.bin"), &data).unwrap();
 
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(report.fetched_bytes, 0);
     assert_eq!(report.resumed_bytes, data.len() as u64);
 }
@@ -138,7 +138,7 @@ async fn a_damaged_file_is_repaired_by_fetching_only_what_is_wrong() {
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 10, 6);
     fs::write(&source, &data).unwrap();
-    let seeder = node();
+    let seeder = node().await;
     let (_, ticket) = seed(&seeder, &source);
 
     let mut damaged = data.clone();
@@ -147,7 +147,7 @@ async fn a_damaged_file_is_repaired_by_fetching_only_what_is_wrong() {
     fs::create_dir_all(&out).unwrap();
     fs::write(out.join("model.bin"), &damaged).unwrap();
 
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(report.fetched_bytes, CHUNK as u64);
     assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
 }
@@ -157,11 +157,11 @@ async fn an_empty_file_needs_no_chunks() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("empty.bin");
     fs::write(&source, b"").unwrap();
-    let seeder = node();
+    let seeder = node().await;
     let (_, ticket) = seed(&seeder, &source);
 
     let out = tmp.path().join("out");
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(report.fetched_bytes, 0);
     assert_eq!(fs::read(out.join("empty.bin")).unwrap(), b"");
 }
@@ -169,19 +169,19 @@ async fn an_empty_file_needs_no_chunks() {
 #[tokio::test]
 async fn an_unknown_artifact_is_reported() {
     let tmp = tempfile::tempdir().unwrap();
-    let seeder = node();
+    let seeder = node().await;
     let ticket = seeder.ticket(
         Hash::of(b"nobody has this"),
-        &[seeder.local_addr().unwrap().to_string()],
+        &[seeder.local_addr().to_string()],
     );
-    let error = get(&node(), &ticket, tmp.path()).await.unwrap_err();
+    let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::ManifestUnavailable), "{error}");
 }
 
 #[tokio::test]
 async fn a_ticket_without_peers_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
-    let ticket = node().ticket(Hash::of(b"x"), &[]);
-    let error = get(&node(), &ticket, tmp.path()).await.unwrap_err();
+    let ticket = node().await.ticket(Hash::of(b"x"), &[]);
+    let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::InvalidTicket(_)), "{error}");
 }

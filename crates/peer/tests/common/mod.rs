@@ -18,14 +18,16 @@ pub(crate) fn localhost() -> SocketAddr {
 }
 
 /// A node with a fresh identity on an ephemeral local port.
-pub(crate) fn node() -> Arc<Node> {
-    Node::bind(&Identity::generate().unwrap(), localhost()).unwrap()
+pub(crate) async fn node() -> Arc<Node> {
+    Node::bind(&Identity::generate(), localhost())
+        .await
+        .unwrap()
 }
 
 pub(crate) fn peer_info(node: &Node) -> PeerInfo {
     PeerInfo {
         node: node.node_id(),
-        addr: node.local_addr().unwrap(),
+        addr: node.local_addr(),
     }
 }
 
@@ -56,7 +58,7 @@ pub(crate) fn seed(node: &Node, path: &Path) -> (Arc<Artifact>, Ticket) {
 }
 
 pub(crate) fn ticket_for(node: &Node, artifact: &Artifact) -> Ticket {
-    node.ticket(artifact.id(), &[node.local_addr().unwrap().to_string()])
+    node.ticket(artifact.id(), &[node.local_addr().to_string()])
 }
 
 pub(crate) fn options() -> DownloadOptions {

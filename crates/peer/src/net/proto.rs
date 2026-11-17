@@ -7,15 +7,15 @@
 //! postcard-encoded message.
 
 use crate::error::{Error, Result};
+use iroh::endpoint::{RecvStream, SendStream};
 use model::artifact::{Bitfield, Hash};
 use model::ticket::NodeId;
-use quinn::{RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Protocol identifier negotiated during the TLS handshake.
-pub const ALPN: &[u8] = b"mux/3";
+pub const ALPN: &[u8] = b"mux/4";
 
 /// Requests are tiny; anything larger is a misbehaving peer.
 pub const MAX_REQUEST_BYTES: usize = 1024;
