@@ -676,16 +676,26 @@ async fn a_sync_makes_a_folder_match_and_keeps_what_it_takes_away() {
     assert_eq!(steps(&output), []);
     assert!(said(&output).contains("nothing to do"), "{}", said(&output));
 
-    // The source changes, and the mirror gets something of its own.
+    // The source changes, and the mirror gets something of its own. One
+    // file of the source keeps what it holds and may no longer be written.
     std::fs::write(source.join("sub/b.txt"), b"some more text").unwrap();
     std::fs::write(source.join("new"), b"new").unwrap();
     std::fs::remove_file(source.join("empty")).unwrap();
     std::fs::write(mirror.join("its own"), b"kept").unwrap();
+    let locked = source.join("sub/deep/c");
+    let mut permissions = std::fs::metadata(&locked).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&locked, permissions).unwrap();
 
     // Without leave to remove, what the mirror has and the source has not
     // stays. What was replaced is in the trash, as it was.
     let output = mux(["sync", from, to]).await;
     assert!(output.status.success(), "{}", said(&output));
+    // The file that only changed its permissions was not copied again.
+    let touched = ("touch".to_owned(), "sub/deep/c".to_owned());
+    assert!(steps(&output).contains(&touched), "{:?}", steps(&output));
+    let copy = std::fs::metadata(mirror.join("sub/deep/c")).unwrap();
+    assert!(copy.permissions().readonly());
     assert_eq!(
         std::fs::read(mirror.join("sub/b.txt")).unwrap(),
         b"some more text"
