@@ -89,7 +89,6 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - run: cargo miri test --locked -p model --lib
-      - run: cargo miri test --locked -p peer --lib -- 'swarm::ticket::'
 
   fuzz:
     runs-on: ubuntu-latest

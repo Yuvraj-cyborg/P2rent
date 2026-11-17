@@ -1,6 +1,7 @@
 //! Progress bars and human-readable formatting.
 
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
+use mux::Protocol;
 use std::time::Duration;
 
 const TICK: Duration = Duration::from_millis(120);
@@ -51,6 +52,24 @@ pub(super) fn plural(n: impl TryInto<u64>, noun: &str) -> String {
         1 => format!("1 {noun}"),
         n => format!("{n} {noun}s"),
     }
+}
+
+/// One line for each protocol, under a heading: its scheme, whether it can
+/// be read and written, and what it is.
+pub(super) fn protocols(protocols: &[Protocol]) -> String {
+    let yes_no = |able| if able { "yes" } else { "no" };
+    let rows = protocols.iter().map(|protocol| {
+        format!(
+            "{:<6}  {:<4}  {:<5}  {}\n",
+            protocol.scheme,
+            yes_no(protocol.reads),
+            yes_no(protocol.writes),
+            protocol.about,
+        )
+    });
+    std::iter::once("SCHEME  READ  WRITE  PLACE\n".to_owned())
+        .chain(rows)
+        .collect()
 }
 
 /// Parses sizes such as `1048576`, `512K`, `4M`, `1MiB` or `16MB`. Suffixes

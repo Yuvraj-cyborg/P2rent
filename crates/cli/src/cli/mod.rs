@@ -8,7 +8,7 @@ mod ui;
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use mux::net::Identity;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing::Level;
 
@@ -40,6 +40,8 @@ enum Command {
     Get(get::Args),
     /// Print this machine's node id
     Id,
+    /// List the kinds of place this build can read and write
+    Protocols,
 }
 
 pub(crate) fn main() -> ExitCode {
@@ -62,7 +64,23 @@ pub(crate) fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let identity = match &cli.key {
+    match cli.command {
+        Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?).await,
+        Command::Get(args) => get::run(args, &identity(cli.key.as_deref())?).await,
+        Command::Id => {
+            println!("{}", identity(cli.key.as_deref())?.node_id());
+            Ok(())
+        }
+        Command::Protocols => {
+            print!("{}", ui::protocols(&mux::protocols()));
+            Ok(())
+        }
+    }
+}
+
+/// This machine's key, created on first use.
+fn identity(key: Option<&Path>) -> anyhow::Result<Identity> {
+    match key {
         Some(path) => Identity::load_or_create(path)
             .with_context(|| format!("cannot load the node key at {}", path.display())),
         // The usual place, adopting a key left by the tool's former name.
@@ -72,15 +90,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 Identity::default_path().display()
             )
         }),
-    }?;
-
-    match cli.command {
-        Command::Seed(args) => seed::run(args, &identity).await,
-        Command::Get(args) => get::run(args, &identity).await,
-        Command::Id => {
-            println!("{}", identity.node_id());
-            Ok(())
-        }
     }
 }
 

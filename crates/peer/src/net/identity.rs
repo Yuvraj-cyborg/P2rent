@@ -1,75 +1,31 @@
 use crate::error::{Error, Result};
 use model::hex;
+use model::ticket::NodeId;
 use rcgen::{CertificateParams, KeyPair, PKCS_ED25519};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 /// DER prefix of an Ed25519 `SubjectPublicKeyInfo`; the raw key follows it.
 const ED25519_SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-/// A node's Ed25519 public key. This is the only name a node has.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct NodeId([u8; 32]);
-
-impl NodeId {
-    /// Wraps a raw Ed25519 public key.
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// The raw Ed25519 public key.
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    /// First eight hex digits, for log lines.
-    pub fn short(&self) -> String {
-        hex::encode(&self.0[..4])
-    }
-
-    /// Reads the node id out of a peer's TLS certificate.
-    ///
-    /// The certificate is parsed properly rather than searched for a byte
-    /// pattern, so the key returned is the one the TLS handshake was verified
-    /// against.
-    pub(crate) fn from_certificate(certificate: &CertificateDer<'_>) -> Result<Self> {
-        let parsed = webpki::EndEntityCert::try_from(certificate)
-            .map_err(|e| Error::Identity(format!("unreadable peer certificate: {e}")))?;
-        let spki = parsed.subject_public_key_info();
-        let key = spki
-            .strip_prefix(&ED25519_SPKI_PREFIX)
-            .and_then(|key| <[u8; 32]>::try_from(key).ok())
-            .ok_or_else(|| Error::Identity("peer certificate is not Ed25519".into()))?;
-        Ok(Self(key))
-    }
-}
-
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&hex::encode(&self.0))
-    }
-}
-
-impl fmt::Debug for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NodeId({})", self.short())
-    }
-}
-
-impl FromStr for NodeId {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        hex::decode_32(s)
-            .map(Self)
-            .ok_or_else(|| Error::Identity("a node id is 64 hex characters".into()))
-    }
+/// Reads the node id out of a peer's TLS certificate.
+///
+/// The certificate is parsed properly rather than searched for a byte
+/// pattern, so the key returned is the one the TLS handshake was verified
+/// against.
+pub(crate) fn node_of(certificate: &CertificateDer<'_>) -> Result<NodeId> {
+    let parsed = webpki::EndEntityCert::try_from(certificate)
+        .map_err(|e| Error::Identity(format!("unreadable peer certificate: {e}")))?;
+    let spki = parsed.subject_public_key_info();
+    let key = spki
+        .strip_prefix(&ED25519_SPKI_PREFIX)
+        .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        .ok_or_else(|| Error::Identity("peer certificate is not Ed25519".into()))?;
+    Ok(NodeId::from_bytes(key))
 }
 
 /// A node's long-lived Ed25519 key pair.
@@ -100,7 +56,7 @@ impl Identity {
             .map_err(|_| Error::Identity("unexpected public key length".into()))?;
         Ok(Self {
             pkcs8,
-            node_id: NodeId(public),
+            node_id: NodeId::from_bytes(public),
         })
     }
 
@@ -290,10 +246,7 @@ mod tests {
     fn certificate_carries_the_node_id() {
         let identity = Identity::generate().unwrap();
         let (certificate, _) = identity.tls_material().unwrap();
-        assert_eq!(
-            NodeId::from_certificate(&certificate).unwrap(),
-            identity.node_id()
-        );
+        assert_eq!(node_of(&certificate).unwrap(), identity.node_id());
         assert_ne!(Identity::generate().unwrap().node_id(), identity.node_id());
     }
 

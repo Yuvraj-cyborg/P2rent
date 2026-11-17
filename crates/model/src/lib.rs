@@ -19,6 +19,8 @@ pub mod artifact;
 pub mod assembly;
 mod error;
 pub mod hex;
+pub mod location;
 pub mod schedule;
+pub mod ticket;
 
 pub use error::{Error, Result};

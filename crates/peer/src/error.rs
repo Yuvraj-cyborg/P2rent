@@ -20,6 +20,11 @@ pub enum Error {
     #[error("invalid ticket: {0}")]
     InvalidTicket(String),
 
+    /// A location could not be read, or this build cannot use it. The text
+    /// is a whole sentence that says what to type instead.
+    #[error("{0}")]
+    InvalidLocation(String),
+
     /// A node key or certificate could not be read, created or used.
     #[error("identity: {0}")]
     Identity(String),
@@ -58,6 +63,8 @@ impl From<model::Error> for Error {
     fn from(e: model::Error) -> Self {
         match e {
             model::Error::InvalidManifest(reason) => Error::InvalidManifest(reason),
+            model::Error::InvalidTicket(reason) => Error::InvalidTicket(reason),
+            model::Error::InvalidLocation(reason) => Error::InvalidLocation(reason),
         }
     }
 }

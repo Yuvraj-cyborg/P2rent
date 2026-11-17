@@ -1,8 +1,9 @@
-use super::identity::{Identity, NodeId};
+use super::identity::{self, Identity};
 use super::proto::{self, Request, Response, Status};
 use super::tls;
 use crate::error::{Error, Result};
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
+use model::ticket::NodeId;
 use quinn::{RecvStream, SendStream, VarInt};
 use rustls::pki_types::CertificateDer;
 use std::net::SocketAddr;
@@ -154,7 +155,7 @@ impl Connection {
         let leaf = certificates
             .first()
             .ok_or_else(|| Error::Identity("peer presented no certificate".into()))?;
-        let peer = NodeId::from_certificate(leaf)?;
+        let peer = identity::node_of(leaf)?;
         Ok(Self { inner, peer })
     }
 
