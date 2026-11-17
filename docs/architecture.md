@@ -19,10 +19,11 @@ logic small enough to prove.
 ```
 crates/
 ├── model/src/
-│   ├── artifact/      hash.rs  manifest.rs  path.rs  layout.rs  bitfield.rs  wire.rs
+│   ├── artifact/      hash.rs  digest.rs  manifest.rs  path.rs  layout.rs  bitfield.rs  wire.rs
 │   ├── assembly.rs
 │   ├── schedule.rs
 │   ├── location.rs
+│   ├── notes.rs
 │   ├── place.rs
 │   ├── retry.rs
 │   ├── ticket.rs
@@ -125,14 +126,15 @@ to the rest of the program.
 | Trait | Does |
 | --- | --- |
 | `Source` | Reads a range of bytes of one file. |
-| `Sink` | Makes the place ready and says which chunks it already holds; writes bytes at an offset; commits a file; aborts a file; finishes the tree. |
+| `Sink` | Makes the place ready and says which chunks it already holds; writes bytes at an offset and reads them back; keeps notes for the engine beside a file being written; commits a file; aborts a file; finishes the tree. |
 | `Supplier` | Is reached, says which chunks it holds and which other suppliers it knows of, and hands over a chunk. |
 
 A file being written is kept apart from the file under its final name until
-it is committed. A failure says which of four things it is (the place is
+it is committed. A failure says which of five things it is (the place is
 unreachable, it does not hold what was asked for, it answered with something
-it must not, or trying again gains nothing), so the engine never has to know
-what a socket or a disk is.
+it must not, what it holds has changed since the transfer began, or trying
+again gains nothing), so the engine never has to know what a socket or a
+disk is.
 
 Reading returns a future: bytes are fetched from many sources at once, and a
 fetch that is no longer wanted is dropped. Writing is a plain call that does
@@ -156,6 +158,33 @@ place is done once, by `engine::Store`:
 held in memory that passes them. Each backend's tests run the checks on its
 own place.
 
+### When the digests are not known
+
+A machine that seeds knows the digest of every chunk. A web server does not.
+`Store::learn` fills a place from a source like that:
+
+- A chunk is taken if it is the right length, and its digest is recorded as
+  it is stored. When the last chunk is in, the tree and what was learned are
+  an artifact like any other.
+- If a digest was given for a whole file, by the user or by the server, the
+  file is read back and compared with it before it is committed. A file
+  that does not have it is thrown away, and the transfer ends.
+- To carry on after an interruption, each digest is also **noted** in the
+  place, beside the file being written. The notes begin with what the source
+  gives to tell one version of the file from another. Run again, the
+  transfer believes the notes only if they are about the same version, and
+  a noted chunk only if its bytes still have the digest noted for it.
+  `model::notes` is the format, and reading it is fuzzed.
+- If a supplier finds that what it is reading has changed, the transfer
+  ends and everything not yet committed is thrown away: bytes of two
+  versions cannot be told apart.
+
+A finished transfer says how far its bytes were checked. It is *verified*
+if every chunk was compared with a digest known beforehand, or every file
+with a digest given for it. It is *consistent* if no digest was known and
+the source stayed what it was throughout. It is never reported as more than
+was checked.
+
 ## Storage
 
 `store::index` walks a path, hashes chunks in parallel and returns an
@@ -173,6 +202,10 @@ alone, never changed in place.
 
 Bytes are read from part files as well as whole ones, so a node serves what
 it holds while it downloads the rest.
+
+The engine's notes for a file are kept at the end of its part file, after
+the file's own bytes, and are cut off when the file is put in place. So
+there is still one file to clean up, and no state file.
 
 Directories are created first, and each must be a real directory: a link
 standing where one belongs is an error, so nothing is ever written through a
@@ -277,9 +310,11 @@ last one. So the memory held for chunk data is bounded by
 defaults), however slow the destination is.
 
 Everything that happens is reported as a typed event: a supplier opened or
-closed, a chunk stored, a file committed. A finished transfer says how far
-its bytes were checked. Today that is always *verified*: the digest of every
-chunk was known before the transfer began.
+closed, a chunk stored, a file committed.
+
+If the store fails, the transfer ends with that failure. The failure is
+kept by the transfer itself and not only by whoever was waiting for the
+chunk, because that waiter may have been stopped a moment before.
 
 ## Testing
 

@@ -189,6 +189,8 @@ impl Folder {
     fn put_in_place(&self, file: usize) -> Result<()> {
         let part = self.part_path(file);
         let written = OpenOptions::new().write(true).open(&part)?;
+        // Whatever was noted beside the file is not part of it.
+        written.set_len(self.size_of(file)?)?;
         if let Some(metadata) = self.0.tree.metadata(file) {
             if let Some(time) = metadata.modified.and_then(io::system_time) {
                 written.set_modified(time)?;
@@ -198,6 +200,33 @@ impl Folder {
         written.sync_all()?;
         drop(written);
         self.rename_into_place(file, &part)
+    }
+
+    /// The notes kept after the bytes of the part file of `file`, up to
+    /// `limit` bytes of them. Empty if there is no part file or it has
+    /// none.
+    fn notes_of(&self, file: usize, limit: usize) -> Result<Vec<u8>> {
+        let size = self.size_of(file)?;
+        let Some(part) = open_regular(&self.part_path(file))? else {
+            return Ok(Vec::new());
+        };
+        let after = part.metadata()?.len().saturating_sub(size);
+        let mut notes = vec![0; usize::try_from(after).unwrap_or(usize::MAX).min(limit)];
+        io::read_exact_at(&part, &mut notes, size)?;
+        Ok(notes)
+    }
+
+    /// Writes `data` into the notes of `file` at `offset`: after the bytes
+    /// of its part file, where they are cut off when it is put in place.
+    fn note_at(&self, file: usize, offset: u64, data: &[u8]) -> Result<()> {
+        let part = OpenOptions::new().write(true).open(self.part_path(file))?;
+        let start = self.size_of(file)?.checked_add(offset);
+        io::write_all_at(&part, data, start.ok_or_else(out_of_range)?)
+    }
+
+    fn size_of(&self, file: usize) -> Result<u64> {
+        let entry = self.0.tree.entries().get(file).ok_or_else(out_of_range)?;
+        Ok(entry.size())
     }
 
     /// Removes the part file of `file`. Whatever has the final name stays.
@@ -386,7 +415,8 @@ impl Folder {
             .create(true)
             .truncate(false)
             .open(&part)?;
-        if target.metadata()?.len() != size {
+        // A longer file has notes after its bytes, which are kept.
+        if target.metadata()?.len() < size {
             target.set_len(size)?;
         }
         // Nothing has been written to a new part file, so there is nothing
@@ -550,6 +580,18 @@ impl Sink for Folder {
         placed(self.write_at(file, offset, data))
     }
 
+    fn read_back(&self, file: usize, offset: u64, len: u32) -> Placed<Vec<u8>> {
+        placed(self.read_at(file, offset, len))
+    }
+
+    fn notes(&self, file: usize, limit: usize) -> Placed<Vec<u8>> {
+        placed(self.notes_of(file, limit))
+    }
+
+    fn note(&self, file: usize, offset: u64, data: &[u8]) -> Placed<()> {
+        placed(self.note_at(file, offset, data))
+    }
+
     fn commit(&self, file: usize) -> Placed<()> {
         placed(self.put_in_place(file))
     }
@@ -611,5 +653,5 @@ fn remove_if_present(path: &Path) -> Result<()> {
 }
 
 fn out_of_range() -> Error {
-    Error::new(ErrorKind::InvalidInput, "chunk index out of range")
+    Error::new(ErrorKind::InvalidInput, "index out of range")
 }

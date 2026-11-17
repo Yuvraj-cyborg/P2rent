@@ -40,6 +40,30 @@ impl Store {
         Ok(Self { store, folder })
     }
 
+    /// Opens the artifact's tree inside `dir` as a tree whose digests are
+    /// not known, in the version of each file that `validator` stands for.
+    pub(crate) fn learn(
+        artifact: &Arc<Artifact>,
+        dir: &Path,
+        validator: &[u8],
+    ) -> Result<Self, Failure> {
+        let tree = artifact.tree().clone();
+        let folder = Folder::inside(tree.clone(), dir);
+        let known = engine::Foreknown {
+            validator: validator.to_vec(),
+            digest: None,
+        };
+        let files = vec![known; tree.entries().len()];
+        let place = Arc::new(folder.clone());
+        let store = wait(engine::Store::learn(tree, place, files, |_| {}))?;
+        Ok(Self { store, folder })
+    }
+
+    /// The artifact, once the digest of every chunk is known.
+    pub(crate) fn artifact(&self) -> Option<Arc<Artifact>> {
+        self.store.artifact()
+    }
+
     pub(crate) fn root(&self) -> &Path {
         self.folder.root()
     }
