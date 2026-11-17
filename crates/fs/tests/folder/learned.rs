@@ -136,3 +136,55 @@ fn a_part_file_with_no_notes_is_not_believed() {
     let learning = Store::learn(&artifact, &out, b"\"v1\"").unwrap();
     assert_eq!(learning.held().count_ones(), 0);
 }
+
+/// A part file that has every chunk is put in place as the folder is made
+/// ready, and so is a file with no bytes. Neither has anything left to
+/// keep notes beside.
+#[test]
+fn a_file_that_is_finished_on_opening_needs_no_notes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (bytes, whole) = source(tmp.path());
+    let artifact = whole.artifact().unwrap();
+    let out = tmp.path().join("out");
+
+    // Every chunk is written, but the store is let go of before the last
+    // one, so that the file is whole in its part file and not renamed.
+    let dest = Store::learn(&artifact, &out, b"\"v1\"").unwrap();
+    for chunk in 0..artifact.chunk_count() - 1 {
+        copy(&whole, &dest, chunk);
+    }
+    let last = artifact.chunk_count() - 1;
+    let at = artifact.locate(last).unwrap();
+    let mut on_disk = fs::read(part(&out)).unwrap();
+    let chunk = whole.read_chunk(last).unwrap();
+    let start = usize::try_from(at.offset).unwrap();
+    on_disk[start..start + chunk.len()].copy_from_slice(&chunk);
+    fs::write(part(&out), &on_disk).unwrap();
+    // Note its digest too, as the store would have.
+    let notes = model::notes::Notes::new(bytes.len() as u64, MIN_CHUNK_SIZE, b"\"v1\"").unwrap();
+    let (offset, slot) = notes.slot(last, model::artifact::Hash::of(&chunk)).unwrap();
+    let mut on_disk = fs::read(part(&out)).unwrap();
+    let start = bytes.len() + usize::try_from(offset).unwrap();
+    on_disk.resize(on_disk.len().max(start + slot.len()), 0);
+    on_disk[start..start + slot.len()].copy_from_slice(&slot);
+    fs::write(part(&out), &on_disk).unwrap();
+
+    let dest = Store::learn(&artifact, &out, b"\"v1\"").unwrap();
+    assert!(dest.is_complete());
+    assert!(!part(&out).exists());
+    assert_eq!(fs::read(out.join("image.bin")).unwrap(), bytes);
+}
+
+#[test]
+fn a_file_with_no_bytes_is_there_from_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("empty.bin");
+    fs::write(&path, b"").unwrap();
+    let indexed = index(&path, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+    let artifact = Arc::new(indexed.artifact);
+    let out = tmp.path().join("out");
+
+    let dest = Store::learn(&artifact, &out, b"\"v1\"").unwrap();
+    assert!(dest.is_complete());
+    assert_eq!(fs::read(out.join("empty.bin")).unwrap(), b"");
+}

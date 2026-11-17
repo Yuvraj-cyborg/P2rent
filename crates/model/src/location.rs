@@ -30,22 +30,22 @@ pub struct Protocol {
     pub about: &'static str,
 }
 
-/// Every scheme mux has a meaning for, with the kind of place it names. A
-/// build may lack some of them, and the later ones are reserved for places
-/// mux cannot use yet.
-const KNOWN: &[(&str, &str)] = &[
-    ("file", "local files"),
-    ("http", "web addresses"),
-    ("https", "web addresses"),
-    ("mux", "tickets"),
-    ("peer", "serving to other machines"),
-    ("s3", "cloud storage"),
-    ("gs", "cloud storage"),
-    ("az", "cloud storage"),
-    ("sftp", "cloud storage"),
-    ("hf", "model registries"),
-    ("oci", "container registries"),
-    ("magnet", "torrents"),
+/// Every scheme mux has a meaning for, with the kind of place it names and
+/// the feature a build needs for it. A scheme with no feature is always
+/// there, or is reserved for a place mux cannot use yet.
+const KNOWN: &[(&str, &str, Option<&str>)] = &[
+    ("file", "local files", None),
+    ("http", "web addresses", Some("web")),
+    ("https", "web addresses", Some("web")),
+    ("mux", "tickets", None),
+    ("peer", "serving to other machines", None),
+    ("s3", "cloud storage", None),
+    ("gs", "cloud storage", None),
+    ("az", "cloud storage", None),
+    ("sftp", "cloud storage", None),
+    ("hf", "model registries", None),
+    ("oci", "container registries", None),
+    ("magnet", "torrents", None),
 ];
 
 /// A place data can come from or go to.
@@ -143,8 +143,11 @@ fn require(scheme: &str, text: &str, protocols: &[Protocol]) -> Result<()> {
         .map(|protocol| protocol.scheme)
         .collect::<Vec<_>>()
         .join(", ");
-    Err(match KNOWN.iter().find(|(known, _)| *known == scheme) {
-        Some((_, place)) => invalid(format!(
+    Err(match KNOWN.iter().find(|(known, _, _)| *known == scheme) {
+        Some((_, place, Some(feature))) => invalid(format!(
+            "this build of mux cannot use `{scheme}:` locations ({place}): it was built without the `{feature}` feature. It can use: {usable}."
+        )),
+        Some((_, place, None)) => invalid(format!(
             "this build of mux cannot use `{scheme}:` locations ({place}). It can use: {usable}."
         )),
         None => invalid(format!(
@@ -506,6 +509,13 @@ mod tests {
             };
             assert!(reason.contains("this build of mux cannot use"), "{reason}");
             assert!(reason.contains("It can use: file."), "{reason}");
+            // A place that a feature would add is named with its feature.
+            let optional = text.starts_with("https");
+            assert_eq!(
+                reason.contains("without the `web` feature"),
+                optional,
+                "{reason}"
+            );
         }
         // A build with no local storage cannot take a path either.
         assert!(Location::parse("data", &WEB).is_err());

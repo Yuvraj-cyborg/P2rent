@@ -257,6 +257,10 @@ impl Sink for Hooked {
         self.place.abort(file)
     }
 
+    fn is_current(&self, file: usize) -> Result<bool, Failure> {
+        self.place.is_current(file)
+    }
+
     fn finish(&self) -> Result<(), Failure> {
         self.place.finish()
     }

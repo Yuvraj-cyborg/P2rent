@@ -229,6 +229,22 @@ impl Folder {
         Ok(entry.size())
     }
 
+    /// Whether the file under the final name of `file` has the size and the
+    /// time of last change that the tree records.
+    fn looks_current(&self, file: usize) -> Result<bool> {
+        let recorded = self
+            .0
+            .tree
+            .metadata(file)
+            .and_then(|recorded| recorded.modified);
+        let (Some(recorded), Some(found)) = (recorded, open_regular(&self.final_path(file))?)
+        else {
+            return Ok(false);
+        };
+        let found = found.metadata()?;
+        Ok(found.len() == self.size_of(file)? && io::modified_of(&found) == Some(recorded))
+    }
+
     /// Removes the part file of `file`. Whatever has the final name stays.
     ///
     /// # Errors
@@ -641,6 +657,10 @@ impl Sink for Folder {
 
     fn abort(&self, file: usize) -> Placed<()> {
         placed(self.discard(file))
+    }
+
+    fn is_current(&self, file: usize) -> Placed<bool> {
+        placed(self.looks_current(file))
     }
 
     fn finish(&self) -> Placed<()> {

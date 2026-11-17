@@ -148,6 +148,10 @@ mutants:
 transfer size_mb="1024" seeders="1" runs="3" files="1":
     MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_SEEDERS={{seeders}} MUX_BENCH_RUNS={{runs}} MUX_BENCH_FILES={{files}} cargo bench --locked --package benches --bench transfer
 
+# Time a download from a web address, e.g. `just fetch http://127.0.0.1:8080/big.bin 1` over one stream
+fetch url streams="4" runs="3":
+    MUX_BENCH_URL={{url}} MUX_BENCH_STREAMS={{streams}} MUX_BENCH_RUNS={{runs}} cargo bench --locked --package benches --bench web
+
 # Run mux from source, e.g. `just run seed ./model.bin`
 run *args:
     cargo run --release -p cli -- {{args}}

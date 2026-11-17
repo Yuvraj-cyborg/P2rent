@@ -16,6 +16,7 @@
 mod claims;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+mod copy;
 #[cfg(test)]
 mod faults;
 mod source;
@@ -23,6 +24,7 @@ mod store;
 pub mod sync;
 mod transfer;
 
+pub use copy::{Copied, copy};
 pub use source::supplier;
 pub use store::{Put, Store};
 pub use transfer::{Error, Options, Summary, transfer};
