@@ -222,7 +222,11 @@ fn a_download_killed_at_any_moment_leaves_only_whole_files_and_resumes() {
         command
     };
 
-    // How long an undisturbed download takes on this machine.
+    // How long an undisturbed download takes on this machine. The first one
+    // pays for what the later ones do not: the key is made, and the program
+    // is read from disk. Timed against it, most kills would come after a
+    // later download was already done, so the second is the one timed.
+    assert!(quiet(&tmp.path().join("first")).status().unwrap().success());
     let started = Instant::now();
     assert!(quiet(&tmp.path().join("whole")).status().unwrap().success());
     let whole = started.elapsed();
