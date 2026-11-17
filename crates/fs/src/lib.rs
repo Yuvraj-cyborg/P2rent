@@ -16,7 +16,7 @@ mod io;
 
 pub use error::{Error, Result};
 pub use folder::Folder;
-pub use index::{Indexed, Scanned, index, measure, scan};
+pub use index::{Indexed, Scanned, as_kept, index, measure, scan};
 
 use model::location::Protocol;
 

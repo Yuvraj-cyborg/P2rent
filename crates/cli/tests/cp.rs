@@ -536,3 +536,109 @@ async fn probe_says_what_is_at_a_place() {
     let output = mux(["probe", "peer:"]).await;
     assert_eq!(output.status.code(), Some(1), "{}", said(&output));
 }
+
+/// The steps a dry run of `sync` wrote: what to do, and the path.
+fn steps(output: &Output) -> Vec<(String, String)> {
+    let written = String::from_utf8_lossy(&output.stdout).into_owned();
+    let step = |line: &str| {
+        let (step, path) = line.split_once('\t')?;
+        Some((step.to_owned(), path.to_owned()))
+    };
+    written.lines().filter_map(step).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_says_what_it_would_do_to_make_a_folder_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let mirror = tmp.path().join("mirror");
+    let step = |step: &str, path: &str| (step.to_owned(), path.to_owned());
+    let dry = |more: &'static [&'static str]| {
+        let (source, mirror) = (text(&source).to_owned(), text(&mirror).to_owned());
+        async move {
+            let mut command = Command::new(BIN);
+            command
+                .args(["sync", "--dry-run", &source, &mirror])
+                .args(more);
+            command.stdin(Stdio::null());
+            tokio::task::spawn_blocking(move || command.output().unwrap())
+                .await
+                .unwrap()
+        }
+    };
+
+    // With nothing there, everything is to be added, the folder first.
+    let output = dry(&[]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let mut everything = vec![
+        step("add", "."),
+        step("add", "a.bin"),
+        step("add", "empty"),
+        step("add", "nothing in it"),
+        step("add", "sub"),
+        step("add", "sub/b.txt"),
+        step("add", "sub/deep"),
+        step("add", "sub/deep/c"),
+    ];
+    if cfg!(unix) {
+        everything.push(step("add", "sub/link"));
+    }
+    assert_eq!(steps(&output), everything);
+    assert!(said(&output).contains("to bring"), "{}", said(&output));
+    assert!(!mirror.exists(), "a dry run made something");
+
+    // Once it is copied, there is nothing to do.
+    let copied = cp([text(&source), text(&mirror)]).await;
+    assert!(copied.status.success(), "{}", said(&copied));
+    let output = dry(&[]).await;
+    assert_eq!(steps(&output), []);
+    assert!(said(&output).contains("nothing to do"), "{}", said(&output));
+
+    // The source changes: a file grows and one is new. The mirror gets
+    // something of its own.
+    std::fs::write(source.join("sub/b.txt"), b"some more text").unwrap();
+    std::fs::write(source.join("new"), b"new").unwrap();
+    std::fs::write(mirror.join("its own"), b"kept").unwrap();
+    let wanted = [step("add", "new"), step("replace", "sub/b.txt")];
+    let found = |output: &Output| -> Vec<(String, String)> {
+        // Changing what a folder holds changes the folder's own time,
+        // which a sync would set right. That is not what this test is
+        // about.
+        let touched = |(step, _): &(String, String)| step == "touch";
+        steps(output).into_iter().filter(|s| !touched(s)).collect()
+    };
+    // What is the mirror's own is left alone unless it is said to go.
+    assert_eq!(found(&dry(&[]).await), wanted);
+    // The steps come in the order of their paths.
+    let with_removal = dry(&["--delete"]).await;
+    let removal = step("remove", "its own");
+    assert_eq!(
+        found(&with_removal),
+        [removal, wanted[0].clone(), wanted[1].clone()]
+    );
+
+    // For a program, each step and then the count of each.
+    let output = dry(&["--delete", "--json"]).await;
+    let told: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let (plan, each) = told.split_last().unwrap();
+    assert!(each.iter().all(|line| line["event"] == "step"));
+    let replaced =
+        serde_json::json!({"v": 1, "event": "step", "step": "replace", "path": "sub/b.txt"});
+    assert!(each.contains(&replaced), "{each:?}");
+    assert_eq!(plan["event"], "sync_plan");
+    assert_eq!(
+        (&plan["add"], &plan["replace"], &plan["remove"]),
+        (&1.into(), &1.into(), &1.into())
+    );
+    assert_eq!(plan["bytes"], 14 + 3);
+
+    // Without --dry-run it says that it cannot yet, and does nothing.
+    let output = mux(["sync", text(&source), text(&mirror)]).await;
+    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert!(said(&output).contains("add --dry-run"), "{}", said(&output));
+    assert!(mirror.join("its own").exists() && !mirror.join("new").exists());
+}

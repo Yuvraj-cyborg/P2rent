@@ -1,6 +1,6 @@
 use crate::common::Store;
-use ::fs::{index, measure, scan};
-use model::artifact::{EntryKind, MIN_CHUNK_SIZE, PART_SUFFIX};
+use ::fs::{as_kept, index, measure, scan};
+use model::artifact::{EntryKind, MIN_CHUNK_SIZE, PART_SUFFIX, Tree};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +46,54 @@ fn a_scan_finds_the_tree_an_index_records() {
     assert_eq!(file.tree.total_size(), (CS * 3 + 17) as u64);
 
     assert!(scan(&root.join("missing"), MIN_CHUNK_SIZE).is_err());
+}
+
+/// A tree is compared with what is on disk as this system keeps it. On
+/// Unix that is the tree as it is. Elsewhere only whether a file may be
+/// written is kept of its permissions, and nothing of a directory's
+/// permissions or time, so a tree from another system is put that way
+/// before it is compared.
+#[test]
+fn a_tree_is_seen_as_this_system_keeps_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap().tree;
+    // What a scan finds is already as this system keeps it.
+    let kept = as_kept(&scanned).unwrap();
+    if cfg!(unix) {
+        assert_eq!(kept, scanned);
+    }
+    assert_eq!(as_kept(&kept).unwrap(), kept);
+    assert_eq!(kept.entries(), scanned.entries());
+
+    // A tree from elsewhere, with permissions this system may not keep.
+    let from_elsewhere: Vec<_> = scanned
+        .entries()
+        .iter()
+        .cloned()
+        .zip(scanned.recorded().iter().map(|recorded| {
+            let mut recorded = *recorded;
+            recorded.mode = 0o600;
+            recorded
+        }))
+        .collect();
+    let from_elsewhere = Tree::new("bundle", MIN_CHUNK_SIZE, from_elsewhere).unwrap();
+    let kept = as_kept(&from_elsewhere).unwrap();
+    let modes: Vec<u16> = kept.recorded().iter().map(|r| r.mode).collect();
+    if cfg!(unix) {
+        assert!(modes.iter().all(|&mode| mode == 0o600), "{modes:?}");
+    } else {
+        // A file that may be written, and a directory.
+        assert!(
+            modes.iter().all(|&mode| mode == 0o644 || mode == 0o755),
+            "{modes:?}"
+        );
+        let directories = kept.entries().iter().zip(kept.recorded());
+        let timed = directories
+            .filter(|(entry, _)| !entry.is_file())
+            .any(|(_, recorded)| recorded.modified.is_some());
+        assert!(!timed, "a directory kept a time");
+    }
 }
 
 #[test]

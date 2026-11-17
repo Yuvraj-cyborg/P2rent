@@ -6,7 +6,7 @@ test covers only the inputs someone tried.
 
 ## What is proven
 
-Five modules of `crates/model` are translated:
+Six modules of `crates/model` are translated:
 
 | Module | Holds |
 | --- | --- |
@@ -14,6 +14,7 @@ Five modules of `crates/model` are translated:
 | `artifact::layout` | Which file, offset and length each chunk has. |
 | `artifact::path` | Which names, paths and link targets a manifest may use. |
 | `assembly` | Which files are whole, and so may take their final names. |
+| `mirror::step` | What a sync does about one path: add, replace, set the permissions and time, keep or remove. |
 | `schedule` | Which chunk to fetch next, what state each is in, and who is fetching it. |
 
 The theorems are in `Model/`, one file per module, each beginning with a
@@ -54,7 +55,7 @@ by tests, fuzzing and simulation.
 
 ## Writing code that can be proven
 
-The translator accepts a plain subset of Rust. In the five modules above:
+The translator accepts a plain subset of Rust. In the six modules above:
 
 - loops and indexing, not iterators and closures;
 - no strings, hashing, I/O or `unsafe`;
