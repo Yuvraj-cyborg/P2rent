@@ -2,5 +2,6 @@
 
 mod common;
 mod conformance;
+mod learned;
 mod properties;
 mod stores;

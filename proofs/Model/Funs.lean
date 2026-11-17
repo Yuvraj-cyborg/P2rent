@@ -110,7 +110,7 @@ def artifact.bitfield.Bitfield.Insts.CoreCmpEq : core.cmp.Eq
 }
 
 /-- [model::artifact::to_usize]:
-    Source: 'crates/model/src/artifact/mod.rs', lines 26:0-28:1
+    Source: 'crates/model/src/artifact/mod.rs', lines 28:0-30:1
     Visibility: public -/
 def artifact.to_usize (n : Std.U64) : Result Std.Usize := do
   let r ← Usize.Insts.CoreConvertTryFromU64TryFromIntError.try_from n

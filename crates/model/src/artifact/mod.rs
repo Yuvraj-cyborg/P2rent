@@ -3,6 +3,7 @@
 //! Nothing in this module touches the disk or the network.
 
 mod bitfield;
+mod digest;
 mod hash;
 mod layout;
 mod manifest;
@@ -10,6 +11,7 @@ pub mod path;
 mod wire;
 
 pub use bitfield::Bitfield;
+pub use digest::FileDigest;
 pub use hash::{Hash, InvalidHash};
 pub use layout::{ChunkLocation, Layout};
 pub use manifest::{

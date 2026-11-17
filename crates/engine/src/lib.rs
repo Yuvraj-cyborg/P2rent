@@ -22,5 +22,5 @@ mod store;
 pub mod sync;
 mod transfer;
 
-pub use store::{Put, Store};
+pub use store::{Foreknown, Put, Store};
 pub use transfer::{Error, Options, Summary, transfer};

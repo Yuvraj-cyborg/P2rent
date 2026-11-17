@@ -32,6 +32,8 @@ pub struct Memory {
 struct Slot {
     committed: Option<Vec<u8>>,
     pending: Option<Vec<u8>>,
+    /// What the engine has noted beside the pending version.
+    notes: Vec<u8>,
 }
 
 impl Memory {
@@ -131,6 +133,19 @@ impl Memory {
     }
 }
 
+/// Copies `data` into `buffer` at `offset`. A buffer that may `grow` is made
+/// long enough to take it, with zeros where nothing was written. `None` if
+/// the bytes do not fit.
+fn put_at(buffer: &mut Vec<u8>, offset: u64, data: &[u8], grow: bool) -> Option<()> {
+    let start = usize::try_from(offset).ok()?;
+    let end = start.checked_add(data.len())?;
+    if grow && buffer.len() < end {
+        buffer.resize(end, 0);
+    }
+    buffer.get_mut(start..end)?.copy_from_slice(data);
+    Some(())
+}
+
 fn ready<'a, T: Send + 'a>(result: Result<T, Failure>) -> Pending<'a, T> {
     Box::pin(std::future::ready(result))
 }
@@ -174,14 +189,34 @@ impl Sink for Memory {
 
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure> {
         self.slot(file, |slot| {
+            let pending = slot.pending.as_mut();
+            pending
+                .and_then(|pending| put_at(pending, offset, data, false))
+                .ok_or_else(|| Failure::Fatal(format!("file {file} has no room for that")))
+        })
+    }
+
+    fn read_back(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>, Failure> {
+        self.slot(file, |slot| {
             let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            let room = slot
-                .pending
-                .as_mut()
-                .and_then(|pending| pending.get_mut(start..start.checked_add(data.len())?))
-                .ok_or_else(|| Failure::Fatal(format!("file {file} has no room for that")))?;
-            room.copy_from_slice(data);
-            Ok(())
+            let end = start.checked_add(len as usize);
+            let written = slot.pending.as_ref();
+            end.and_then(|end| written?.get(start..end))
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| Failure::Absent(format!("file {file} was not written that far")))
+        })
+    }
+
+    fn notes(&self, file: usize, limit: usize) -> Result<Vec<u8>, Failure> {
+        self.slot(file, |slot| {
+            Ok(slot.notes.iter().copied().take(limit).collect())
+        })
+    }
+
+    fn note(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure> {
+        self.slot(file, |slot| {
+            put_at(&mut slot.notes, offset, data, true)
+                .ok_or_else(|| Failure::Fatal(format!("file {file} has no room for that note")))
         })
     }
 
@@ -189,6 +224,7 @@ impl Sink for Memory {
         self.slot(file, |slot| {
             let nothing = || Failure::Fatal(format!("file {file} has nothing to commit"));
             slot.committed = Some(slot.pending.take().ok_or_else(nothing)?);
+            slot.notes.clear();
             Ok(())
         })
     }
@@ -196,6 +232,7 @@ impl Sink for Memory {
     fn abort(&self, file: usize) -> Result<(), Failure> {
         self.slot(file, |slot| {
             slot.pending = None;
+            slot.notes.clear();
             Ok(())
         })
     }
@@ -331,7 +368,9 @@ where
     run.what_a_place_says_it_holds_is_right().await?;
     run.an_aborted_file_is_forgotten().await?;
     run.wrong_bytes_are_refused().await?;
-    run.a_read_gives_the_whole_range_or_fails().await
+    run.a_read_gives_the_whole_range_or_fails().await?;
+    run.notes_last_as_long_as_what_they_are_beside().await?;
+    run.with_no_digest_nothing_is_held()
 }
 
 impl<P, F> Run<'_, F>
@@ -470,6 +509,118 @@ where
             ensure(past.is_err(), "a read past the end did not fail")?;
         }
         Ok(())
+    }
+
+    /// Notes are kept beside a file that is being written, apart from its
+    /// bytes, and are gone once the file is committed or aborted.
+    async fn notes_last_as_long_as_what_they_are_beside(&self) -> Result<(), Wrong> {
+        let tree = self.sample.artifact.tree();
+        let noted = |name: &str, file: usize, limit: usize| {
+            let read = (self.open)(tree, name).notes(file, limit);
+            read.map_err(|e| wrong("reading notes", &e))
+        };
+        ensure(
+            noted("notes", FIRST_FILE, 100)?.is_empty(),
+            "a new place has notes",
+        )?;
+
+        let store = self.resume("notes").await?;
+        let place = (self.open)(tree, "notes");
+        for (offset, text) in [(0, &b"abc"[..]), (5, &b"xy"[..])] {
+            let written = place.note(FIRST_FILE, offset, text);
+            written.map_err(|e| wrong("writing a note", &e))?;
+        }
+        // What was skipped over reads as zeros.
+        let all = b"abc\0\0xy".to_vec();
+        ensure(
+            noted("notes", FIRST_FILE, 100)? == all,
+            "notes read back changed",
+        )?;
+        ensure(
+            noted("notes", FIRST_FILE, 4)? == all[..4],
+            "more notes than asked for",
+        )?;
+        ensure(
+            noted("notes", SECOND_FILE, 100)?.is_empty(),
+            "one file has another's notes",
+        )?;
+
+        // Neither the notes nor the bytes of the file disturb the other.
+        let chunks = self.sample.artifact.file_chunks(FIRST_FILE);
+        for index in chunks.start..chunks.end - 1 {
+            self.put(&store, index).await?;
+        }
+        let first = self.sample.chunk(chunks.start);
+        let length = u32::try_from(first.len()).unwrap_or(u32::MAX);
+        let written = place.read_back(FIRST_FILE, 0, length);
+        ensure(written == Ok(first), "what was written reads back changed")?;
+        ensure(
+            noted("notes", FIRST_FILE, 100)? == all,
+            "writing a chunk changed the notes",
+        )?;
+        drop(store);
+
+        // They are still there when the place is made ready again.
+        let store = self.resume("notes").await?;
+        ensure(
+            noted("notes", FIRST_FILE, 100)? == all,
+            "notes were lost on opening again",
+        )?;
+        ensure(store.has(chunks.start), "a noted file lost a chunk")?;
+
+        // Committing the file ends them, and leaves the file's own bytes.
+        self.put(&store, chunks.end - 1).await?;
+        ensure(
+            noted("notes", FIRST_FILE, 100)?.is_empty(),
+            "a committed file has notes",
+        )?;
+        for index in chunks {
+            self.same(&store, index).await?;
+        }
+        let size = u64::try_from(self.sample.files[FIRST_FILE].len()).unwrap_or(u64::MAX);
+        let past = (self.open)(tree, "notes").read(FIRST_FILE, size, 1).await;
+        ensure(
+            past.is_err(),
+            "notes were left at the end of a committed file",
+        )?;
+
+        // So does aborting it.
+        let noting = place.note(SECOND_FILE, 0, b"zzz");
+        noting.map_err(|e| wrong("writing a note", &e))?;
+        let aborted = place.abort(SECOND_FILE);
+        aborted.map_err(|e| wrong("aborting a file", &e))?;
+        ensure(
+            noted("notes", SECOND_FILE, 100)?.is_empty(),
+            "an aborted file has notes",
+        )
+    }
+
+    /// A place holds a chunk only if it is told the digest the chunk has.
+    /// Follows the check that finished the place named "together".
+    fn with_no_digest_nothing_is_held(&self) -> Result<(), Wrong> {
+        let place = (self.open)(self.sample.artifact.tree(), "together");
+        let held = place.begin(&|_| None, &|_| {});
+        let held = held.map_err(|e| wrong("opening a whole tree", &e))?;
+        ensure(
+            held.count_ones() == 0,
+            "chunks are held that nothing vouches for",
+        )?;
+
+        // Told the digests of one file only, it holds that file's chunks.
+        let (digests, first) = (&self.sample.artifact, self.committed_chunks());
+        let chunks = digests.file_chunks(FIRST_FILE);
+        let only_first = |index| chunks.contains(&index).then(|| digests.chunk_hash(index))?;
+        let held = place.begin(&only_first, &|_| {});
+        let held = held.map_err(|e| wrong("opening a whole tree", &e))?;
+        let expected = chunks.end - chunks.start;
+        ensure(
+            held.count_ones() == expected,
+            "the chunks vouched for are not held",
+        )?;
+        ensure(
+            first.take(1).all(|index| held.get(index)),
+            "the first chunk is not held",
+        )
     }
 
     /// The chunks of two files that the checks fill completely: the first
