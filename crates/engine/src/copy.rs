@@ -9,8 +9,10 @@
 //! comes from whichever of them is free to send it.
 
 use crate::{Error, Options, Store, supplier, transfer};
-use model::artifact::{Artifact, Tree};
-use model::place::{Description, Event, Failure, Observer, Sink, Source, SupplierId, Verification};
+use model::artifact::{Artifact, FileDigest, Tree};
+use model::place::{
+    Description, Event, Failure, Foreknown, Observer, Sink, Source, SupplierId, Verification,
+};
 use std::sync::Arc;
 
 /// This end of a copy, as the transfer tells it from the sources.
@@ -27,6 +29,80 @@ pub(crate) fn source_id(number: usize) -> SupplierId {
     let mut id = [0; 32];
     id[..8].copy_from_slice(&(number as u64 + 1).to_le_bytes());
     id
+}
+
+/// What a copy would bring, worked out from what its sources say and
+/// before anything is read or written.
+#[derive(Debug)]
+pub struct Plan {
+    /// The tree the sources hold, under the name the copy would have.
+    pub tree: Arc<Tree>,
+    /// What is known beforehand of each entry.
+    known: Vec<Foreknown>,
+}
+
+impl Plan {
+    /// The number of files in the tree. Directories and links are not
+    /// counted.
+    pub fn files(&self) -> u64 {
+        let files = self.tree.entries().iter().filter(|entry| entry.is_file());
+        files.count() as u64
+    }
+
+    /// The digest known for each file that has one, with the file's place
+    /// among the entries of the tree.
+    pub fn digests(&self) -> impl Iterator<Item = (usize, FileDigest)> + '_ {
+        let known = self.known.iter().enumerate();
+        known.filter_map(|(file, known)| Some((file, known.digest?)))
+    }
+
+    /// How far the copy would be checked: verified if a digest is known of
+    /// every file that has bytes in it.
+    pub fn verification(&self) -> Verification {
+        let entries = self.tree.entries().iter().zip(&self.known);
+        let mut with_bytes = entries.filter(|(entry, _)| entry.size() > 0);
+        if with_bytes.all(|(_, known)| known.digest.is_some()) {
+            Verification::Verified
+        } else {
+            Verification::Consistent
+        }
+    }
+
+    /// Whether every file of the tree is already in `place`, as far as
+    /// size and time can tell. A tree with no file in it is not: there is
+    /// nothing to go by.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if the place cannot be looked at.
+    pub async fn is_in<P: Sink + 'static>(&self, place: &Arc<P>) -> Result<bool, Failure> {
+        is_current(&self.tree, place).await
+    }
+}
+
+/// Works out what a copy from `sources` would bring. See [`copy`], which
+/// begins with this.
+///
+/// # Errors
+///
+/// Returns a failure if a source cannot be described, if the sources do
+/// not agree, or if what they describe cannot be stored.
+pub async fn plan(
+    sources: &[Arc<dyn Source>],
+    name: Option<String>,
+    chunk_size: u32,
+) -> Result<Plan, Failure> {
+    let described = describe(sources).await?;
+    let name = name.unwrap_or(described.name);
+    let tree = Tree::new(name, chunk_size, described.entries).map_err(|e| {
+        Failure::Corrupt(format!(
+            "the source describes a tree that cannot be stored: {e}"
+        ))
+    })?;
+    Ok(Plan {
+        tree: Arc::new(tree),
+        known: described.known,
+    })
 }
 
 /// What a copy did.
@@ -82,22 +158,15 @@ where
     P: Source + Sink + 'static,
     F: FnOnce(&Arc<Tree>) -> Arc<P>,
 {
-    let described = describe(&sources).await?;
-    let name = name.unwrap_or(described.name);
-    let tree = Tree::new(name, chunk_size, described.entries).map_err(|e| {
-        Failure::Corrupt(format!(
-            "the source describes a tree that cannot be stored: {e}"
-        ))
-    })?;
-    let tree = Arc::new(tree);
-    let files = tree.entries().iter().filter(|entry| entry.is_file());
+    let planned = plan(&sources, name, chunk_size).await?;
+    let tree = planned.tree.clone();
     observer(Event::Planned {
         bytes: tree.total_size(),
-        files: files.count() as u64,
+        files: planned.files(),
     });
     let place = open(&tree);
 
-    if is_current(&tree, &place).await? {
+    if planned.is_in(&place).await? {
         observer(Event::Kept {
             bytes: tree.total_size(),
         });
@@ -115,7 +184,7 @@ where
         let observer = observer.clone();
         move |bytes| observer(Event::Examined { bytes })
     };
-    let store = Store::learn(tree.clone(), place, described.known, examined).await?;
+    let store = Store::learn(tree.clone(), place, planned.known, examined).await?;
     let held: u64 = (0..tree.chunk_count())
         .filter(|&index| store.has(index))
         .filter_map(|index| tree.locate(index))
@@ -200,9 +269,7 @@ async fn describe(sources: &[Arc<dyn Source>]) -> Result<Description, Failure> {
     Ok(first)
 }
 
-/// Whether every file of the tree is already in the place, as far as size
-/// and time can tell. A tree with no file in it is not: there is nothing
-/// to go by.
+/// See [`Plan::is_in`].
 async fn is_current<P: Sink + 'static>(tree: &Arc<Tree>, place: &Arc<P>) -> Result<bool, Failure> {
     let (tree, place) = (tree.clone(), place.clone());
     let looked = tokio::task::spawn_blocking(move || {
@@ -230,8 +297,8 @@ async fn is_current<P: Sink + 'static>(tree: &Arc<Tree>, place: &Arc<P>) -> Resu
 mod tests {
     use super::*;
     use crate::conformance::{Memory, Sample};
-    use model::artifact::{FileDigest, Hash, MIN_CHUNK_SIZE, Timestamp};
-    use model::place::{Capabilities, Foreknown, Pending, Reader};
+    use model::artifact::{Hash, MIN_CHUNK_SIZE, Timestamp};
+    use model::place::{Capabilities, Pending, Reader};
     use std::sync::Mutex;
 
     /// A place that is read from, and says of its files what it is told to.
@@ -429,6 +496,45 @@ mod tests {
         );
         assert!(place.is_none());
         assert_eq!(events, []);
+    }
+
+    /// A plan says what a copy would bring, and reads and writes nothing.
+    #[test]
+    fn a_plan_says_what_a_copy_would_bring() {
+        let sample = Sample::new().unwrap();
+        let from = |digests| {
+            let told = source(&sample, &sample.files, known(&sample, digests));
+            vec![Arc::new(told) as Arc<dyn Source>]
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let sources = from(false);
+        let plain = plan(&sources, Some("other".into()), MIN_CHUNK_SIZE);
+        let plain = runtime.block_on(plain).unwrap();
+        assert_eq!(plain.tree.name(), "other");
+        assert_eq!(plain.tree.total_size(), sample.artifact.total_size());
+        assert_eq!(plain.files(), 4);
+        assert_eq!(plain.verification(), Verification::Consistent);
+        assert_eq!(plain.digests().count(), 0);
+        // Nothing is in a place that was only just made.
+        let place = Arc::new(Memory::new(plain.tree.clone()));
+        assert!(!runtime.block_on(plain.is_in(&place)).unwrap());
+
+        // With a digest of every file that has bytes, it would be verified.
+        let sources = from(true);
+        let checked = plan(&sources, None, MIN_CHUNK_SIZE);
+        let checked = runtime.block_on(checked).unwrap();
+        assert_eq!(checked.verification(), Verification::Verified);
+        let files: Vec<usize> = checked.digests().map(|(file, _)| file).collect();
+        assert_eq!(files, [1, 4, 5]);
+        // And with one of them missing, it would not.
+        let mut some = known(&sample, true);
+        some[4].digest = None;
+        let some = vec![Arc::new(source(&sample, &sample.files, some)) as Arc<dyn Source>];
+        let partly = runtime.block_on(plan(&some, None, MIN_CHUNK_SIZE)).unwrap();
+        assert_eq!(partly.verification(), Verification::Consistent);
     }
 
     /// A file is taken for the one the source holds on its size and time,
