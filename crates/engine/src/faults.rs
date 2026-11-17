@@ -395,9 +395,17 @@ fn a_supplier_that_lies_is_dropped_and_an_honest_one_finishes() {
         lies: vec![true; chunks(&sample)],
         ..Script::honest(&sample)
     };
+    // The honest one takes its time, by the test's clock, so the liar is
+    // always caught first. Were both to answer at once, the honest one
+    // could deliver everything before a single lie had been checked, and
+    // the transfer would rightly end with the liar never found out.
+    let unhurried = Script {
+        delay: Duration::from_secs(5),
+        ..Script::honest(&sample)
+    };
     let suppliers = [
         Made::new(1, liar, &sample),
-        Made::new(2, Script::honest(&sample), &sample),
+        Made::new(2, unhurried, &sample),
     ];
     let ran = Setup::new(&sample).run(&suppliers);
 
@@ -406,6 +414,27 @@ fn a_supplier_that_lies_is_dropped_and_an_honest_one_finishes() {
     assert_eq!(ran.stored_from(1), 0, "bytes were kept from a liar");
     assert_eq!(ran.stored_from(2), sample.artifact.total_size());
     assert_eq!(summary.usable, [[2; 32]], "a liar is still counted usable");
+}
+
+/// A liar that is never caught does no harm either: with an honest supplier
+/// answering at the same moment, whichever is quicker, nothing wrong is
+/// kept.
+#[test]
+fn nothing_is_kept_from_a_liar_whoever_is_quicker() {
+    let sample = sample();
+    let liar = Script {
+        lies: vec![true; chunks(&sample)],
+        ..Script::honest(&sample)
+    };
+    let suppliers = [
+        Made::new(1, liar, &sample),
+        Made::new(2, Script::honest(&sample), &sample),
+    ];
+    let ran = Setup::new(&sample).run(&suppliers);
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(ran.stored_from(1), 0, "bytes were kept from a liar");
+    assert_eq!(ran.stored_from(2), sample.artifact.total_size());
 }
 
 #[test]
