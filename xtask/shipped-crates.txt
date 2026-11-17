@@ -1,50 +1,93 @@
 # Third-party crates compiled into the released binaries, one per line.
 # A crate that only some release targets use is followed by those targets.
 # Do not edit by hand: run `cargo xtask deps --write`.
+aead
+aes
+aes-gcm
 anstream
 anstyle
 anstyle-parse
 anstyle-query
 anstyle-wincon: x86_64-pc-windows-msvc
 anyhow
+arc-swap
 arrayvec
 atomic-waker
+backon
+base16ct
 base64
+base64ct
 bitflags
 blake3
+block-buffer
+block2: x86_64-apple-darwin, aarch64-apple-darwin
 bytes
 cfg-if
 chacha20
+chrono: x86_64-pc-windows-msvc
+cipher
 clap
 clap_builder
 clap_derive
 clap_lex
+cmov
 cobs
 colorchoice
 console
+const-oid
 constant_time_eq
+convert_case
+cordyceps
 core-foundation: x86_64-apple-darwin, aarch64-apple-darwin
 core-foundation-sys: x86_64-apple-darwin, aarch64-apple-darwin
-cpufeatures: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
+cpufeatures
 crossbeam-deque
 crossbeam-epoch
 crossbeam-utils
+crypto-common
+ctr
+ctutils
+curve25519-dalek
+curve25519-dalek-derive: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
+data-encoding
+data-encoding-macro
+data-encoding-macro-internal
+der
 deranged
+derive_more
+derive_more-impl
+diatomic-waker
+digest
 dirs
 dirs-sys
+dispatch2: x86_64-apple-darwin, aarch64-apple-darwin
 displaydoc
+ed25519
+ed25519-dalek
 either
 encode_unicode: x86_64-pc-windows-msvc
+enum-assoc
 equivalent
 errno: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+fastrand
+fixedbitset
 fnv
+foldhash
 form_urlencoded
+futures: x86_64-pc-windows-msvc
+futures-buffered
 futures-channel
 futures-core
+futures-executor: x86_64-pc-windows-msvc
+futures-io
+futures-lite
+futures-macro
 futures-sink
 futures-task
 futures-util
+generic-array
 getrandom
+ghash
 h2
 hashbrown
 heck
@@ -53,6 +96,7 @@ http-body
 http-body-util
 httparse
 httpdate
+hybrid-array
 hyper
 hyper-rustls
 hyper-util
@@ -63,42 +107,85 @@ icu_normalizer_data
 icu_properties
 icu_properties_data
 icu_provider
+identity-hash
 idna
 idna_adapter
 indexmap
 indicatif
+inout
+ipconfig: x86_64-pc-windows-msvc
 ipnet
+iroh
+iroh-base
+iroh-dns
+iroh-metrics
+iroh-metrics-derive
+iroh-relay
 is_terminal_polyfill
 itoa
 lazy_static
 libc
 litemap
 log
+lru
 lru-slab
+mac-addr
+memchr: x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc
 mio
+n0-dns-resolver
+n0-error
+n0-error-macros
+n0-future
+n0-watcher
+netdev
+netlink-packet-core: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+netlink-packet-route: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+netlink-proto: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+netlink-sys: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+netwatch
+noq
+noq-proto
+noq-udp
 nu-ansi-term
 num-conv
+num-traits: x86_64-pc-windows-msvc
+num_enum
+num_enum_derive
+objc2: x86_64-apple-darwin, aarch64-apple-darwin
+objc2-core-foundation: x86_64-apple-darwin, aarch64-apple-darwin
+objc2-encode: x86_64-apple-darwin, aarch64-apple-darwin
+objc2-security: x86_64-apple-darwin, aarch64-apple-darwin
+objc2-system-configuration: x86_64-apple-darwin, aarch64-apple-darwin
 once_cell
 once_cell_polyfill: x86_64-pc-windows-msvc
+opaque-debug
 openssl-probe: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 option-ext
+papaya
+parking
+paste: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+pem-rfc7468
 percent-encoding
+pin-project
+pin-project-internal
 pin-project-lite
+pkcs8
+plist: x86_64-apple-darwin, aarch64-apple-darwin
+polyval
 portable-atomic
 postcard
+postcard-derive
 potential_utf
 powerfmt
+proc-macro-crate
 proc-macro2
-quinn
-quinn-proto
-quinn-udp
+quick-xml: x86_64-apple-darwin, aarch64-apple-darwin
 quote
 rand
 rand_core
 rand_pcg
 rayon
 rayon-core
-rcgen
 reqwest
 ring
 rustc-hash
@@ -107,23 +194,42 @@ rustls-native-certs: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 rustls-pki-types
 rustls-platform-verifier
 rustls-webpki
+rustversion
+ryu
 same-file
 security-framework: x86_64-apple-darwin, aarch64-apple-darwin
 security-framework-sys: x86_64-apple-darwin, aarch64-apple-darwin
+seize
 serde
+serde_bytes
 serde_core
 serde_derive
+serdect
+sha1_smol
+sha2
 sharded-slab
 signal-hook-registry: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+signature
+simdutf8
+simple-dns
 slab
+slotmap
 smallvec
 socket2
+sorted-index-buffer
+spez
+spin
+spki
 stable_deref_trait
 strsim
+strum
+strum_macros
 subtle
 syn
 sync_wrapper
 synstructure
+system-configuration: x86_64-apple-darwin, aarch64-apple-darwin
+system-configuration-sys: x86_64-apple-darwin, aarch64-apple-darwin
 thiserror
 thiserror-impl
 thread_local
@@ -134,7 +240,12 @@ tinyvec
 tokio
 tokio-macros
 tokio-rustls
+tokio-stream
 tokio-util
+tokio-websockets
+toml_datetime
+toml_edit
+toml_parser
 tower
 tower-http
 tower-layer
@@ -144,9 +255,13 @@ tracing-attributes
 tracing-core
 tracing-subscriber
 try-lock
+typenum
 unicode-ident
+unicode-segmentation
 unicode-width
+unicode-xid
 unit-prefix
+universal-hash
 untrusted
 url
 utf8_iter
@@ -154,16 +269,33 @@ utf8parse
 utf_types
 walkdir
 want
+webpki-roots
+widestring: x86_64-pc-windows-msvc
 winapi-util: x86_64-pc-windows-msvc
+windows: x86_64-pc-windows-msvc
+windows-collections: x86_64-pc-windows-msvc
+windows-core: x86_64-pc-windows-msvc
+windows-future: x86_64-pc-windows-msvc
+windows-implement: x86_64-pc-windows-msvc
+windows-interface: x86_64-pc-windows-msvc
 windows-link: x86_64-pc-windows-msvc
+windows-numerics: x86_64-pc-windows-msvc
+windows-registry: x86_64-pc-windows-msvc
+windows-result: x86_64-pc-windows-msvc
+windows-strings: x86_64-pc-windows-msvc
 windows-sys: x86_64-pc-windows-msvc
+windows-threading: x86_64-pc-windows-msvc
+winnow
+wmi: x86_64-pc-windows-msvc
 writeable
-yasna
 yoke
 yoke-derive
+zerocopy: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+zerocopy-derive: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
 zerofrom
 zerofrom-derive
 zeroize
+zeroize_derive
 zerotrie
 zerovec
 zerovec-derive

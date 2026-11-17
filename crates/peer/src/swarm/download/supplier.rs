@@ -61,7 +61,7 @@ impl Supplier for Peer {
                 .connect(self.peer.addr, self.peer.node)
                 .await
                 .map_err(|e| unreachable(&e))?;
-            debug!(peer = %connection.peer().short(), addr = %connection.remote_addr(), "connected to peer");
+            debug!(peer = %connection.peer().short(), addr = ?connection.remote_addr(), "connected to peer");
             let link: Arc<dyn Supply> = Arc::new(Link {
                 swarm: self.swarm.clone(),
                 connection,
@@ -129,7 +129,7 @@ impl Drop for Link {
     fn drop(&mut self) {
         debug!(
             peer = %self.connection.peer().short(),
-            path_mtu = self.connection.path_mtu(),
+            path_mtu = ?self.connection.path_mtu(),
             "disconnected from peer"
         );
         self.connection.close();

@@ -4,7 +4,6 @@
 mod endpoint;
 mod identity;
 pub mod proto;
-mod tls;
 
 pub use endpoint::{Connection, Endpoint, Incoming};
 pub use identity::Identity;

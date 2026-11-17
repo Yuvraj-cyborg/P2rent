@@ -38,11 +38,11 @@ lint:
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items
     typos
 
-# Needs the 1.88 toolchain: `rustup toolchain install 1.88`.
+# Needs the 1.91 toolchain: `rustup toolchain install 1.91`.
 
 # Check that the code builds with the oldest supported compiler
 msrv:
-    cargo +1.88 check --locked --workspace --all-targets
+    cargo +1.91 check --locked --workspace --all-targets
 
 # Licences, known vulnerabilities and duplicate versions of dependencies
 audit:
