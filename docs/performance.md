@@ -316,6 +316,79 @@ of a file, which moved neither figure:
 | What arrives is appended to a buffer, and a chunk is cut from its front | First version. 2,535 MiB/s and 1.35 CPU s/GiB over four streams, 1,392 MiB/s and 0.75 over one. |
 | Each byte is copied once, from where it arrived into a buffer of the chunk's size | Kept. 2,758 MiB/s and 1.28 over four streams, 1,495 MiB/s and 0.72 over one. |
 
+## Sending only what changed
+
+A destination that holds an older version of a file should not have to
+fetch the whole of the newer one
+([#74](https://github.com/yuvichh/mux/issues/74)). `just delta` compares
+three ways of finding what it can keep, on three kinds of change:
+
+- **Same place.** The new file is cut into chunks of one size, and a chunk
+  is kept if the old file has the same bytes at the same place. This is
+  what a transfer does today when the digests are known.
+- **Search.** The same chunks, and a chunk is kept if the old file has its
+  bytes anywhere. The old file is gone through once with a hash that rolls
+  from each byte to the next, as `rsync` and `zsync` do.
+- **Cut by content.** Both files are cut where their bytes say, so that a
+  cut falls in the same place after something is inserted before it.
+
+What would still have to be fetched, for a file of 256 MiB in chunks of
+1 MiB, on the Linux machine in the table above:
+
+| Change | Same place | Search | Cut by content, about 1 MiB | Cut by content, about 64 KiB |
+| --- | ---: | ---: | ---: | ---: |
+| Grown by 1% (2.6 MiB) | 2.6 MiB | 2.6 MiB | 4.8 MiB | 2.6 MiB |
+| 4 KiB changed in the middle | 1.0 MiB | 1.0 MiB | 0.7 MiB | 0.05 MiB |
+| 4 KiB inserted a third of the way in | 171 MiB | 1.0 MiB | 1.6 MiB | 0.3 MiB |
+
+For a file of 1 GiB the last row is 683 MiB, 1.0 MiB, 1.5 MiB and 0.05 MiB.
+
+What each costs:
+
+| | Same place | Search | Cut by content, about 1 MiB | About 64 KiB |
+| --- | ---: | ---: | ---: | ---: |
+| Going through the old file | nothing more | 320 MiB/s | 1,110 MiB/s | |
+| What the source says of each GiB, beside the bytes | 32 KiB | 40 KiB | 36 KiB | 576 KiB |
+| Chunks of one size | yes | yes | no | no |
+
+BLAKE3 goes through the same file at 3,800 MiB/s on this machine. The
+figure for the search is all of the destination's work: hashing the chunks
+it looks for, rolling through the old file, and checking each chunk it
+finds with BLAKE3.
+
+**The choice is the search.**
+
+- Today's way fails on the commonest change to a large file that is not
+  an append: something put in or taken out near its start. Everything after
+  it has moved, and all of it is fetched.
+- The search fetches one chunk and what is new, in all three cases.
+- Cutting by content does about as well at the same size of chunk, and
+  better at a smaller one. But it gives up chunks of one size. The layout
+  that says where each chunk lies is proven for chunks of one size, and a
+  source whose bytes are not known beforehand, such as a web server, can
+  only be asked for chunks of one size. Small chunks also make the list of
+  digests sixteen times as long.
+- The search costs a pass over the old file at 320 MiB/s, and only for a
+  file that has changed. That is 2.7 Gbit/s, faster than the links on which
+  it saves anything.
+
+Two things the measurement changed:
+
+| Change | Result |
+| --- | --- |
+| The checksum of `rsync`: two sums of 16 bits | First version. In 256 MiB it matched by chance 18 times, each ruled out by hashing a chunk. The number grows with the size of the file times its number of chunks: millions for a file of 100 GiB. |
+| A rolling hash of 64 bits: each byte times a power of an odd number | Kept. No match by chance in 256 MiB or in 1 GiB, at the cost of two multiplications for each byte. |
+| Asking a table at every byte whether a chunk starts there | First version: 170 MiB/s on a laptop. |
+| A bit for each of a million values of the hash, and the table asked only where the bit is set | Kept: 570 MiB/s on the same laptop. |
+
+A file made to collide could still make the hash match everywhere, so the
+search will stop after a set number of matches that were not the chunk,
+and fall back to comparing in place.
+
+The rolling loop is written in safe Rust. It is the first candidate for
+the fast path below, once the search is part of a transfer and there is a
+link fast enough to be held up by it.
+
 ## The fast path
 
 `unsafe`, SIMD intrinsics and assembly are allowed in one crate, `accel`,
@@ -348,4 +421,6 @@ not.
 - Links with latency. Each peer is asked for four chunks at a time, which may
   leave a long-distance link idle between requests.
 - Web downloads over a real network, and over HTTPS.
+- The search for moved chunks on files that are not random: text, images of
+  disks with long runs of zeros, archives.
 - Where the system time of several web streams goes.
