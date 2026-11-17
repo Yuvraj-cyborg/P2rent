@@ -288,8 +288,8 @@ the copy both on tmpfs. Each is the median of five runs on 18 November
 
 | Tool | Connections | Throughput | CPU seconds per GiB |
 | --- | ---: | ---: | ---: |
-| mux | 4 | 2,758 MiB/s | 1.28 |
-| mux | 1 | 1,495 MiB/s | 0.72 |
+| mux | 4 | 2,746 MiB/s | 1.30 |
+| mux | 1 | 1,532 MiB/s | 0.71 |
 | curl 8.22 | 1 | 2,301 MiB/s | 0.39 |
 | aria2c 1.37 | 4 | 1,499 MiB/s | 0.59 |
 | aria2c 1.37 | 1 | 1,134 MiB/s | 0.82 |
@@ -297,18 +297,19 @@ the copy both on tmpfs. Each is the median of five runs on 18 November
 How to read them:
 
 - This is loopback, so the figures show CPU cost per byte. On a real
-  network the network is the limit: 2,758 MiB/s is 23 Gbit/s.
+  network the network is the limit: 2,746 MiB/s is 23 Gbit/s.
 - mux hashes every byte as it stores it and notes the digest, so that the
   copy can be carried on after an interruption and seeded when it is whole.
   `curl` and `aria2c` were run as above and check nothing.
 - Over one stream mux is slower than `curl`. A chunk is hashed and written
   before the next one is read, so the two do not overlap.
-- Four streams cost more CPU for each byte than one, 1.28 against 0.72, and
-  most of the difference is system time (0.83 against 0.39). Where it goes
+- Four streams cost more CPU for each byte than one, 1.30 against 0.71, and
+  most of the difference is system time (0.82 against 0.37). Where it goes
   is not known: it needs a profiler that can see into the kernel, which
   this machine does not have.
 
-One change was measured:
+One change was measured, before a copy was made to start at the first chunk
+of a file, which moved neither figure:
 
 | Change | Result |
 | --- | --- |
