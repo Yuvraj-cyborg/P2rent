@@ -389,18 +389,20 @@ a lower priority than the one before.
   congestion control, which halves its rate at each loss. `mux get` is one
   QUIC connection and does twice as well as one TCP connection, but tools
   that open four connections get four times one. A congestion control that
-  does not take every loss for congestion (BBR) is the thing to measure.
+  does not take every loss for congestion (BBR) is the thing to measure:
+  [#82](https://github.com/yuvichh/mux/issues/82).
 - **`mux cp` from the web, far away.** At 200 ms it reaches 62% of curl.
   Each time a stream moves to another part of the file it drops its
   connection and opens another, which costs round trips and a new slow
-  start.
+  start: [#84](https://github.com/yuvichh/mux/issues/84).
 - **curl at 1 Gbit/s and 100 ms** is held to 26.5 MiB/s by the size of the
   receive window that Linux gives one TCP connection. It is the figure for
   one connection with nothing tuned, not a limit of TCP.
 - **600 ms.** Every tool spends most of a 128 MiB file getting up to speed.
 - A transfer counts progress in whole chunks. With no chunk stored for the
   stall timeout it is taken for stalled, even while bytes arrive. `mux cp`
-  from the web over 0.5 Mbit/s gave up on an 8 MiB file for that reason.
+  from the web over 0.5 Mbit/s gave up on an 8 MiB file for that reason:
+  [#83](https://github.com/yuvichh/mux/issues/83).
 
 ## Sending only what changed
 
