@@ -290,11 +290,13 @@ async fn a_folder_is_copied_with_everything_in_it() {
     let output = cp([text(&source), &into]).await;
     assert!(output.status.success(), "{}", said(&output));
     assert_same_tree(&source, &out.join("tree"));
+    // The path is the destination as it was typed, and the name. On
+    // Windows that mixes the two ways of writing a path, so it is compared
+    // as a path and not as text.
+    let told = result(&output);
+    assert_eq!(Path::new(&told[0]), out.join("tree"));
     let size = (file().len() + 9 + 1).to_string();
-    assert_eq!(
-        result(&output),
-        [text(&out.join("tree")), &size, "consistent"]
-    );
+    assert_eq!(told[1..], [size, "consistent".to_owned()]);
 
     // Under another name.
     let renamed = out.join("renamed");
