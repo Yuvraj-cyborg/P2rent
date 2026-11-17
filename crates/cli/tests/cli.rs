@@ -38,6 +38,31 @@ fn id_is_stable_across_runs() {
     assert_eq!(first, id());
 }
 
+#[test]
+fn protocols_lists_what_this_build_can_use_and_needs_no_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let key = tmp.path().join("node.key");
+    let output = mux(&key).arg("protocols").output().unwrap();
+    assert!(output.status.success());
+
+    let table = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<Vec<&str>> = table
+        .lines()
+        .map(|line| line.split_whitespace().take(3).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["SCHEME", "READ", "WRITE"],
+            ["file", "yes", "yes"],
+            ["mux", "yes", "no"],
+            ["peer", "no", "yes"],
+        ]
+    );
+    // Listing protocols is no reason to give this machine a key.
+    assert!(!key.exists());
+}
+
 /// Deterministic test data that does not compress or repeat.
 fn payload() -> Vec<u8> {
     (0..3_000_000u32)

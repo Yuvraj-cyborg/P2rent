@@ -57,7 +57,6 @@ features:
 # Run the tests that touch neither disk nor network under Miri
 miri:
     cargo +nightly miri test --locked -p model --lib
-    cargo +nightly miri test --locked -p peer --lib -- swarm::ticket::
 
 # Needs a nightly toolchain and cargo-fuzz.
 

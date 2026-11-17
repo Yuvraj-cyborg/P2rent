@@ -6,9 +6,9 @@
 //! response announces them. A frame is a big-endian `u32` length and a
 //! postcard-encoded message.
 
-use super::identity::NodeId;
 use crate::error::{Error, Result};
 use model::artifact::{Bitfield, Hash};
+use model::ticket::NodeId;
 use quinn::{RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

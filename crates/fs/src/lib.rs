@@ -18,6 +18,16 @@ pub use disk::DiskStore;
 pub use error::{Error, Result};
 pub use index::{Indexed, index, measure};
 
+use model::location::Protocol;
+
+/// The kinds of place this crate provides.
+pub const PROTOCOLS: [Protocol; 1] = [Protocol {
+    scheme: "file",
+    reads: true,
+    writes: true,
+    about: "a file or folder on this machine; a path with no scheme means the same",
+}];
+
 #[cfg(test)]
 mod tests {
     use super::*;

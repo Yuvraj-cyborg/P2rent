@@ -5,7 +5,7 @@ this table.
 
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
-| `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, and the schedule of which chunk to fetch next | nothing else |
+| `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, the schedule of which chunk to fetch next, and how a place is named: locations and tickets | nothing else |
 | `fs` | Local folders: hashing files into artifacts; reading chunks from them; writing chunks to part files that are renamed into place when whole | model |
 | `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, fs |
 | `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the three above | all of the above |
@@ -21,12 +21,14 @@ crates/
 │   ├── artifact/      hash.rs  manifest.rs  path.rs  layout.rs  bitfield.rs  wire.rs
 │   ├── assembly.rs
 │   ├── schedule.rs
+│   ├── location.rs
+│   ├── ticket.rs
 │   └── hex.rs
 ├── fs/src/            index.rs  disk.rs  io.rs
 ├── peer/
 │   ├── src/
 │   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
-│   │   ├── swarm/     node.rs  share.rs  server.rs  ticket.rs
+│   │   ├── swarm/     node.rs  share.rs  server.rs
 │   │   │   └── download/  mod.rs  session.rs  claims.rs  peer.rs
 │   │   └── sync.rs    locks that recover from poisoning
 │   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
@@ -72,6 +74,36 @@ disagree with the declared file sizes. The rules on bytes live in
 `artifact::path` and are proven: a path that passes stays inside the root,
 a link target that passes never climbs above it, and paths in order are all
 different.
+
+## Locations
+
+A **location** is the one written form for a place: a path, a web address,
+a ticket, or `peer:` for this machine serving to others.
+`model::location::Location::parse` is the only reader of that form. It
+decides what kind of place a text names and nothing more, so it needs no
+disk and no network.
+
+| Written as | Becomes |
+| --- | --- |
+| `./data`, `/srv/data`, `C:\data` | a local path, kept as typed |
+| `file:///srv/a%20b` | the local path it holds, `/srv/a b` |
+| `https://example.org/big.iso` | a web address, kept as typed |
+| `mux://<id>?peer=…` | a ticket |
+| `peer:` | this machine, serving |
+
+A text is a path unless it starts with a scheme of two or more characters
+and a colon, so a Windows drive letter is never mistaken for one. A file
+whose name would read as something else is written with `./` in front.
+
+Each backend crate declares the **protocols** it provides: the scheme, and
+whether such a place can be read, written or both. A build's list is that of
+the backends compiled into it, and `mux protocols` prints it. The parser is
+handed that list. A location of any other kind is refused with a sentence
+that says what the build can use, and whether the scheme is one mux has no
+meaning for or one it has reserved for a kind of place it cannot use yet.
+
+Printing a location gives text that reads back as the same place. That and
+"reading never panics" are checked on generated input and by a fuzz target.
 
 ## Storage
 

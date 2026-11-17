@@ -1,9 +1,8 @@
-//! Properties of tickets and wire messages, checked on generated inputs.
+//! Properties of the wire messages, checked on generated inputs.
 
 use model::artifact::{Bitfield, Hash};
 use peer::net::proto::{Have, Request, Response, Status};
 use peer::net::{NodeId, PeerInfo};
-use peer::swarm::{Ticket, TicketPeer};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use std::net::{IpAddr, SocketAddr};
@@ -14,22 +13,6 @@ fn hash() -> impl Strategy<Value = Hash> {
 
 fn node() -> impl Strategy<Value = NodeId> {
     any::<[u8; 32]>().prop_map(NodeId::from_bytes)
-}
-
-/// An address as it may be written in a ticket: an IP address or a DNS name,
-/// then a port.
-fn address() -> impl Strategy<Value = String> {
-    let host = prop_oneof![
-        any::<[u8; 4]>().prop_map(|b| IpAddr::from(b).to_string()),
-        any::<[u8; 16]>().prop_map(|b| format!("[{}]", IpAddr::from(b))),
-        "[a-z][a-z0-9-]{0,12}(\\.[a-z][a-z0-9-]{0,8}){0,2}",
-    ];
-    (host, any::<u16>()).prop_map(|(host, port)| format!("{host}:{port}"))
-}
-
-fn ticket() -> impl Strategy<Value = Ticket> {
-    let peer = (node(), address()).prop_map(|(node, addr)| TicketPeer { node, addr });
-    (hash(), vec(peer, 0..5)).prop_map(|(artifact, peers)| Ticket { artifact, peers })
 }
 
 fn bitfield() -> impl Strategy<Value = Bitfield> {
@@ -74,30 +57,6 @@ fn response() -> impl Strategy<Value = Response> {
 }
 
 proptest! {
-    #[test]
-    fn a_ticket_survives_printing_and_parsing(ticket in ticket()) {
-        let text = ticket.to_string();
-        prop_assert_eq!(text.parse::<Ticket>().unwrap(), ticket);
-    }
-
-    #[test]
-    fn parsing_a_ticket_never_panics(text in ".{0,200}") {
-        if let Ok(ticket) = text.parse::<Ticket>() {
-            // Anything accepted prints to something that parses to the same
-            // ticket: nothing is silently dropped or reinterpreted.
-            prop_assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
-        }
-    }
-
-    #[test]
-    fn parsing_a_near_ticket_never_panics(artifact in hash(), tail in "[ -~]{0,120}") {
-        let text = format!("mux://{artifact}{tail}");
-        if let Ok(ticket) = text.parse::<Ticket>() {
-            prop_assert_eq!(ticket.artifact, artifact);
-            prop_assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
-        }
-    }
-
     #[test]
     fn a_request_survives_encoding(request in request()) {
         let wire = postcard::to_allocvec(&request).unwrap();
