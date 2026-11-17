@@ -9,6 +9,8 @@
 
 pub use ::engine;
 pub use ::fs as store;
+#[cfg(feature = "web")]
+pub use ::web;
 pub use model::location::{Location, Protocol};
 pub use model::{artifact, place};
 pub use peer::{Error, Result, net, swarm};
@@ -16,7 +18,11 @@ pub use peer::{Error, Result, net, swarm};
 /// Every kind of place this build can use: the protocols of the backends
 /// compiled into it.
 pub fn protocols() -> Vec<Protocol> {
-    [&store::PROTOCOLS[..], &peer::PROTOCOLS].concat()
+    let mut all = Vec::from(store::PROTOCOLS);
+    #[cfg(feature = "web")]
+    all.extend(web::PROTOCOLS);
+    all.extend(peer::PROTOCOLS);
+    all
 }
 
 /// Reads a location as a person types it: a path, a web address or a
@@ -43,5 +49,19 @@ mod tests {
         assert!(matches!(error, Error::InvalidLocation(_)), "{error}");
         let listed: Vec<&str> = protocols().iter().map(|p| p.scheme).collect();
         assert!(error.to_string().contains(&listed.join(", ")), "{error}");
+    }
+
+    /// A web address is a place in a build that has the `web` feature, and
+    /// in one that has not, the refusal names the feature.
+    #[test]
+    fn a_web_address_is_read_by_a_build_that_can_fetch_it() {
+        let read = locate("https://example.org/big.iso");
+        if cfg!(feature = "web") {
+            let address = Location::Web("https://example.org/big.iso".into());
+            assert_eq!(read.unwrap(), address);
+        } else {
+            let refused = read.unwrap_err().to_string();
+            assert!(refused.contains("without the `web` feature"), "{refused}");
+        }
     }
 }

@@ -75,14 +75,15 @@ milestones below.
 ## Layout
 
 Crates are named for what they hold, with no project prefix. `model`,
-`engine`, `fs`, `peer` and `cli` exist today. Later milestones add the rest.
+`engine`, `fs`, `web`, `peer` and `cli` exist today. Later milestones add
+the rest.
 
 | Crate | Holds |
 | --- | --- |
 | `model` | The data model, the `Source` and `Sink` traits and the logic of a transfer. No disk and no network, so its logic can be proven. |
 | `engine` | Carries that logic out: the tasks, locks and timers a transfer needs, which `model` must not have. |
 | `fs` | Local folders. |
-| `http` | Web URLs. |
+| `web` | Web URLs. |
 | `peer` | Machine to machine. |
 | `cloud` | Cloud storage, through Apache OpenDAL. |
 | `sync` | The sync engine. |
