@@ -15,6 +15,10 @@ use crate::artifact::path::precedes;
 use crate::artifact::{Entry, EntryKind, EntryMetadata, Tree};
 use alloc::vec::Vec;
 
+/// The name of the folder, inside a destination, where a sync puts what it
+/// takes away. A sync does not read it, compare it or remove it.
+pub const TRASH: &str = ".mux-trash";
+
 /// What to do about one path, and which entry of each tree it is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Planned {
@@ -54,6 +58,17 @@ impl Plan {
             .filter_map(|planned| source.entries().get(planned.source?))
             .map(Entry::size)
             .sum()
+    }
+
+    /// Whether the plan removes more than half of what the destination has
+    /// under its root. A sync that would do so is most often one whose
+    /// source is not what it was meant to be, such as a folder that is
+    /// empty because a disk is not there.
+    pub fn removes_most(&self) -> bool {
+        // The root is the first entry of a tree, and is never removed.
+        let below_root = |planned: &&Planned| planned.destination.is_some_and(|entry| entry > 0);
+        let had = self.steps.iter().filter(below_root).count();
+        self.count(Step::Remove) * 2 > had
     }
 
     /// Whether the destination already holds what the source holds, as far

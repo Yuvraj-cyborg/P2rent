@@ -211,7 +211,7 @@ impl Copy<'_> {
             ..engine::Options::default()
         };
         let started = Instant::now();
-        let showing = Shown::new(self, &folder);
+        let showing = Shown::new(self.json, self.from, self.to, &folder);
         let copied = engine::copy(
             sources,
             name,
@@ -291,13 +291,13 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 /// The progress of one copy: a bar on standard error for a person, or
 /// lines on standard output for a program.
 #[derive(Clone)]
-enum Shown {
+pub(super) enum Shown {
     Bar(indicatif::ProgressBar),
     Lines(Arc<Lines>),
 }
 
 /// What the lines of one copy are made from.
-struct Lines {
+pub(super) struct Lines {
     source: String,
     destination: String,
     /// The folder the copy goes into.
@@ -315,13 +315,15 @@ struct Progress {
 }
 
 impl Shown {
-    fn new(copy: &Copy<'_>, folder: &Path) -> Self {
-        if !copy.json {
+    /// The progress of a copy from `from` to `to`, as they were typed,
+    /// which goes into `folder`: as lines if `json`, and as a bar if not.
+    pub(super) fn new(json: bool, from: &str, to: &str, folder: &Path) -> Self {
+        if !json {
             return Self::Bar(ui::bytes_bar(0, "copying"));
         }
         Self::Lines(Arc::new(Lines {
-            source: copy.from.to_owned(),
-            destination: copy.to.to_owned(),
+            source: from.to_owned(),
+            destination: to.to_owned(),
             folder: folder.to_owned(),
             tree: OnceLock::new(),
             progress: Mutex::new(Progress {
@@ -340,7 +342,7 @@ impl Shown {
     }
 
     /// What shows each thing the copy reports.
-    fn observer(&self) -> Observer {
+    pub(super) fn observer(&self) -> Observer {
         let shown = self.clone();
         Arc::new(move |event| match &shown {
             Self::Bar(bar) => match event {
@@ -353,7 +355,7 @@ impl Shown {
         })
     }
 
-    fn done(self) {
+    pub(super) fn done(self) {
         if let Self::Bar(bar) = self {
             bar.finish_and_clear();
         }

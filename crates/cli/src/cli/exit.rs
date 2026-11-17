@@ -34,16 +34,17 @@ impl Exit {
                 return Some(Self::of_failure(failure));
             }
             if let Some(error) = cause.downcast_ref::<engine::Error>() {
-                return Some(match error {
-                    engine::Error::Stalled(_) => Self::Unreachable,
-                    engine::Error::Changed(_) => Self::Changed,
-                    engine::Error::Unsupplied(_) => Self::Failed,
-                    engine::Error::Place(failure) => Self::of_failure(failure),
-                });
+                return Some(Self::of_copy(error));
             }
-            if let Some(mux::store::Error::Io(error)) = cause.downcast_ref() {
-                let missing = error.kind() == std::io::ErrorKind::NotFound;
-                return Some(if missing { Self::Absent } else { Self::Failed });
+            if let Some(error) = cause.downcast_ref::<mux::store::Error>() {
+                return Some(Self::of_scan(error));
+            }
+            if let Some(error) = cause.downcast_ref::<mux::sync::Error>() {
+                return Some(match error {
+                    mux::sync::Error::Copy(error) => Self::of_copy(error),
+                    mux::sync::Error::Scan(error) => Self::of_scan(error),
+                    mux::sync::Error::Stopped(_) | mux::sync::Error::Change { .. } => Self::Failed,
+                });
             }
             match cause.downcast_ref::<mux::Error>()? {
                 mux::Error::InvalidLocation(_) | mux::Error::InvalidTicket(_) => Some(Self::Usage),
@@ -54,6 +55,24 @@ impl Exit {
             }
         });
         known.unwrap_or(Self::Failed)
+    }
+
+    /// How a copy that failed ends a command.
+    fn of_copy(error: &engine::Error) -> Self {
+        match error {
+            engine::Error::Stalled(_) => Self::Unreachable,
+            engine::Error::Changed(_) => Self::Changed,
+            engine::Error::Unsupplied(_) => Self::Failed,
+            engine::Error::Place(failure) => Self::of_failure(failure),
+        }
+    }
+
+    /// How a folder that could not be looked at ends a command.
+    fn of_scan(error: &mux::store::Error) -> Self {
+        match error {
+            mux::store::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound => Self::Absent,
+            _ => Self::Failed,
+        }
     }
 
     fn of_failure(failure: &Failure) -> Self {
@@ -110,7 +129,25 @@ mod tests {
     fn a_command_ends_by_the_kind_of_its_failure() {
         let said = String::new;
         let io = |kind| mux::store::Error::Io(std::io::Error::from(kind));
-        let cases: [(anyhow::Error, Exit); 14] = [
+        let sync = |error: mux::sync::Error| anyhow::Error::from(error);
+        let cases: [(anyhow::Error, Exit); 19] = [
+            (
+                sync(engine::Error::Stalled(Duration::ZERO).into()),
+                Exit::Unreachable,
+            ),
+            (
+                sync(engine::Error::Place(Failure::Changed(said())).into()),
+                Exit::Changed,
+            ),
+            (sync(io(std::io::ErrorKind::NotFound).into()), Exit::Absent),
+            (sync(mux::sync::Error::Stopped(said())), Exit::Failed),
+            (
+                sync(mux::sync::Error::Change {
+                    path: std::path::PathBuf::new(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                }),
+                Exit::Failed,
+            ),
             (io(std::io::ErrorKind::NotFound).into(), Exit::Absent),
             (
                 io(std::io::ErrorKind::PermissionDenied).into(),

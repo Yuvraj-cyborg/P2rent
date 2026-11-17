@@ -262,3 +262,44 @@ fn files_are_compared_by_size_and_time_and_touched_for_their_permissions() {
         0
     );
 }
+
+/// A sync that would take away more than half of what is there is one to
+/// stop and ask about.
+#[test]
+fn a_plan_that_removes_more_than_half_says_so() {
+    let folder = |names: &[&str]| {
+        let recorded = EntryMetadata {
+            mode: 0o644,
+            modified: Some(Timestamp {
+                seconds: 1,
+                nanos: 0,
+            }),
+        };
+        let root = Entry {
+            path: String::new(),
+            kind: EntryKind::Directory,
+        };
+        let files = names.iter().map(|name| Entry {
+            path: (*name).to_owned(),
+            kind: EntryKind::File { size: 1 },
+        });
+        let entries = std::iter::once(root)
+            .chain(files)
+            .map(|entry| (entry, recorded));
+        Tree::new("f", MIN_CHUNK_SIZE, entries.collect()).unwrap()
+    };
+    let removes_most = |source: &[&str], destination: &[&str], remove| {
+        plan(&folder(source), Some(&folder(destination)), remove).removes_most()
+    };
+
+    // Half is not more than half.
+    assert!(!removes_most(&["a", "b"], &["a", "b", "c", "d"], true));
+    assert!(removes_most(&["a"], &["a", "b", "c", "d"], true));
+    // A source with nothing in it would empty the destination.
+    assert!(removes_most(&[], &["a"], true));
+    assert!(removes_most(&[], &["a", "b", "c"], true));
+    // Nothing is removed without leave, and nothing from nothing.
+    assert!(!removes_most(&[], &["a", "b", "c"], false));
+    assert!(!removes_most(&["a"], &[], true));
+    assert!(!plan(&folder(&["a"]), None, true).removes_most());
+}
