@@ -7,6 +7,8 @@
 // Every public item is documented.
 #![warn(missing_docs)]
 
+pub mod sync;
+
 pub use ::engine;
 pub use ::fs as store;
 #[cfg(feature = "web")]
