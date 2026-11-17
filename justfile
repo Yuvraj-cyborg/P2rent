@@ -66,9 +66,9 @@ fuzz seconds="10":
 
 # The model test swaps in loom's locks, which need their own build directory.
 
-# Check the download's shared state under every interleaving of two fetchers
+# Check a transfer's shared state under every interleaving of two fetchers
 loom:
-    RUSTFLAGS="--cfg mux_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p peer --lib --release -- interleavings::
+    RUSTFLAGS="--cfg mux_loom" CARGO_TARGET_DIR=target/loom cargo test --locked -p engine --lib --release -- interleavings::
 
 # Needs Linux, Valgrind and gungraun-runner: see docs/performance.md.
 

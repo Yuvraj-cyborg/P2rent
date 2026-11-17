@@ -7,14 +7,17 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// Locks a mutex, whether or not it is poisoned.
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+/// Locks for reading, whether or not the lock is poisoned.
+pub fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+/// Locks for writing, whether or not the lock is poisoned.
+pub fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }

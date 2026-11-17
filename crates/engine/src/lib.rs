@@ -13,8 +13,14 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 
+mod claims;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+#[cfg(test)]
+mod faults;
 mod store;
+pub mod sync;
+mod transfer;
 
-pub use store::Store;
+pub use store::{Put, Store};
+pub use transfer::{Error, Options, Summary, transfer};

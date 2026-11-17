@@ -8,7 +8,7 @@
 //! is here to try the checks on, and for tests that want a place without a
 //! disk.
 
-use crate::Store;
+use crate::{Put, Store};
 use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest,
 };
@@ -373,7 +373,8 @@ where
             .collect();
         for write in writes {
             let kept = write.await.map_err(|e| format!("a write stopped: {e}"))?;
-            ensure(kept == Ok(true), "a chunk written with others was lost")?;
+            let stored = matches!(kept, Ok(Put::Stored | Put::Completed(_)));
+            ensure(stored, "a chunk written with others was lost")?;
         }
         ensure(store.is_complete(), "writes at one moment left a gap")?;
         self.put(&store, 0).await?;
@@ -434,7 +435,8 @@ where
         short.pop();
         for bytes in [flipped, short, self.sample.chunk(1), Vec::new()] {
             let kept = store.write_chunk(0, bytes).await;
-            ensure(kept == Ok(false), "bytes that are not the chunk were taken")?;
+            let refused = kept == Ok(Put::Refused);
+            ensure(refused, "bytes that are not the chunk were taken")?;
         }
         ensure(!store.has(0), "wrong bytes were kept")?;
         let beyond = store.write_chunk(self.sample.chunks(), Vec::new()).await;
@@ -487,7 +489,10 @@ where
     async fn put(&self, store: &Arc<Store>, index: u64) -> Result<(), Wrong> {
         let kept = store.write_chunk(index, self.sample.chunk(index)).await;
         let kept = kept.map_err(|e| wrong("writing a chunk", &e))?;
-        ensure(kept, "the right bytes for a chunk were refused")
+        ensure(
+            kept != Put::Refused,
+            "the right bytes for a chunk were refused",
+        )
     }
 
     async fn same(&self, store: &Store, index: u64) -> Result<(), Wrong> {
@@ -526,11 +531,10 @@ mod tests {
         (sample, place, store)
     }
 
-    async fn put(store: &Arc<Store>, sample: &Sample, index: u64) {
-        assert_eq!(
-            store.write_chunk(index, sample.chunk(index)).await,
-            Ok(true)
-        );
+    async fn put(store: &Arc<Store>, sample: &Sample, index: u64) -> Put {
+        let put = store.write_chunk(index, sample.chunk(index)).await.unwrap();
+        assert_ne!(put, Put::Refused);
+        put
     }
 
     #[tokio::test]
@@ -562,10 +566,20 @@ mod tests {
         let (sample, place, store) = filled().await;
         // The file with no bytes is there from the start.
         assert_eq!(place.committed(2), Some(Vec::new()));
-        for index in sample.artifact.file_chunks(FIRST_FILE) {
+        let chunks = sample.artifact.file_chunks(FIRST_FILE);
+        for index in chunks.clone() {
             assert_eq!(place.committed(FIRST_FILE), None, "committed too soon");
-            put(&store, &sample, index).await;
+            // The store says which chunk made the file whole.
+            let last = index + 1 == chunks.end;
+            let expected = if last {
+                Put::Completed(FIRST_FILE)
+            } else {
+                Put::Stored
+            };
+            assert_eq!(put(&store, &sample, index).await, expected);
         }
+        // Sent again, it is a chunk the store has, and completes nothing.
+        assert_eq!(put(&store, &sample, chunks.start).await, Put::Stored);
         assert_eq!(
             place.committed(FIRST_FILE).as_ref(),
             Some(&sample.files[FIRST_FILE])

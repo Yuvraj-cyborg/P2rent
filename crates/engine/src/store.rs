@@ -3,6 +3,18 @@ use model::assembly::Assembly;
 use model::place::{Failure, Sink, Source};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
 
+/// What became of a chunk handed to a [`Store`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Put {
+    /// The bytes are not the chunk. Nothing was written.
+    Refused,
+    /// The chunk is stored.
+    Stored,
+    /// The chunk is stored, and it was the last of this file, which now has
+    /// its final name.
+    Completed(usize),
+}
+
 /// An artifact's chunks in a place, addressed by chunk index.
 ///
 /// The place moves bytes. The store does what is the same for every place:
@@ -115,8 +127,6 @@ impl Store {
     /// the place write it. When that makes a file whole, the file is
     /// committed. Call [`Store::finish`] once the last chunk is in.
     ///
-    /// Returns `false`, having written nothing, if `data` is not the chunk.
-    ///
     /// Once started, the work runs to its end even if the caller stops
     /// waiting for it, so a file is never counted as whole and left
     /// uncommitted.
@@ -125,23 +135,23 @@ impl Store {
     ///
     /// Returns a failure if the index is out of range, or if the place
     /// cannot write the chunk or commit the file.
-    pub async fn write_chunk(self: &Arc<Self>, index: u64, data: Vec<u8>) -> Result<bool, Failure> {
+    pub async fn write_chunk(self: &Arc<Self>, index: u64, data: Vec<u8>) -> Result<Put, Failure> {
         let store = self.clone();
         waiting(move || store.put(index, &data)).await
     }
 
     /// Hashes, writes and commits on the thread it is called from.
-    fn put(&self, index: u64, data: &[u8]) -> Result<bool, Failure> {
+    fn put(&self, index: u64, data: &[u8]) -> Result<Put, Failure> {
         let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
         if Some(Hash::of(data)) != self.artifact.chunk_hash(index) {
-            return Ok(false);
+            return Ok(Put::Refused);
         }
 
         let _writing = self.writing[location.file]
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if self.has(index) {
-            return Ok(true);
+            return Ok(Put::Stored);
         }
         let Some(sink) = &self.sink else {
             return Err(Failure::Fatal("this place is only read from".into()));
@@ -152,10 +162,13 @@ impl Store {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .add(index);
-        if let Some(file) = whole {
-            sink.commit(file)?;
+        match whole {
+            Some(file) => {
+                sink.commit(file)?;
+                Ok(Put::Completed(file))
+            }
+            None => Ok(Put::Stored),
         }
-        Ok(true)
     }
 
     /// Finishes the tree once the last chunk is in, and makes what was
