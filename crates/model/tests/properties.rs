@@ -217,9 +217,19 @@ proptest! {
     fn a_manifest_survives_encoding(manifest in manifest()) {
         let artifact = Artifact::new(manifest.clone()).unwrap();
         let decoded = Artifact::decode(artifact.id(), artifact.encoded().to_vec()).unwrap();
-        prop_assert_eq!(decoded.manifest(), &manifest);
-        prop_assert_eq!(decoded.id(), artifact.id());
-        prop_assert_eq!(decoded.content_id(), artifact.content_id());
+        prop_assert_eq!(&decoded, &artifact);
+        // And what was decoded says what the manifest said.
+        prop_assert_eq!(decoded.name(), &manifest.metadata.name);
+        prop_assert_eq!(decoded.chunk_size(), manifest.content.chunk_size);
+        prop_assert_eq!(decoded.entries(), &manifest.content.entries[..]);
+        let metadata: Vec<_> = (0..manifest.metadata.entries.len())
+            .map(|entry| decoded.metadata(entry).unwrap())
+            .collect();
+        prop_assert_eq!(metadata, manifest.metadata.entries);
+        let digests: Vec<_> = (0..decoded.chunk_count())
+            .map(|index| decoded.chunk_hash(index).unwrap())
+            .collect();
+        prop_assert_eq!(digests, manifest.content.chunks);
     }
 
     /// Names, permissions and times are not content: change only them and

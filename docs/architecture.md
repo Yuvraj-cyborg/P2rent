@@ -54,6 +54,12 @@ directories, and links with their targets) and the BLAKE3 digest of every
 chunk. The **metadata** holds the root's name and, for each entry, its
 permission bits and the time it was last modified.
 
+In code, the entries, their metadata and the way the files are cut into
+chunks are a `Tree`. An `Artifact` is a tree together with the digest of
+each chunk and the identifiers that follow from them. A place such as a
+folder holds a tree: it is told which digests to check what it already has
+against, and knows nothing else about them.
+
 There are two identifiers. The **content id** is a hash of the content
 alone, and names the swarm: any node holding those bytes can supply them,
 whatever its copy is called. The **artifact id** is a hash of the content id

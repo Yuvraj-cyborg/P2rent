@@ -10,9 +10,9 @@
 
 use crate::{Put, Store};
 use model::artifact::{
-    Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest,
+    Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Tree,
 };
-use model::place::{Capabilities, Failure, Pending, Sink, Source};
+use model::place::{Capabilities, Expected, Failure, Pending, Sink, Source};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// started again would.
 #[derive(Debug, Clone)]
 pub struct Memory {
-    artifact: Arc<Artifact>,
+    tree: Arc<Tree>,
     files: Arc<Mutex<Vec<Slot>>>,
     finished: Arc<AtomicBool>,
 }
@@ -35,11 +35,11 @@ struct Slot {
 }
 
 impl Memory {
-    /// An empty place for `artifact`.
-    pub fn new(artifact: Arc<Artifact>) -> Self {
-        let files = artifact.entries().iter().map(|_| Slot::default()).collect();
+    /// An empty place for `tree`.
+    pub fn new(tree: Arc<Tree>) -> Self {
+        let files = tree.entries().iter().map(|_| Slot::default()).collect();
         Self {
-            artifact,
+            tree,
             files: Arc::new(Mutex::new(files)),
             finished: Arc::default(),
         }
@@ -72,34 +72,34 @@ impl Memory {
     }
 
     /// The chunks of `file` that are right in `bytes`.
-    fn right(&self, file: usize, bytes: &[u8]) -> Vec<u64> {
-        self.artifact
+    fn right(&self, file: usize, bytes: &[u8], expected: &Expected<'_>) -> Vec<u64> {
+        self.tree
             .file_chunks(file)
             .filter(|&index| {
-                self.artifact.locate(index).is_some_and(|at| {
+                self.tree.locate(index).is_some_and(|at| {
                     let start = usize::try_from(at.offset).unwrap_or(usize::MAX);
                     let chunk = start
                         .checked_add(at.len as usize)
                         .and_then(|end| bytes.get(start..end));
-                    chunk.map(Hash::of) == self.artifact.chunk_hash(index)
+                    chunk.is_some_and(|chunk| expected(index) == Some(Hash::of(chunk)))
                 })
             })
             .collect()
     }
 
-    fn open(&self, examined: &(dyn Fn(u64) + Sync)) -> Bitfield {
-        let mut held = Bitfield::new(self.artifact.chunk_count());
-        for (file, entry) in self.artifact.entries().iter().enumerate() {
+    fn open(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Bitfield {
+        let mut held = Bitfield::new(self.tree.chunk_count());
+        for (file, entry) in self.tree.entries().iter().enumerate() {
             let EntryKind::File { size } = entry.kind else {
                 continue;
             };
             examined(size);
             let size = usize::try_from(size).unwrap_or(usize::MAX);
-            let chunks = self.artifact.file_chunks(file);
+            let chunks = self.tree.file_chunks(file);
             self.with(|files| {
                 let slot = &mut files[file];
                 let old = slot.committed.take().unwrap_or_default();
-                let reusable = self.right(file, &old);
+                let reusable = self.right(file, &old, expected);
                 let whole = old.len() == size && reusable.len() as u64 == chunks.end - chunks.start;
                 let kept = if whole {
                     // Whole and right, which a file with no bytes always is.
@@ -111,13 +111,13 @@ impl Memory {
                     let mut pending = slot.pending.take().unwrap_or_default();
                     pending.resize(size, 0);
                     for index in reusable {
-                        if let Some(at) = self.artifact.locate(index) {
+                        if let Some(at) = self.tree.locate(index) {
                             let start = usize::try_from(at.offset).unwrap_or(usize::MAX);
                             let end = start + at.len as usize;
                             pending[start..end].copy_from_slice(&old[start..end]);
                         }
                     }
-                    let right = self.right(file, &pending);
+                    let right = self.right(file, &pending, expected);
                     slot.pending = Some(pending);
                     slot.committed = (!old.is_empty()).then_some(old);
                     right
@@ -164,8 +164,12 @@ impl Sink for Memory {
         }
     }
 
-    fn begin(&self, examined: &(dyn Fn(u64) + Sync)) -> Result<Bitfield, Failure> {
-        Ok(self.open(examined))
+    fn begin(
+        &self,
+        expected: &Expected<'_>,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Bitfield, Failure> {
+        Ok(self.open(expected, examined))
     }
 
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure> {
@@ -314,7 +318,7 @@ struct Run<'a, F> {
 pub async fn check<P, F>(open: F) -> Result<(), Wrong>
 where
     P: Source + Sink + 'static,
-    F: Fn(&Arc<Artifact>, &str) -> Arc<P>,
+    F: Fn(&Arc<Tree>, &str) -> Arc<P>,
 {
     let sample = Sample::new().map_err(|error| error.to_string())?;
     let run = Run {
@@ -333,7 +337,7 @@ where
 impl<P, F> Run<'_, F>
 where
     P: Source + Sink + 'static,
-    F: Fn(&Arc<Artifact>, &str) -> Arc<P>,
+    F: Fn(&Arc<Tree>, &str) -> Arc<P>,
 {
     async fn a_new_place_holds_nothing(&self) -> Result<(), Wrong> {
         let store = self.resume("new").await?;
@@ -343,7 +347,7 @@ where
 
     async fn chunks_arrive_intact_in_any_order(&self) -> Result<(), Wrong> {
         let mut order: Vec<u64> = (0..self.sample.chunks()).collect();
-        let place = (self.open)(&self.sample.artifact, "probe");
+        let place = (self.open)(self.sample.artifact.tree(), "probe");
         if Sink::capabilities(&*place).random_access {
             order.reverse();
             order.rotate_left(2);
@@ -412,7 +416,7 @@ where
 
     /// Follows the check above, on the same place.
     async fn an_aborted_file_is_forgotten(&self) -> Result<(), Wrong> {
-        let place = (self.open)(&self.sample.artifact, "part");
+        let place = (self.open)(self.sample.artifact.tree(), "part");
         for _ in 0..2 {
             // The second time there is nothing to throw away.
             let aborted = place.abort(SECOND_FILE);
@@ -447,8 +451,9 @@ where
 
     /// Follows the check that finished the place named "together".
     async fn a_read_gives_the_whole_range_or_fails(&self) -> Result<(), Wrong> {
-        let place = (self.open)(&self.sample.artifact, "together");
-        let opened = place.begin(&|_| {});
+        let place = (self.open)(self.sample.artifact.tree(), "together");
+        let digests = &self.sample.artifact;
+        let opened = place.begin(&|index| digests.chunk_hash(index), &|_| {});
         opened.map_err(|e| wrong("opening a whole tree", &e))?;
         for (file, bytes) in self.sample.files.iter().enumerate() {
             let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
@@ -480,7 +485,7 @@ where
     }
 
     async fn resume(&self, name: &str) -> Result<Arc<Store>, Wrong> {
-        let place = (self.open)(&self.sample.artifact, name);
+        let place = (self.open)(self.sample.artifact.tree(), name);
         Store::resume(self.sample.artifact.clone(), place, |_| {})
             .await
             .map_err(|e| wrong("opening a place", &e))
@@ -524,7 +529,7 @@ mod tests {
 
     async fn filled() -> (Sample, Arc<Memory>, Arc<Store>) {
         let sample = Sample::new().unwrap();
-        let place = Arc::new(Memory::new(sample.artifact.clone()));
+        let place = Arc::new(Memory::new(sample.artifact.tree().clone()));
         let store = Store::resume(sample.artifact.clone(), place.clone(), |_| {})
             .await
             .unwrap();
@@ -540,11 +545,11 @@ mod tests {
     #[tokio::test]
     async fn a_tree_in_memory_is_a_place() {
         let places: Mutex<HashMap<String, Memory>> = Mutex::default();
-        let checked = check(|artifact, name| {
+        let checked = check(|tree, name| {
             let mut places = places.lock().unwrap();
             let place = places
                 .entry(name.to_owned())
-                .or_insert_with(|| Memory::new(artifact.clone()));
+                .or_insert_with(|| Memory::new(tree.clone()));
             Arc::new(place.clone())
         });
         assert_eq!(checked.await, Ok(()));
@@ -554,7 +559,7 @@ mod tests {
     /// was given does not pass.
     #[tokio::test]
     async fn a_place_that_forgets_does_not_pass() {
-        let checked = check(|artifact, _| Arc::new(Memory::new(artifact.clone())));
+        let checked = check(|tree, _| Arc::new(Memory::new(tree.clone())));
         assert_eq!(
             checked.await,
             Err("a finished tree is not found again".to_owned())
@@ -610,7 +615,7 @@ mod tests {
     async fn what_was_examined_is_reported() {
         use std::sync::atomic::AtomicU64;
         let sample = Sample::new().unwrap();
-        let place = Arc::new(Memory::new(sample.artifact.clone()));
+        let place = Arc::new(Memory::new(sample.artifact.tree().clone()));
         let seen = Arc::new(AtomicU64::new(0));
         let count = seen.clone();
         let examined = move |bytes| {
