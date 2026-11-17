@@ -12,6 +12,11 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// The place being read or written failed. Its kind says what can be
+    /// done about it.
+    #[error(transparent)]
+    Place(#[from] model::place::Failure),
+
     /// A manifest broke one of its invariants. The text says which.
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),

@@ -1,6 +1,6 @@
 use crate::net::{NodeId, PeerInfo};
 use crate::sync;
-use fs::DiskStore;
+use engine::Store;
 use model::artifact::{Artifact, Bitfield};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +19,7 @@ const MAX_PARTICIPANTS: usize = 4096;
 /// One artifact this node holds, fully or partly, and offers to peers.
 #[derive(Debug)]
 pub struct Share {
-    store: DiskStore,
+    store: Arc<Store>,
     participants: Mutex<HashMap<NodeId, Participant>>,
     uploaded: AtomicU64,
 }
@@ -31,7 +31,7 @@ struct Participant {
 }
 
 impl Share {
-    pub(crate) fn new(store: DiskStore) -> Self {
+    pub(crate) fn new(store: Arc<Store>) -> Self {
         Self {
             store,
             participants: Mutex::new(HashMap::new()),
@@ -44,8 +44,8 @@ impl Share {
         self.store.artifact()
     }
 
-    /// Where its chunks live on disk.
-    pub fn store(&self) -> &DiskStore {
+    /// Where its chunks are kept.
+    pub fn store(&self) -> &Arc<Store> {
         &self.store
     }
 

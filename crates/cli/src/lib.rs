@@ -1,15 +1,16 @@
 //! mux: swarm distribution of large artifacts over QUIC.
 //!
 //! This crate is the one other programs depend on. It gathers the pieces
-//! that live in their own crates: the data model, local storage and
-//! machine-to-machine transfer.
+//! that live in their own crates: the data model, the engine, local storage
+//! and machine-to-machine transfer.
 
 // Every public item is documented.
 #![warn(missing_docs)]
 
+pub use ::engine;
 pub use ::fs as store;
-pub use model::artifact;
 pub use model::location::{Location, Protocol};
+pub use model::{artifact, place};
 pub use peer::{Error, Result, net, swarm};
 
 /// Every kind of place this build can use: the protocols of the backends

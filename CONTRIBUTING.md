@@ -24,6 +24,8 @@ earn its place.
 - Before writing a function, look for one that already does the job.
 - Shared logic has one home, `model`. A backend is a thin adapter and
   does no scheduling, retrying or verifying of its own.
+- A backend shows that it is a place by running the shared checks in
+  `engine::conformance` on itself, in its own tests.
 - A dependency is added only with a stated reason.
 - Code that no test notices is deleted.
 

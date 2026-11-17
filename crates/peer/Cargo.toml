@@ -21,6 +21,7 @@ ignored = ["quinn-udp"]
 
 [dependencies]
 model.workspace = true
+engine.workspace = true
 fs.workspace = true
 dirs.workspace = true
 postcard.workspace = true

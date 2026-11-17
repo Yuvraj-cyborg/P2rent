@@ -1,6 +1,7 @@
-//! Properties of on-disk storage, checked on generated inputs.
+//! Properties of a store over a local folder, checked on generated inputs.
 
-use fs::{DiskStore, index};
+use crate::common::Store;
+use fs::index;
 use model::artifact::MIN_CHUNK_SIZE;
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -45,9 +46,9 @@ proptest! {
 
         let indexed = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
         let artifact = Arc::new(indexed.artifact);
-        let source = DiskStore::whole(artifact.clone(), indexed.root);
+        let source = Store::whole(artifact.clone(), indexed.root);
         let out = tmp.path().join("out");
-        let destination = DiskStore::resume(artifact.clone(), &out, &|_| {}).unwrap();
+        let destination = Store::resume(artifact.clone(), &out).unwrap();
         let written = |number: usize| std::fs::read(out.join("tree").join(format!("file{number}")));
 
         // A shuffled order with repeats, then whatever it missed.
@@ -73,7 +74,7 @@ proptest! {
         }
 
         prop_assert!(destination.is_complete());
-        let reopened = DiskStore::resume(artifact.clone(), &out, &|_| {}).unwrap();
+        let reopened = Store::resume(artifact.clone(), &out).unwrap();
         prop_assert!(reopened.is_complete());
         for (number, contents) in files.iter().enumerate() {
             prop_assert_eq!(&written(number).unwrap(), contents);
