@@ -2,7 +2,7 @@ use super::io;
 use crate::error::{Error, Result};
 use model::artifact::path::{depth, is_safe_target};
 use model::artifact::{
-    Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, is_part_name,
+    Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, Tree, is_part_name,
     to_usize,
 };
 use rayon::prelude::*;
@@ -69,12 +69,7 @@ impl Source {
 /// Returns an error if the path cannot be read, is neither a file nor a directory, or contains
 /// a name that a manifest cannot hold, such as one that is not UTF-8.
 pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Indexed> {
-    let root = path.canonicalize()?;
-    let name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| unsupported(&root, "has no usable UTF-8 name"))?
-        .to_owned();
+    let (root, name) = named(path)?;
     let (sources, skipped) = walk(&root)?;
 
     let per_file: Vec<Vec<Hash>> = sources
@@ -99,6 +94,49 @@ pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> R
         root,
         skipped,
     })
+}
+
+/// What is at a path, without the digest of any of it.
+#[derive(Debug)]
+pub struct Scanned {
+    /// The files, directories and links that were found.
+    pub tree: Tree,
+    /// Canonical path of the file or directory that was looked at.
+    pub root: PathBuf,
+    /// Entries that were left out, as [`Indexed::skipped`] counts them.
+    pub skipped: usize,
+}
+
+/// Looks at what is at `path` and reads none of it: the files, directories
+/// and links, with their sizes, permissions and times, as [`index`] records
+/// them.
+///
+/// # Errors
+///
+/// As for [`index`].
+pub fn scan(path: &Path, chunk_size: u32) -> Result<Scanned> {
+    let (root, name) = named(path)?;
+    let (sources, skipped) = walk(&root)?;
+    let entries = sources
+        .into_iter()
+        .map(|source| (source.entry, source.metadata))
+        .collect();
+    Ok(Scanned {
+        tree: Tree::new(name, chunk_size, entries)?,
+        root,
+        skipped,
+    })
+}
+
+/// The canonical form of `path`, and the name of what is there.
+fn named(path: &Path) -> Result<(PathBuf, String)> {
+    let root = path.canonicalize()?;
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| unsupported(&root, "has no usable UTF-8 name"))?
+        .to_owned();
+    Ok((root, name))
 }
 
 /// Total size in bytes of the regular files under `path`, for progress bars.

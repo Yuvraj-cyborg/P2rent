@@ -41,6 +41,10 @@ impl Exit {
                     engine::Error::Place(failure) => Self::of_failure(failure),
                 });
             }
+            if let Some(mux::store::Error::Io(error)) = cause.downcast_ref() {
+                let missing = error.kind() == std::io::ErrorKind::NotFound;
+                return Some(if missing { Self::Absent } else { Self::Failed });
+            }
             match cause.downcast_ref::<mux::Error>()? {
                 mux::Error::InvalidLocation(_) | mux::Error::InvalidTicket(_) => Some(Self::Usage),
                 mux::Error::Stalled(_) => Some(Self::Unreachable),
@@ -93,7 +97,13 @@ mod tests {
     #[test]
     fn a_command_ends_by_the_kind_of_its_failure() {
         let said = String::new;
-        let cases: [(anyhow::Error, Exit); 12] = [
+        let io = |kind| mux::store::Error::Io(std::io::Error::from(kind));
+        let cases: [(anyhow::Error, Exit); 14] = [
+            (io(std::io::ErrorKind::NotFound).into(), Exit::Absent),
+            (
+                io(std::io::ErrorKind::PermissionDenied).into(),
+                Exit::Failed,
+            ),
             (Failure::Absent(said()).into(), Exit::Absent),
             (Failure::Unreachable(said()).into(), Exit::Unreachable),
             (Failure::Changed(said()).into(), Exit::Changed),
