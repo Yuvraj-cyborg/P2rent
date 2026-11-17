@@ -635,10 +635,311 @@ async fn a_sync_says_what_it_would_do_to_make_a_folder_match() {
         (&1.into(), &1.into(), &1.into())
     );
     assert_eq!(plan["bytes"], 14 + 3);
+}
 
-    // Without --dry-run it says that it cannot yet, and does nothing.
-    let output = mux(["sync", text(&source), text(&mirror)]).await;
+/// Everything under `root` but the trash of a sync, by its path.
+fn held(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, common::Described> {
+    let mut all = common::listing(root);
+    all.retain(|path, _| !path.starts_with(".mux-trash"));
+    all
+}
+
+/// The one folder inside the trash of `root`: that of the one sync that
+/// put something there.
+fn trash_of(root: &Path) -> std::path::PathBuf {
+    let mut syncs: Vec<_> = std::fs::read_dir(root.join(".mux-trash"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(syncs.len(), 1, "{syncs:?}");
+    syncs.remove(0)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_makes_a_folder_match_and_keeps_what_it_takes_away() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let mirror = tmp.path().join("mirror");
+    let (from, to) = (text(&source), text(&mirror));
+
+    // The first sync brings everything, and the second finds nothing to do.
+    let output = mux(["sync", from, to]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(held(&mirror), held(&source));
+    assert!(
+        !mirror.join(".mux-trash").exists(),
+        "nothing was taken away"
+    );
+    let output = mux(["sync", from, to]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(steps(&output), []);
+    assert!(said(&output).contains("nothing to do"), "{}", said(&output));
+
+    // The source changes, and the mirror gets something of its own. One
+    // file of the source keeps what it holds and may no longer be written.
+    std::fs::write(source.join("sub/b.txt"), b"some more text").unwrap();
+    std::fs::write(source.join("new"), b"new").unwrap();
+    std::fs::remove_file(source.join("empty")).unwrap();
+    std::fs::write(mirror.join("its own"), b"kept").unwrap();
+    let locked = source.join("sub/deep/c");
+    let mut permissions = std::fs::metadata(&locked).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&locked, permissions).unwrap();
+
+    // Without leave to remove, what the mirror has and the source has not
+    // stays. What was replaced is in the trash, as it was.
+    let output = mux(["sync", from, to]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    // The file that only changed its permissions was not copied again.
+    let touched = ("touch".to_owned(), "sub/deep/c".to_owned());
+    assert!(steps(&output).contains(&touched), "{:?}", steps(&output));
+    let copy = std::fs::metadata(mirror.join("sub/deep/c")).unwrap();
+    assert!(copy.permissions().readonly());
+    assert_eq!(
+        std::fs::read(mirror.join("sub/b.txt")).unwrap(),
+        b"some more text"
+    );
+    assert_eq!(std::fs::read(mirror.join("new")).unwrap(), b"new");
+    assert_eq!(std::fs::read(mirror.join("its own")).unwrap(), b"kept");
+    assert!(mirror.join("empty").exists());
+    let trash = trash_of(&mirror);
+    assert_eq!(
+        std::fs::read(trash.join("sub/b.txt")).unwrap(),
+        b"some text"
+    );
+    assert!(said(&output).contains("is in "), "{}", said(&output));
+    std::fs::remove_dir_all(mirror.join(".mux-trash")).unwrap();
+
+    // With leave, they go: into the trash. And then the two match.
+    let output = mux(["sync", from, to, "--delete"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let removed: Vec<_> = steps(&output)
+        .into_iter()
+        .filter(|(step, _)| step == "remove")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(removed, ["empty", "its own"]);
+    let trash = trash_of(&mirror);
+    assert_eq!(std::fs::read(trash.join("its own")).unwrap(), b"kept");
+    assert_eq!(std::fs::read(trash.join("empty")).unwrap(), b"");
+    assert_eq!(held(&mirror), held(&source));
+    // The trash is not taken for something to sync, or to remove.
+    let output = mux(["sync", from, to, "--delete"]).await;
+    assert_eq!(steps(&output), []);
+    assert!(trash.join("its own").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_stops_before_it_removes_most_of_a_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let mirror = tmp.path().join("mirror");
+    let (from, to) = (text(&source), text(&mirror));
+    assert!(mux(["sync", from, to]).await.status.success());
+    let before = held(&mirror);
+
+    // The source is not there any more, as when a disk is not attached:
+    // an empty folder stands in its place.
+    let empty = tmp.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let output = mux(["sync", text(&empty), to, "--delete"]).await;
     assert_eq!(output.status.code(), Some(1), "{}", said(&output));
-    assert!(said(&output).contains("add --dry-run"), "{}", said(&output));
-    assert!(mirror.join("its own").exists() && !mirror.join("new").exists());
+    assert!(
+        said(&output).contains("more than half"),
+        "{}",
+        said(&output)
+    );
+    assert!(said(&output).contains("--force"), "{}", said(&output));
+    assert_eq!(held(&mirror), before, "something was changed");
+    assert!(!mirror.join(".mux-trash").exists());
+    // A dry run says that it would stop.
+    let output = mux(["sync", text(&empty), to, "--delete", "--dry-run"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert!(
+        said(&output).contains("a sync would stop here"),
+        "{}",
+        said(&output)
+    );
+
+    // Told to go on, it does, and everything is in the trash.
+    let output = mux(["sync", text(&empty), to, "--delete", "--force"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(held(&mirror).len(), 1, "only the folder itself is left");
+    let trash = trash_of(&mirror);
+    assert_eq!(std::fs::read(trash.join("a.bin")).unwrap(), file());
+    assert_eq!(std::fs::read(trash.join("sub/deep/c")).unwrap(), b"c");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_can_be_told_to_keep_no_trash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let mirror = tmp.path().join("mirror");
+    let (from, to) = (text(&source), text(&mirror));
+    assert!(mux(["sync", from, to]).await.status.success());
+
+    std::fs::write(source.join("sub/b.txt"), b"some more text").unwrap();
+    std::fs::remove_file(source.join("empty")).unwrap();
+    let output = mux(["sync", from, to, "--delete", "--no-trash"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(held(&mirror), held(&source));
+    assert!(!mirror.join(".mux-trash").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_in_the_way_is_replaced_only_with_leave_to_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    let mirror = tmp.path().join("mirror");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(mirror.join("x")).unwrap();
+    std::fs::write(source.join("x"), b"a file").unwrap();
+    std::fs::write(source.join("y"), b"another").unwrap();
+    std::fs::write(mirror.join("x/inside"), b"would be lost").unwrap();
+    let (from, to) = (text(&source), text(&mirror));
+
+    // Without leave, the folder stays, the rest is done, and the command
+    // says that the two do not match.
+    let output = mux(["sync", from, to]).await;
+    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert!(
+        said(&output).contains("left as it was"),
+        "{}",
+        said(&output)
+    );
+    assert_eq!(
+        std::fs::read(mirror.join("x/inside")).unwrap(),
+        b"would be lost"
+    );
+    assert_eq!(std::fs::read(mirror.join("y")).unwrap(), b"another");
+
+    // With leave, the file takes its place, and the folder is in the trash
+    // with what was in it.
+    let output = mux(["sync", from, to, "--delete"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(std::fs::read(mirror.join("x")).unwrap(), b"a file");
+    let trash = trash_of(&mirror);
+    assert_eq!(
+        std::fs::read(trash.join("x/inside")).unwrap(),
+        b"would be lost"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_file_is_synced_with_one_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("notes.txt");
+    let copy = tmp.path().join("kept").join("copy.txt");
+    std::fs::create_dir(tmp.path().join("kept")).unwrap();
+    std::fs::write(&source, b"first").unwrap();
+    let (from, to) = (text(&source), text(&copy));
+
+    let output = mux(["sync", from, to]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(std::fs::read(&copy).unwrap(), b"first");
+    assert_eq!(steps(&mux(["sync", from, to]).await), []);
+
+    // The file that is replaced is kept beside it: a file has no inside.
+    std::fs::write(&source, b"the second").unwrap();
+    let output = mux(["sync", from, to]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(std::fs::read(&copy).unwrap(), b"the second");
+    let trash = trash_of(&tmp.path().join("kept"));
+    assert_eq!(std::fs::read(trash.join("copy.txt")).unwrap(), b"first");
+
+    // A file is not synced with a folder, either way round.
+    let folder = tmp.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    for (from, to) in [(from, text(&folder)), (text(&folder), to)] {
+        let output = mux(["sync", from, to, "--delete", "--force"]).await;
+        assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+        let why = said(&output);
+        assert!(why.contains("sync a file with a file"), "{why}");
+    }
+    assert_eq!(std::fs::read(&copy).unwrap(), b"the second");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_on_the_web_is_synced_and_then_left_alone() {
+    let first = file();
+    let server = Server::start(serving(first.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+    let copy = tmp.path().join("copy.bin");
+
+    let output = mux(["sync", &url, text(&copy)]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(std::fs::read(&copy).unwrap(), first);
+    // Asked again, the server says the same size and time, and nothing of
+    // the file is fetched.
+    let asked = server.asked().len();
+    let output = mux(["sync", &url, text(&copy)]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(steps(&output), []);
+    assert_eq!(server.asked().len(), asked + 1);
+
+    // The file on the server changes, and the copy follows.
+    let second: Vec<u8> = first.iter().rev().copied().chain([7]).collect();
+    server.change(|serve| {
+        serve.file.clone_from(&second);
+        serve.etag = Some("\"v2\"".into());
+    });
+    let output = mux(["sync", &url, text(&copy), "--json"]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(std::fs::read(&copy).unwrap(), second);
+    let told = String::from_utf8_lossy(&output.stdout).into_owned();
+    let last: serde_json::Value = serde_json::from_str(told.lines().last().unwrap()).unwrap();
+    assert_eq!(last["event"], "synced");
+    assert_eq!(
+        (&last["replace"], &last["bytes"]),
+        (&1.into(), &second.len().into())
+    );
+    assert!(last["trash"].is_string(), "{last}");
+}
+
+/// A sync that is cut off has changed nothing that it cannot finish. Run
+/// again, it looks at the two places as they are and does what is left.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_that_was_cut_off_is_finished_by_running_it_again() {
+    let first = file();
+    let server = Server::start(serving(first.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+    let copy = tmp.path().join("copy.bin");
+    assert!(mux(["sync", &url, text(&copy)]).await.status.success());
+
+    // The file on the server changes, and every answer is cut a little
+    // way into its second chunk.
+    let second: Vec<u8> = first.iter().rev().copied().chain([7]).collect();
+    server.change(|serve| {
+        serve.file.clone_from(&second);
+        serve.etag = Some("\"v2\"".into());
+    });
+    server.fail(Fault::Cut(1_048_576 + 100), usize::MAX);
+    let cut = mux([
+        "sync",
+        &url,
+        text(&copy),
+        "--streams",
+        "1",
+        "--stall-timeout",
+        "2",
+    ])
+    .await;
+    assert_eq!(cut.status.code(), Some(4), "{}", said(&cut));
+    assert!(
+        said(&cut).contains("hint: run the same command again"),
+        "{}",
+        said(&cut)
+    );
+    // The copy is still the whole of the first version.
+    assert_eq!(std::fs::read(&copy).unwrap(), first);
+
+    server.heal();
+    let again = mux(["sync", &url, text(&copy)]).await;
+    assert!(again.status.success(), "{}", said(&again));
+    assert_eq!(std::fs::read(&copy).unwrap(), second);
 }

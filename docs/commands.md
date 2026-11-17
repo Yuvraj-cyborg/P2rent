@@ -96,34 +96,59 @@ read at several points at once, or only in order from its start.
 ## `mux sync`
 
 ```console
-$ mux sync <SOURCE> <DESTINATION> --dry-run
+$ mux sync <SOURCE> <DESTINATION>
 ```
 
-Says what it would take to make the destination hold what the source holds.
-The destination is the folder that is made to match: `mux sync ./a ./b`
-makes `./b` match `./a`, where `mux cp ./a ./b/` puts a copy of `a` inside
-`b`.
-
-Today `sync` only says what it would do, and needs `--dry-run`. Doing it is
-the next step.
+Makes the destination hold what the source holds, and reads from the source
+only what the destination lacks or has in another version. The source is a
+web address, a file or a folder. The destination is the folder, or the
+file, that is made to match: `mux sync ./a ./b` makes `./b` match `./a`,
+where `mux cp ./a ./b/` puts a copy of `a` inside `b`.
 
 ```console
-$ mux sync ./weights /mnt/backup/weights --dry-run --delete
+$ mux sync ./weights /mnt/backup/weights --delete
 remove	old-notes.txt
 add	run-7/config.json
 replace	run-7/model.bin
 ```
 
-Standard output has one line for each path where there is something to do,
+Standard output has one line for each path where there was something to do,
 with a tab between the step and the path. `.` is the destination itself.
 
 | Step | Meaning |
 | --- | --- |
-| `add` | The destination has nothing there. |
-| `replace` | The destination has something else there. |
-| `touch` | It holds the same, with other permissions or another time. |
+| `add` | The destination had nothing there. |
+| `replace` | The destination had something else there. |
+| `touch` | It held the same, with other permissions or another time. |
 | `remove` | The source has nothing there. Only with `--delete`. |
-| `blocked` | The destination has a folder where the source has a file or a link, and without `--delete` nothing is removed, so it is left as it is. |
+| `blocked` | The destination has a folder where the source has a file or a link. Without `--delete` nothing is removed, so it is left as it is, and the command ends with 1. |
+
+| Option | Meaning |
+| --- | --- |
+| `--dry-run` | Say what would be done, and do none of it. |
+| `--delete` | Take away what the destination has and the source has not. Without it nothing is ever removed. |
+| `--force` | Go on though more than half of what the destination has would be removed. |
+| `--no-trash` | Keep nothing of what is replaced or removed. |
+| `--streams`, `--stall-timeout` | As for `cp`. |
+| `--json` | Write for a program: a `step` line for each step, the lines of the copy, and a `synced` line at the end, or `sync_plan` with `--dry-run`. |
+
+### What keeps a sync from losing files
+
+- **Nothing is removed unless it is asked for.** Without `--delete`, what
+  only the destination has is left alone.
+- **What is replaced or removed goes to a trash folder first:**
+  `.mux-trash` inside the destination, with a folder for each sync, and
+  each thing under the path it had. A file that is being replaced stays
+  where it is until the new one is whole. The trash is never synced or
+  removed by `mux`. Delete it when it is not wanted, or pass `--no-trash`.
+- **A sync that would remove more than half of what the destination has
+  stops** before it changes anything, and says so. That is what a sync
+  from a folder that is empty by mistake looks like. `--force` goes on.
+- **A file has its final name only when it is whole,** as with `cp`.
+- **A sync that is interrupted is run again.** It looks at the two places
+  as they are and does what is left.
+
+### What counts as the same
 
 Two files are taken to hold the same if they have the same size and were
 last changed in the same second. This is the check `rsync` makes by
@@ -135,13 +160,8 @@ What a system cannot keep is not compared. On Windows that is a file's
 permissions beyond whether it may be written, and a folder's permissions
 and time.
 
-| Option | Meaning |
-| --- | --- |
-| `--dry-run` | Say what would be done, and do none of it. |
-| `--delete` | Take away what the destination has and the source has not. Without it nothing is ever removed. |
-| `--json` | Write for a program: a `step` line for each step and a `sync_plan` line after them. |
-
-The decision for each path is proven: see [proofs](../proofs/README.md).
+A file is synced with a file and a folder with a folder. The decision for
+each path is proven: see [proofs](../proofs/README.md).
 
 ## For a program
 
@@ -159,8 +179,9 @@ field away or changes what one means.
 | `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
 | `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
 | `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest` |
-| `step` | One thing a sync would do, with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
-| `sync_plan` | After the steps of a sync. | `source`, `destination`, how many paths get each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), and `bytes` to bring |
+| `step` | One thing a sync does, or would do with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
+| `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` brought, and `trash`: where what was replaced or removed is, or `null` |
+| `sync_plan` | In place of `synced`, with `--dry-run`. | The same, without `trash` |
 | `error` | The command failed. It is the last line. | `code`, the exit code; `kind`, the same in a word; `message`; `hint`, or `null` |
 
 `checked` is `verified`, `consistent` or `already there`, as on standard

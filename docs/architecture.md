@@ -298,6 +298,23 @@ the same second. Before two trees are compared, each is put as the local
 system keeps it (`fs::as_kept`), so that what a system has no way to keep
 is not found different on every run.
 
+`mux::sync` carries a plan out on a local folder, in an order that loses
+nothing:
+
+```
+look at both places ─► plan ─► stop if a rule forbids it
+   ─► move to the trash what is removed, or is in the way of another kind
+   ─► give each file that will be replaced a second name in the trash
+   ─► copy what is added or replaced, and every directory (engine::copy over engine::part)
+   ─► set the permissions of what is only touched
+```
+
+A file that is replaced keeps its name until the new one is renamed over
+it, and its second name in the trash keeps it after that. `engine::part` is
+a source that holds some of the entries of another, so the copy is the
+ordinary one: part files, notes to carry on from, and a directory's time
+put right after what was done inside it.
+
 ## Network
 
 Each node has an Ed25519 key pair stored at `<config dir>/mux/node.key`.

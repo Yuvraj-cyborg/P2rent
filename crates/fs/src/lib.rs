@@ -13,10 +13,12 @@ mod error;
 mod folder;
 mod index;
 mod io;
+mod trash;
 
 pub use error::{Error, Result};
 pub use folder::Folder;
 pub use index::{Indexed, Scanned, as_kept, index, measure, scan};
+pub use trash::{Trash, remove, touch};
 
 use model::location::Protocol;
 

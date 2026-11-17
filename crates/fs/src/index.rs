@@ -5,6 +5,7 @@ use model::artifact::{
     Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, Tree, is_part_name,
     to_usize,
 };
+use model::mirror::TRASH;
 use rayon::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -205,6 +206,14 @@ fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
     while let Some(entry) = entries.next() {
         let entry = entry.map_err(std::io::Error::from)?;
         let file_type = entry.file_type();
+        // What a sync took away from this folder is not part of what the
+        // folder holds.
+        if entry.depth() == 1 && entry.file_name() == TRASH {
+            if file_type.is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
         // A part file is this program's own unfinished work, and no manifest
         // may name one.
         if entry.file_name().to_str().is_some_and(is_part_name) {

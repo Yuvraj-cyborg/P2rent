@@ -1,16 +1,20 @@
 //! `mux sync`: make a folder hold what a place holds.
 //!
-//! Today it says what it would do, and does none of it. What to do about
-//! each path is decided in the library, by `mux::mirror`.
+//! This file reads the command line and says what happened. What to do
+//! about each path is decided by `mux::mirror`, and it is carried out by
+//! `mux::sync`.
 
-use super::cp;
+use super::cp::{self, Shown};
 use super::tell::{self, Line};
 use super::ui;
 use anyhow::{Context, bail};
-use mux::artifact::{DEFAULT_CHUNK_SIZE, Tree};
-use mux::mirror::{self, Plan, Step};
-use mux::{Location, engine, store};
-use std::path::PathBuf;
+use mux::Location;
+use mux::artifact::Tree;
+use mux::engine;
+use mux::mirror::Step;
+use mux::sync::{Looked, Options, look, sync};
+use std::path::Path;
+use std::time::Duration;
 
 #[derive(clap::Args)]
 pub(super) struct Args {
@@ -29,15 +33,45 @@ pub(super) struct Args {
     /// Say what would be done, and do none of it
     #[arg(long)]
     dry_run: bool,
+
+    #[command(flatten)]
+    care: Care,
+
+    /// Parts of a file to fetch at once from the source
+    #[arg(long, default_value_t = 4, value_name = "N")]
+    streams: usize,
+
+    /// Give up after this long without receiving any data
+    #[arg(long, default_value_t = 60, value_name = "SECONDS")]
+    stall_timeout: u64,
+}
+
+/// The two rules that keep a sync from losing what a person would want
+/// back, and how to set each aside.
+#[derive(clap::Args)]
+struct Care {
+    /// Keep nothing of what is taken away or replaced. Without this it is
+    /// moved to a folder named `.mux-trash` inside the destination.
+    #[arg(long)]
+    no_trash: bool,
+
+    /// Go on though more than half of what the destination has would be
+    /// removed
+    #[arg(long)]
+    force: bool,
+}
+
+/// Whether a sync was carried out, or only looked at.
+#[derive(Clone, Copy)]
+enum Told<'a> {
+    /// It was only looked at.
+    Planned,
+    /// It was carried out, and what it took away is in `trash`, if it took
+    /// anything away and kept it.
+    Done { trash: Option<&'a str> },
 }
 
 pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
-    if !args.dry_run {
-        bail!(
-            "`sync` can say what it would do and cannot do it yet: add --dry-run. \
-             `mux cp` copies everything."
-        );
-    }
     let source = mux::locate(&args.source)?;
     let Location::Local(to) = mux::locate(&args.destination)? else {
         bail!("{} is not a folder on this machine", args.destination);
@@ -49,29 +83,45 @@ pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
     let sources = cp::sources(&source, Some(&inside), None, &[])
         .await
         .with_context(|| format!("cannot look at {source}"))?;
-    let wanted = engine::plan(&sources, None, DEFAULT_CHUNK_SIZE)
-        .await
-        .with_context(|| format!("cannot look at {source}"))?;
-    let wanted = store::as_kept(&wanted.tree)?;
-    let there = there(PathBuf::from(&to))
-        .await
-        .with_context(|| format!("cannot look at {to}"))?;
+    let to = Path::new(&to);
 
-    let plan = mirror::plan(&wanted, there.as_ref(), args.delete);
-    say(args, json, &plan, &wanted, there.as_ref());
+    if args.dry_run {
+        let looked = look(&sources, to, args.delete).await?;
+        say(args, json, &looked, Told::Planned);
+        if let Some(why) = looked.stopped(args.care.force) {
+            eprintln!("note: a sync would stop here: {why}");
+        }
+        return Ok(());
+    }
+
+    let options = Options {
+        remove: args.delete,
+        trash: !args.care.no_trash,
+        force: args.care.force,
+        limits: engine::Options {
+            requests_per_supplier: args.streams.max(1),
+            stall_timeout: Duration::from_secs(args.stall_timeout),
+            ..engine::Options::default()
+        },
+    };
+    let folder = to.parent().unwrap_or(Path::new("."));
+    let showing = Shown::new(json, &args.source, &args.destination, folder);
+    let synced = sync(sources, to, &options, showing.observer()).await;
+    showing.done();
+    let synced = synced?;
+
+    let trash = synced.trash.as_deref().map(Path::to_string_lossy);
+    let trash = trash.as_deref();
+    say(args, json, &synced.looked, Told::Done { trash });
+    let blocked = synced.looked.plan.count(Step::Blocked);
+    if blocked > 0 {
+        bail!(
+            "{} left as it was: a folder is where the source has something else. With \
+             --delete the folder is replaced.",
+            ui::plural(blocked, "path")
+        );
+    }
     Ok(())
-}
-
-/// What is at the destination now, as this system keeps it. Nothing, if
-/// nothing is there.
-async fn there(path: PathBuf) -> anyhow::Result<Option<Tree>> {
-    let scanned =
-        tokio::task::spawn_blocking(move || match store::scan(&path, DEFAULT_CHUNK_SIZE) {
-            Ok(scanned) => store::as_kept(&scanned.tree).map(Some),
-            Err(store::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        });
-    Ok(scanned.await.context("looking at it was cut short")??)
 }
 
 /// The word for a step.
@@ -91,15 +141,16 @@ fn path_of(tree: Option<&Tree>, entry: Option<usize>) -> Option<&str> {
     Some(tree?.entries().get(entry?)?.path.as_str())
 }
 
-/// Says what the plan would do: a line for each path where there is
-/// something to do, and then how much of each there is.
-fn say(args: &Args, json: bool, plan: &Plan, wanted: &Tree, there: Option<&Tree>) {
+/// Says what there was to do: a line for each path where there was
+/// something, and then how much of each.
+fn say(args: &Args, json: bool, looked: &Looked, told: Told<'_>) {
+    let (plan, wanted, was) = (&looked.plan, &looked.wanted, looked.was.as_ref());
     for planned in &plan.steps {
         if planned.step == Step::Keep {
             continue;
         }
         let path =
-            path_of(Some(wanted), planned.source).or_else(|| path_of(there, planned.destination));
+            path_of(Some(wanted), planned.source).or_else(|| path_of(was, planned.destination));
         // The root has no path of its own.
         let path = match path {
             None | Some("") => ".",
@@ -116,16 +167,34 @@ fn say(args: &Args, json: bool, plan: &Plan, wanted: &Tree, there: Option<&Tree>
     let count = |step| plan.count(step);
     let bytes = plan.bytes(wanted);
     if json {
-        tell::say(&Line::SyncPlan {
-            source: &args.source,
-            destination: &args.destination,
-            add: count(Step::Add),
-            replace: count(Step::Replace),
-            touch: count(Step::Touch),
-            remove: count(Step::Remove),
-            keep: count(Step::Keep),
-            blocked: count(Step::Blocked),
-            bytes,
+        let (source, destination) = (args.source.as_str(), args.destination.as_str());
+        let (add, replace, touch) = (count(Step::Add), count(Step::Replace), count(Step::Touch));
+        let (remove, keep) = (count(Step::Remove), count(Step::Keep));
+        let blocked = count(Step::Blocked);
+        tell::say(&match told {
+            Told::Done { trash } => Line::Synced {
+                source,
+                destination,
+                add,
+                replace,
+                touch,
+                remove,
+                keep,
+                blocked,
+                bytes,
+                trash,
+            },
+            Told::Planned => Line::SyncPlan {
+                source,
+                destination,
+                add,
+                replace,
+                touch,
+                remove,
+                keep,
+                blocked,
+                bytes,
+            },
         });
         return;
     }
@@ -133,20 +202,34 @@ fn say(args: &Args, json: bool, plan: &Plan, wanted: &Tree, there: Option<&Tree>
         eprintln!("nothing to do: {} already matches", args.destination);
         return;
     }
+    // The same counts, as what was done or as what would be.
+    let words = match told {
+        Told::Done { .. } => ["added", "replaced", "touched", "removed", "brought"],
+        Told::Planned => ["would add", "replace", "touch", "remove", "to bring"],
+    };
     eprintln!(
-        "would add {}, replace {}, touch {} and remove {}, and keep {}  ({} to bring)",
+        "{} {}, {} {}, {} {} and {} {}, and kept {}  ({} {})",
+        words[0],
         count(Step::Add),
+        words[1],
         count(Step::Replace),
+        words[2],
         count(Step::Touch),
+        words[3],
         count(Step::Remove),
         count(Step::Keep),
         ui::bytes(bytes),
+        words[4],
     );
-    if count(Step::Blocked) > 0 {
-        eprintln!(
+    match told {
+        Told::Done { trash: Some(trash) } => {
+            eprintln!("what was replaced or removed is in {trash}");
+        }
+        Told::Planned if count(Step::Blocked) > 0 => eprintln!(
             "note: {} blocked: a folder is where the source has something else, and nothing \
              is removed without --delete",
             ui::plural(count(Step::Blocked), "path")
-        );
+        ),
+        _ => {}
     }
 }
