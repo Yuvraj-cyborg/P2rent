@@ -14,7 +14,7 @@ Five modules of `crates/model` are translated:
 | `artifact::layout` | Which file, offset and length each chunk has. |
 | `artifact::path` | Which names, paths and link targets a manifest may use. |
 | `assembly` | Which files are whole, and so may take their final names. |
-| `schedule` | Which chunk to fetch next, and what state each is in. |
+| `schedule` | Which chunk to fetch next, what state each is in, and who is fetching it. |
 
 The theorems are in `Model/`, one file per module, each beginning with a
 plain statement of what it proves.

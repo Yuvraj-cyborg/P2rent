@@ -54,16 +54,24 @@ structure assembly.Assembly where
   missing : alloc.vec.Vec Std.U64
 
 /-- [model::schedule::ChunkState]
-    Source: 'crates/model/src/schedule.rs', lines 11:0-18:1
+    Source: 'crates/model/src/schedule.rs', lines 15:0-22:1
     Visibility: public -/
 @[discriminant isize]
 inductive schedule.ChunkState where
 | Missing : schedule.ChunkState
-| InFlight : schedule.ChunkState
+| InFlight : Std.U32 → schedule.ChunkState
 | Done : schedule.ChunkState
 
+/-- [model::schedule::Outcome]
+    Source: 'crates/model/src/schedule.rs', lines 26:0-31:1
+    Visibility: public -/
+@[discriminant isize]
+inductive schedule.Outcome where
+| Verified : schedule.Outcome
+| Failed : schedule.Outcome
+
 /-- [model::schedule::Schedule]
-    Source: 'crates/model/src/schedule.rs', lines 25:0-28:1
+    Source: 'crates/model/src/schedule.rs', lines 38:0-41:1
     Visibility: public -/
 structure schedule.Schedule where
   chunks : alloc.vec.Vec schedule.ChunkState

@@ -21,7 +21,7 @@ use gungraun::{Callgrind, EventKind};
 use model::artifact::{
     Artifact, Bitfield, DEFAULT_CHUNK_SIZE, Entry, EntryKind, EntryMetadata, Hash, Manifest,
 };
-use model::schedule::Schedule;
+use model::schedule::{Outcome, Schedule};
 use std::hint::black_box;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -169,8 +169,8 @@ fn claim_every_chunk(chunks: u64) -> (u64, Schedule) {
     let mut schedule = Schedule::new(&Bitfield::new(chunks));
     let mut cursor = 0;
     let mut claimed = 0;
-    while let Some(index) = schedule.claim(black_box(&available), &mut cursor) {
-        schedule.complete(index);
+    while let Some(index) = schedule.claim(0, black_box(&available), &mut cursor) {
+        schedule.settle(index, 0, Outcome::Verified);
         claimed += 1;
     }
     (black_box(claimed), schedule)

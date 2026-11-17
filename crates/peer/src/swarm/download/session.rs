@@ -4,7 +4,9 @@ use crate::net::{NodeId, PeerInfo};
 use crate::swarm::{Node, Share};
 use crate::sync;
 use model::artifact::{Artifact, Bitfield};
+use model::schedule::Owner;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
@@ -19,6 +21,8 @@ pub(super) struct Session {
     /// Woken when a chunk is released or the download completes.
     pub wake: Arc<Notify>,
     claims: Shared,
+    /// The number the next connection fetches under.
+    owners: AtomicU32,
     discovered: mpsc::UnboundedSender<PeerInfo>,
     fetched_from: Mutex<HashMap<NodeId, u64>>,
 }
@@ -44,6 +48,7 @@ impl Session {
             progress,
             wake,
             claims,
+            owners: AtomicU32::new(0),
             discovered,
             fetched_from: Mutex::new(HashMap::new()),
         })
@@ -58,9 +63,21 @@ impl Session {
         self.claims.last_progress()
     }
 
-    /// Reserves a missing chunk that the peer holds, scanning from `cursor`.
-    pub(super) fn claim(&self, peer_has: &Bitfield, cursor: &mut u64) -> Option<Claim> {
-        Claims::claim(&self.claims, peer_has, cursor)
+    /// A number for one connection to fetch under, so that the schedule
+    /// knows whose each chunk in flight is.
+    pub(super) fn new_owner(&self) -> Owner {
+        self.owners.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Reserves for `owner` a missing chunk that the peer holds, scanning
+    /// from `cursor`.
+    pub(super) fn claim(
+        &self,
+        owner: Owner,
+        peer_has: &Bitfield,
+        cursor: &mut u64,
+    ) -> Option<Claim> {
+        Claims::claim(&self.claims, owner, peer_has, cursor)
     }
 
     /// Records a chunk that the store has verified and written to disk.
