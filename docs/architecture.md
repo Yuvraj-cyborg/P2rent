@@ -45,7 +45,7 @@ crates/
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
-benches/               instructions.rs  transfer.rs  web.rs (see docs/performance.md)
+benches/               instructions.rs  transfer.rs  web.rs  delta.rs (see docs/performance.md)
 fuzz/                  fuzz targets, a workspace of their own
 proofs/                Lean proofs of the logic in `model`
 xtask/                 development tasks written in Rust (`cargo xtask`)
