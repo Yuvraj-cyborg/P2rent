@@ -15,6 +15,7 @@
 use crate::artifact::Bitfield;
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
@@ -125,4 +126,87 @@ pub trait Sink: fmt::Debug + Send + Sync {
     ///
     /// Returns a failure if the tree cannot be finished.
     fn finish(&self) -> Result<(), Failure>;
+}
+
+/// Tells one supplier from another within a transfer: a node id for a
+/// machine, a digest of its address for a web server.
+pub type SupplierId = [u8; 32];
+
+/// Something that can supply the chunks of one artifact: another machine, a
+/// web server, a folder.
+///
+/// The engine decides which chunk to ask each supplier for, checks what
+/// comes back, and stops using a supplier that sends anything wrong. A
+/// supplier fetches bytes and nothing more.
+pub trait Supplier: fmt::Debug + Send + Sync {
+    /// What tells this supplier from every other.
+    fn id(&self) -> SupplierId;
+
+    /// Reaches the supplier. Nothing is asked of it before this, and
+    /// dropping what is returned lets go of it.
+    fn open(&self) -> Pending<'_, Arc<dyn Supply>>;
+}
+
+/// A supplier that has been reached.
+pub trait Supply: fmt::Debug + Send + Sync {
+    /// Says which chunks the supplier holds now and which other suppliers
+    /// it knows of. It is asked again from time to time, because a supplier
+    /// that is itself still fetching gains chunks.
+    fn status(&self) -> Pending<'_, Status>;
+
+    /// Fetches chunk `index`. The failure is [`Failure::Absent`] if the
+    /// supplier turns out not to hold it.
+    fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>>;
+}
+
+/// What a supplier says about itself.
+#[derive(Debug)]
+pub struct Status {
+    /// The chunks it holds.
+    pub held: Bitfield,
+    /// Other suppliers of the same artifact that it knows of.
+    pub others: Vec<Arc<dyn Supplier>>,
+}
+
+/// Something that happened in a transfer. The engine reports each one as it
+/// happens, to whoever wants to show or record it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// A supplier was reached and is in use.
+    Opened {
+        /// The supplier.
+        supplier: SupplierId,
+    },
+    /// A supplier is no longer in use.
+    Closed {
+        /// The supplier.
+        supplier: SupplierId,
+    },
+    /// A chunk arrived, was checked and is stored.
+    Stored {
+        /// Where it came from.
+        supplier: SupplierId,
+        /// Its size.
+        bytes: u64,
+    },
+    /// A file is whole and has its final name.
+    Committed {
+        /// Its position among the entries of the tree.
+        file: usize,
+    },
+}
+
+/// Called with each event of a transfer.
+pub type Observer = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// How far the bytes of a finished transfer were checked. A transfer is
+/// never reported as more than was checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification {
+    /// The digest of every chunk was known before the transfer began, and
+    /// every chunk was compared with it before it was kept.
+    Verified,
+    /// No digest was known. The size and the server's validator stayed the
+    /// same throughout, and the digest was computed and reported.
+    Consistent,
 }

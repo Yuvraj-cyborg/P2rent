@@ -250,6 +250,20 @@ One design was measured and dropped:
 | Every operation on a place returns a future, and a folder does each one on a thread of its own choosing | Tried first. Checking a chunk and writing it became two hand-offs between threads where there had been one, and CPU seconds per GiB rose by 1.3% (6.86 against 6.77). |
 | Reading returns a future. Writing is a plain call, which the engine makes on the thread that has just checked the chunk | Kept. One hand-off for each chunk, as before. |
 
+The loop that fetches chunks then moved from `peer` to the engine, where it
+works for any supplier and not only for another machine. It gained four
+rules that keep a transfer from stalling (see
+[architecture.md](architecture.md#transfer)), and each chunk that arrives is
+now stored and counted in a task of its own. None of it shows in the
+figures:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| All eight instruction benchmarks | | identical, to the instruction |
+| One 1 GiB file | 414 MiB/s, 6.83 CPU s/GiB | 386 MiB/s, 6.80 CPU s/GiB |
+| 1 GiB in 2000 files | 431 MiB/s, 6.88 CPU s/GiB | 434 MiB/s, 6.95 CPU s/GiB |
+| One 1 GiB file from two seeders | 654 MiB/s, 6.68 CPU s/GiB | 646 MiB/s, 6.65 CPU s/GiB |
+
 ## The fast path
 
 `unsafe`, SIMD intrinsics and assembly are allowed in one crate, `accel`,

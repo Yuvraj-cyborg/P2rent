@@ -5,9 +5,8 @@
 //! interleaving of two fetchers by the model test at the bottom.
 
 use model::artifact::Bitfield;
-use model::schedule::{Outcome, Owner, Schedule};
+use model::schedule::{ChunkState, Outcome, Owner, Schedule};
 use std::sync::PoisonError;
-use std::time::Instant;
 
 // The model test swaps in lock and reference-count types that let it
 // explore every interleaving.
@@ -16,58 +15,57 @@ use loom::sync::{Arc, Mutex, MutexGuard};
 #[cfg(not(mux_loom))]
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// How the rest of the download holds the claims. Its type follows the
+/// How the rest of a transfer holds the claims. Its type follows the
 /// reference count in use, which differs under the model test.
-pub(super) type Shared = Arc<Claims>;
-
-struct State {
-    schedule: Schedule,
-    last_progress: Instant,
-}
+pub(crate) type Shared = Arc<Claims>;
 
 /// Which chunks are missing, being fetched and done, shared by every task
-/// working on one download.
-pub(super) struct Claims {
-    state: Mutex<State>,
+/// working on one transfer.
+pub(crate) struct Claims {
+    schedule: Mutex<Schedule>,
     /// Called when a chunk is put back or the last one completes, so that
     /// fetchers with nothing to do look again.
     wake: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Claims {
-    pub(super) fn new(have: &Bitfield, wake: impl Fn() + Send + Sync + 'static) -> Shared {
+    pub(crate) fn new(have: &Bitfield, wake: impl Fn() + Send + Sync + 'static) -> Shared {
         Arc::new(Self {
-            state: Mutex::new(State {
-                schedule: Schedule::new(have),
-                last_progress: Instant::now(),
-            }),
+            schedule: Mutex::new(Schedule::new(have)),
             wake: Box::new(wake),
         })
     }
 
     // A poisoned lock is recovered: see `crate::sync`.
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    fn schedule(&self) -> MutexGuard<'_, Schedule> {
+        self.schedule.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(super) fn is_complete(&self) -> bool {
-        self.state().schedule.is_complete()
+    pub(crate) fn is_complete(&self) -> bool {
+        self.schedule().is_complete()
     }
 
-    /// When a chunk was last completed, or when the download started.
-    pub(super) fn last_progress(&self) -> Instant {
-        self.state().last_progress
+    /// Whether the supplier fetching as `owner`, which holds `available`,
+    /// has work: a chunk it is fetching, or one it holds that is missing
+    /// and that nobody is fetching.
+    pub(crate) fn has_work_for(&self, owner: Owner, available: &Bitfield) -> bool {
+        let schedule = self.schedule();
+        (0..schedule.len()).any(|index| match schedule.state(index) {
+            Some(ChunkState::Missing) => available.get(index),
+            Some(ChunkState::InFlight(by)) => by == owner,
+            Some(ChunkState::Done) | None => false,
+        })
     }
 
     /// Reserves for `owner` a missing chunk that `available` holds,
     /// searching from `cursor`. See [`Schedule::claim`].
-    pub(super) fn claim(
+    pub(crate) fn claim(
         claims: &Shared,
         owner: Owner,
         available: &Bitfield,
         cursor: &mut u64,
     ) -> Option<Claim> {
-        let index = claims.state().schedule.claim(owner, available, cursor)?;
+        let index = claims.schedule().claim(owner, available, cursor)?;
         Some(Claim {
             claims: claims.clone(),
             index,
@@ -77,15 +75,12 @@ impl Claims {
     }
 
     /// Records a chunk that has been verified and stored.
-    pub(super) fn complete(&self, mut claim: Claim) {
+    pub(crate) fn complete(&self, mut claim: Claim) {
         claim.settled = true;
         let finished = {
-            let mut state = self.state();
-            state
-                .schedule
-                .settle(claim.index, claim.owner, Outcome::Verified);
-            state.last_progress = Instant::now();
-            state.schedule.is_complete()
+            let mut schedule = self.schedule();
+            schedule.settle(claim.index, claim.owner, Outcome::Verified);
+            schedule.is_complete()
         };
         if finished {
             (self.wake)();
@@ -93,14 +88,14 @@ impl Claims {
     }
 
     fn release(&self, index: u64, owner: Owner) {
-        self.state().schedule.settle(index, owner, Outcome::Failed);
+        self.schedule().settle(index, owner, Outcome::Failed);
         (self.wake)();
     }
 }
 
 /// A reserved chunk. Dropping it without completing puts the chunk back, so
 /// a cancelled or failed request never strands a chunk.
-pub(super) struct Claim {
+pub(crate) struct Claim {
     claims: Shared,
     pub index: u64,
     owner: Owner,
@@ -120,7 +115,6 @@ mod interleavings {
     use super::*;
     use loom::sync::atomic::{AtomicBool, Ordering};
     use loom::thread;
-    use model::schedule::ChunkState;
 
     const CHUNKS: u64 = 2;
 
@@ -184,10 +178,10 @@ mod interleavings {
                 let_go(&held, &claim);
                 claims.complete(claim);
             }
-            let state = claims.state();
-            assert!(state.schedule.is_complete());
+            let schedule = claims.schedule();
+            assert!(schedule.is_complete());
             for index in 0..CHUNKS {
-                assert_eq!(state.schedule.state(index), Some(ChunkState::Done));
+                assert_eq!(schedule.state(index), Some(ChunkState::Done));
             }
         });
     }

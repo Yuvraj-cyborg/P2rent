@@ -10,3 +10,7 @@
 
 # Mutation testing output.
 /mutants.out*
+
+# Failing cases the property tests saved. Each one is kept as a named test
+# instead.
+proptest-regressions/
