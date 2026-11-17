@@ -69,6 +69,15 @@ fn text(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
+/// Checks the line on standard output. The path in it is the destination
+/// as it was typed, with the name after it. On Windows that can mix the two
+/// ways of writing a path, so it is compared as a path and not as text.
+fn assert_result(output: &Output, path: &Path, size: &str, checked: &str) {
+    let told = result(output);
+    assert_eq!(Path::new(&told[0]), path);
+    assert_eq!(told[1..], [size, checked]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_web_address_is_copied_into_a_folder_or_under_a_name() {
     let file = file();
@@ -290,13 +299,8 @@ async fn a_folder_is_copied_with_everything_in_it() {
     let output = cp([text(&source), &into]).await;
     assert!(output.status.success(), "{}", said(&output));
     assert_same_tree(&source, &out.join("tree"));
-    // The path is the destination as it was typed, and the name. On
-    // Windows that mixes the two ways of writing a path, so it is compared
-    // as a path and not as text.
-    let told = result(&output);
-    assert_eq!(Path::new(&told[0]), out.join("tree"));
     let size = (file().len() + 9 + 1).to_string();
-    assert_eq!(told[1..], [size, "consistent".to_owned()]);
+    assert_result(&output, &out.join("tree"), &size, "consistent");
 
     // Under another name.
     let renamed = out.join("renamed");
@@ -339,4 +343,196 @@ async fn a_folder_that_cannot_be_copied_says_why() {
     assert_eq!(output.status.code(), Some(1), "{}", said(&output));
     let why = said(&output);
     assert!(why.contains("for a source on the web"), "{why}");
+}
+
+/// Runs `mux` with `args`, away from the thread that serves.
+async fn mux<const N: usize>(args: [&str; N]) -> Output {
+    let mut command = Command::new(BIN);
+    command.args(args).stdin(Stdio::null());
+    tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap()
+}
+
+/// The lines a command wrote for a program, with what differs from run to
+/// run put in words: the folder the test works in, and the server's
+/// address if there is a server.
+fn lines(output: &Output, folder: &Path, server: Option<&str>) -> Vec<String> {
+    let written = String::from_utf8_lossy(&output.stdout);
+    let folder = text(folder).replace('\\', "\\\\");
+    let named = |line: &str| {
+        let line = line.replace(&folder, "<DIR>");
+        server.map_or(line.clone(), |server| line.replace(server, "<SERVER>"))
+    };
+    written.lines().map(named).collect()
+}
+
+/// The shape of what `--json` writes is part of the interface. This is a
+/// whole copy, line for line.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_is_told_to_a_program_line_by_line() {
+    let file = file();
+    let server = Server::start(serving(file.clone())).await;
+    let url = server.url("/sample.bin");
+    let at = server.url("");
+    let tmp = tempfile::tempdir().unwrap();
+    let digest = format!("blake3:{}", Hash::of(&file));
+
+    let output = mux(["cp", "--json", &url, text(tmp.path()), "--hash", &digest]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let mut told = lines(&output, tmp.path(), Some(&at));
+    // How often progress is told depends on how fast the copy goes. The
+    // last of it is always told, and says that all of it is there.
+    let progress: Vec<String> = told
+        .iter()
+        .filter(|line| line.contains(r#""event":"progress""#))
+        .cloned()
+        .collect();
+    assert_eq!(
+        progress.last().map(String::as_str),
+        Some(r#"{"v":1,"event":"progress","bytes":1100000,"of":1100000}"#)
+    );
+    told.retain(|line| !progress.contains(line));
+    let separator = std::path::MAIN_SEPARATOR_STR.replace('\\', "\\\\");
+    assert_eq!(
+        told,
+        [
+            r#"{"v":1,"event":"start","source":"<SERVER>/sample.bin","destination":"<DIR>","bytes":1100000,"files":1}"#.to_owned(),
+            format!(r#"{{"v":1,"event":"file","path":"<DIR>{separator}sample.bin"}}"#),
+            format!(
+                r#"{{"v":1,"event":"done","path":"<DIR>{separator}sample.bin","bytes":1100000,"checked":"verified","fetched":1100000,"kept":0}}"#
+            ),
+        ]
+    );
+    // Every line is JSON, and says which version of the shape it has.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let read: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(read["v"], 1, "{line}");
+    }
+
+    // A failure is the last line, and the command still ends with its code.
+    let mut gone = serving(file);
+    gone.status = Some(404);
+    let server = Server::start(gone).await;
+    let output = mux(["cp", "--json", &server.url("/sample.bin"), text(tmp.path())]).await;
+    assert_eq!(output.status.code(), Some(3));
+    let told = String::from_utf8_lossy(&output.stdout).into_owned();
+    let error: serde_json::Value = serde_json::from_str(told.lines().last().unwrap()).unwrap();
+    assert_eq!(error["event"], "error");
+    assert_eq!(
+        (&error["code"], &error["kind"]),
+        (&3.into(), &"absent".into())
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("nothing is at that address")
+    );
+    assert!(error["hint"].is_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dry_run_says_what_would_be_copied_and_copies_nothing() {
+    let file = file();
+    let server = Server::start(serving(file.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let saved = out.join("sample.bin");
+    let into = format!("{}/", text(&out));
+    let size = file.len().to_string();
+
+    let output = mux(["cp", "--dry-run", &url, &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_result(&output, &saved, &size, "consistent");
+    assert!(said(&output).contains("would copy"), "{}", said(&output));
+    // Nothing was made, and the server was asked only what it holds.
+    assert!(!out.exists());
+    assert_eq!(server.asked(), [Some("bytes=0-0".to_owned())]);
+
+    // Once it is there, a dry run says so.
+    let output = mux(["cp", &url, &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let output = mux(["cp", "--dry-run", &url, &into]).await;
+    assert_result(&output, &saved, &size, "already there");
+
+    // A folder, for a program.
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let output = mux(["cp", "--dry-run", "--json", text(&source), &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let told = lines(&output, tmp.path(), None);
+    let separator = std::path::MAIN_SEPARATOR_STR.replace('\\', "\\\\");
+    assert_eq!(
+        told,
+        [format!(
+            r#"{{"v":1,"event":"plan","source":"<DIR>{separator}tree","destination":"<DIR>{separator}out/","path":"<DIR>{separator}out/tree","bytes":1100010,"files":4,"checked":"consistent"}}"#
+        )]
+    );
+    assert!(!out.join("tree").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_says_what_is_at_a_place() {
+    let file = file();
+    let server = Server::start(serving(file.clone())).await;
+    let url = server.url("/sample.bin");
+    let rows = |output: &Output| -> Vec<(String, String)> {
+        let table = String::from_utf8_lossy(&output.stdout).into_owned();
+        table
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(key, value)| (key.to_owned(), value.trim().to_owned()))
+            .collect()
+    };
+    let row = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+
+    // A file on the web, with a digest said of it.
+    let digest = format!("blake3:{}", Hash::of(&file));
+    let output = mux(["probe", &url, "--hash", &digest]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(
+        rows(&output),
+        [
+            row("name", "sample.bin"),
+            row("kind", "file"),
+            row("size", "1100000 bytes (1.05 MiB)"),
+            row("files", "1"),
+            row("checked", "verified, if it is copied"),
+            row("parts", "read several at once"),
+            row("digest", &digest),
+        ]
+    );
+    // Nothing was read but the first byte.
+    assert_eq!(server.asked(), [Some("bytes=0-0".to_owned())]);
+
+    // A folder, for a program.
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let output = mux(["probe", "--json", text(&source)]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(
+        lines(&output, tmp.path(), None),
+        [format!(
+            r#"{{"v":1,"event":"probe","place":"<DIR>{}tree","name":"tree","kind":"folder","bytes":1100010,"files":4,"checked":"consistent","parts":true,"digests":[]}}"#,
+            std::path::MAIN_SEPARATOR_STR.replace('\\', "\\\\")
+        )]
+    );
+
+    // Nothing there, and a place that cannot be looked at yet.
+    let output = mux([
+        "probe",
+        &server.url("/sample.bin").replace("sample", "missing"),
+    ])
+    .await;
+    assert!(
+        output.status.success(),
+        "the test server has one file at every path"
+    );
+    let output = mux(["probe", text(&tmp.path().join("missing"))]).await;
+    assert_eq!(output.status.code(), Some(3), "{}", said(&output));
+    let output = mux(["probe", "peer:"]).await;
+    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
 }

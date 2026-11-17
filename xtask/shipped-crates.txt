@@ -75,6 +75,7 @@ libc
 litemap
 log
 lru-slab
+memchr
 mio
 nu-ansi-term
 num-conv
@@ -113,6 +114,7 @@ security-framework-sys: x86_64-apple-darwin, aarch64-apple-darwin
 serde
 serde_core
 serde_derive
+serde_json
 sharded-slab
 signal-hook-registry: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
 slab
@@ -167,3 +169,4 @@ zeroize
 zerotrie
 zerovec
 zerovec-derive
+zmij

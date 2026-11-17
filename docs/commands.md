@@ -33,6 +33,8 @@ has. Otherwise it is the name the copy is given.
 | `--mirror <URL>` | For a source on the web. Another address that holds the same file, read together with the source. Repeatable. It needs a digest of the file, from `--hash` or from a server that sends one: nothing else tells that two servers hold the same bytes. |
 | `--streams <N>` | Parts of a file to fetch at once from each source. The default is 4. |
 | `--stall-timeout <SECONDS>` | Give up after this long with nothing received. The default is 60. |
+| `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
+| `--json` | Write for a program: see [below](#for-a-program). |
 
 ### What a copy does
 
@@ -66,6 +68,63 @@ was written, its size in bytes, and how far it was checked.
 | `verified` | Every byte was compared with a digest given for the file. |
 | `consistent` | No digest was known. The source stayed what it was throughout. For a folder, nothing checks that: its files are read once, as they are. |
 | `already there` | Every file was there with the size and time the source gives, and nothing was read. |
+
+## `mux probe`
+
+```console
+$ mux probe <PLACE>
+```
+
+Says what is at a web address, a file or a folder, and reads none of it. A
+web server is asked for the first byte of the file.
+
+```console
+$ mux probe https://example.org/big.iso
+name     big.iso
+kind     file
+size     1288490188 bytes (1.20 GiB)
+files    1
+checked  consistent, if it is copied
+parts    read several at once
+```
+
+`checked` is how far a copy of the place would be checked. It is `verified`
+if a digest of every file is known: one given with `--hash`, or one a web
+server sends, which is then listed. `parts` says whether the place can be
+read at several points at once, or only in order from its start.
+
+## For a program
+
+With `--json`, a command writes one JSON object on each line of standard
+output and nothing else there. Every line has `v`, the version of the shape
+of the lines, which is 1, and `event`. A later version of mux may add
+fields to a line without changing `v`. It will change `v` before it takes a
+field away or changes what one means.
+
+| `event` | When | Fields |
+| --- | --- | --- |
+| `start` | A copy begins. | `source` and `destination` as they were typed, `bytes` and `files` to copy |
+| `progress` | From time to time, and when all of it is there. | `bytes` at the destination, `of` how many |
+| `file` | A file is whole and has its final name. | `path` |
+| `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
+| `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
+| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest` |
+| `error` | The command failed. It is the last line. | `code`, the exit code; `kind`, the same in a word; `message`; `hint`, or `null` |
+
+`checked` is `verified`, `consistent` or `already there`, as on standard
+output without `--json`. The words for `kind` are `failed`, `usage`,
+`absent`, `unreachable`, `changed` and `corrupt`, in the order of the exit
+codes from 1.
+
+```console
+$ mux cp --json https://example.org/a.bin ./out/
+{"v":1,"event":"start","source":"https://example.org/a.bin","destination":"./out/","bytes":1100000,"files":1}
+{"v":1,"event":"progress","bytes":1100000,"of":1100000}
+{"v":1,"event":"file","path":"./out/a.bin"}
+{"v":1,"event":"done","path":"./out/a.bin","bytes":1100000,"checked":"consistent","fetched":1100000,"kept":0}
+```
+
+A person's error message is still written to standard error.
 
 ## Exit codes
 

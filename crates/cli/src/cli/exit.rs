@@ -66,6 +66,18 @@ impl Exit {
         }
     }
 
+    /// The kind in a word, as a program is told it.
+    pub(super) fn kind(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::Usage => "usage",
+            Self::Absent => "absent",
+            Self::Unreachable => "unreachable",
+            Self::Changed => "changed",
+            Self::Corrupt => "corrupt",
+        }
+    }
+
     /// What to do next, where there is something to say.
     pub(super) fn hint(self) -> Option<&'static str> {
         match self {
@@ -137,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn the_numbers_do_not_change() {
+    fn the_numbers_and_the_words_do_not_change() {
         let numbers = [
             Exit::Failed,
             Exit::Usage,
@@ -146,7 +158,15 @@ mod tests {
             Exit::Changed,
             Exit::Corrupt,
         ]
-        .map(|exit| exit as u8);
-        assert_eq!(numbers, [1, 2, 3, 4, 5, 6]);
+        .map(|exit| (exit as u8, exit.kind()));
+        let kinds = [
+            (1, "failed"),
+            (2, "usage"),
+            (3, "absent"),
+            (4, "unreachable"),
+            (5, "changed"),
+            (6, "corrupt"),
+        ];
+        assert_eq!(numbers, kinds);
     }
 }
