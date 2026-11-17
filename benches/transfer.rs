@@ -18,6 +18,8 @@
 //! Loopback has no packet loss, no latency and no network card, so these
 //! numbers measure CPU cost per byte, not what a real network will deliver.
 
+mod timing;
+
 use ::fs as store;
 use model::artifact::DEFAULT_CHUNK_SIZE;
 use peer::net::Identity;
@@ -28,9 +30,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use timing::{MIB, Runs, cpu_time, rate, setting};
 use tokio::runtime::Runtime;
-
-const MIB: u64 = 1024 * 1024;
 
 fn main() {
     let size = setting("MUX_BENCH_SIZE_MB", 1024) * MIB;
@@ -78,9 +79,8 @@ fn main() {
     }
 
     println!("download  from {seeders} seeder(s), {runs} run(s)");
-    let mut rates = Vec::new();
-    let mut cpu_per_gib = Vec::new();
-    let gib = size as f64 / (1024.0 * MIB as f64);
+    // CPU time covers every node in this process, seeders included.
+    let mut timed = Runs::new(size);
     for run in 1..=runs {
         let out = dir.path().join(format!("out-{run}"));
         let runtime = Runtime::new().expect("cannot start a runtime");
@@ -100,56 +100,16 @@ fn main() {
                 report
             })
             .expect("download failed");
-        let cpu = cpu_time().zip(cpu_before).map(|(after, before)| {
-            (
-                after.0.saturating_sub(before.0),
-                after.1.saturating_sub(before.1),
-            )
-        });
         assert_eq!(report.fetched_bytes, size, "download was not complete");
-
-        let per_second = size as f64 / MIB as f64 / report.elapsed.as_secs_f64();
-        rates.push(per_second);
-        match cpu {
-            Some((user, system)) => {
-                let (user, system) = (user.as_secs_f64() / gib, system.as_secs_f64() / gib);
-                cpu_per_gib.push(user + system);
-                println!(
-                    "  run {run}   {}   {:.2} cpu-s/GiB  (user {user:.2}, system {system:.2})",
-                    rate(size, report.elapsed),
-                    user + system,
-                );
-            }
-            None => println!("  run {run}   {}", rate(size, report.elapsed)),
-        }
+        timed.record(run, report.elapsed, cpu_before);
         drop(runtime);
         std::fs::remove_dir_all(&out).expect("cannot remove the downloaded copy");
     }
-
-    // CPU time covers every node in this process, seeders included. It is
-    // steadier than wall time, which also depends on the disk.
-    rates.sort_by(f64::total_cmp);
-    cpu_per_gib.sort_by(f64::total_cmp);
-    match cpu_per_gib.get(cpu_per_gib.len() / 2) {
-        Some(cost) => println!(
-            "median    {:>5.0} MiB/s            {cost:.2} cpu-s/GiB",
-            rates[rates.len() / 2]
-        ),
-        None => println!("median    {:>5.0} MiB/s", rates[rates.len() / 2]),
-    }
+    timed.report();
 
     for (runtime, node) in seeding {
         node.shutdown();
         runtime.shutdown_timeout(Duration::from_secs(1));
-    }
-}
-
-fn setting(name: &str, default: u64) -> u64 {
-    match std::env::var(name) {
-        Ok(value) => value
-            .parse()
-            .unwrap_or_else(|_| panic!("{name} must be a whole number, got {value:?}")),
-        Err(_) => default,
     }
 }
 
@@ -185,31 +145,4 @@ fn generate(dir: &Path, size: u64, files: u64) -> PathBuf {
 
 fn mib(bytes: u64) -> String {
     format!("{} MiB", bytes / MIB)
-}
-
-fn rate(bytes: u64, elapsed: Duration) -> String {
-    format!(
-        "{:>5.0} MiB/s  ({:.2}s)",
-        bytes as f64 / MIB as f64 / elapsed.as_secs_f64(),
-        elapsed.as_secs_f64()
-    )
-}
-
-/// User and system CPU time used by this process so far.
-#[cfg(unix)]
-fn cpu_time() -> Option<(Duration, Duration)> {
-    use nix::sys::resource::{UsageWho, getrusage};
-    use nix::sys::time::TimeValLike;
-
-    let usage = getrusage(UsageWho::RUSAGE_SELF).ok()?;
-    let duration = |micros: i64| u64::try_from(micros).ok().map(Duration::from_micros);
-    Some((
-        duration(usage.user_time().num_microseconds())?,
-        duration(usage.system_time().num_microseconds())?,
-    ))
-}
-
-#[cfg(not(unix))]
-fn cpu_time() -> Option<(Duration, Duration)> {
-    None
 }

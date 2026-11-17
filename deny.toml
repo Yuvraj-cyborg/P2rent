@@ -22,6 +22,10 @@ allow = [
     # File-level copyleft: using an unmodified MPL crate (`option-ext`, via
     # `dirs`) places no condition on this project's own code.
     "MPL-2.0",
+    # A licence for data, not code: the list of certificate authorities
+    # that Mozilla trusts (`webpki-root-certs`), which the TLS verifier
+    # carries for systems that have no trust store of their own to ask.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]

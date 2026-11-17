@@ -132,7 +132,7 @@ impl Progress {
             Event::Stored { bytes, .. } => {
                 self.fetched.fetch_add(bytes, Ordering::Relaxed);
             }
-            Event::Committed { .. } => {}
+            Event::Committed { .. } | Event::Examined { .. } => {}
         }
     }
 }

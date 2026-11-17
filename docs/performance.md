@@ -264,6 +264,57 @@ figures:
 | 1 GiB in 2000 files | 431 MiB/s, 6.88 CPU s/GiB | 434 MiB/s, 6.95 CPU s/GiB |
 | One 1 GiB file from two seeders | 654 MiB/s, 6.68 CPU s/GiB | 646 MiB/s, 6.65 CPU s/GiB |
 
+## Web downloads
+
+`just fetch URL` fetches one web address into a folder, three times, and
+reports throughput and CPU seconds per GiB
+([#18](https://github.com/yuvichh/mux/issues/18)). The server is whatever
+answers at the address, so other tools can be timed fetching the same file
+from the same server:
+
+```console
+$ just fetch http://127.0.0.1:8098/big.bin        # four streams
+$ just fetch http://127.0.0.1:8098/big.bin 1      # one stream
+$ time curl -s -o big.bin http://127.0.0.1:8098/big.bin
+$ time aria2c -q -x 4 -s 4 --file-allocation=none -o big.bin http://127.0.0.1:8098/big.bin
+```
+
+`benches/web.rs` lists the settings.
+
+The figures are for a 1 GiB file of random bytes, served by nginx 1.30
+(`sendfile on`) on the Linux machine in the table above, with the file and
+the copy both on tmpfs. Each is the median of five runs on 18 November
+2026.
+
+| Tool | Connections | Throughput | CPU seconds per GiB |
+| --- | ---: | ---: | ---: |
+| mux | 4 | 2,758 MiB/s | 1.28 |
+| mux | 1 | 1,495 MiB/s | 0.72 |
+| curl 8.22 | 1 | 2,301 MiB/s | 0.39 |
+| aria2c 1.37 | 4 | 1,499 MiB/s | 0.59 |
+| aria2c 1.37 | 1 | 1,134 MiB/s | 0.82 |
+
+How to read them:
+
+- This is loopback, so the figures show CPU cost per byte. On a real
+  network the network is the limit: 2,758 MiB/s is 23 Gbit/s.
+- mux hashes every byte as it stores it and notes the digest, so that the
+  copy can be carried on after an interruption and seeded when it is whole.
+  `curl` and `aria2c` were run as above and check nothing.
+- Over one stream mux is slower than `curl`. A chunk is hashed and written
+  before the next one is read, so the two do not overlap.
+- Four streams cost more CPU for each byte than one, 1.28 against 0.72, and
+  most of the difference is system time (0.83 against 0.39). Where it goes
+  is not known: it needs a profiler that can see into the kernel, which
+  this machine does not have.
+
+One change was measured:
+
+| Change | Result |
+| --- | --- |
+| What arrives is appended to a buffer, and a chunk is cut from its front | First version. 2,535 MiB/s and 1.35 CPU s/GiB over four streams, 1,392 MiB/s and 0.75 over one. |
+| Each byte is copied once, from where it arrived into a buffer of the chunk's size | Kept. 2,758 MiB/s and 1.28 over four streams, 1,495 MiB/s and 0.72 over one. |
+
 ## The fast path
 
 `unsafe`, SIMD intrinsics and assembly are allowed in one crate, `accel`,
@@ -295,3 +346,5 @@ not.
 - Windows.
 - Links with latency. Each peer is asked for four chunks at a time, which may
   leave a long-distance link idle between requests.
+- Web downloads over a real network, and over HTTPS.
+- Where the system time of several web streams goes.

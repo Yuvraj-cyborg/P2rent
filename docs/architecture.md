@@ -28,10 +28,13 @@ crates/
 │   ├── retry.rs
 │   ├── ticket.rs
 │   └── hex.rs
-├── engine/src/        store.rs  transfer.rs  source.rs  claims.rs  conformance.rs  faults.rs
+├── engine/src/        store.rs  transfer.rs  source.rs  copy.rs  claims.rs  conformance.rs  faults.rs
 ├── fs/
 │   ├── src/           index.rs  folder.rs  io.rs
 │   └── tests/folder/  what a store over a folder leaves on disk
+├── web/
+│   ├── src/           headers.rs  origin.rs
+│   └── tests/origin/  a web server that misbehaves, and what is made of it
 ├── peer/
 │   ├── src/
 │   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
@@ -41,7 +44,7 @@ crates/
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
-benches/               instructions.rs  transfer.rs (see docs/performance.md)
+benches/               instructions.rs  transfer.rs  web.rs (see docs/performance.md)
 fuzz/                  fuzz targets, a workspace of their own
 proofs/                Lean proofs of the logic in `model`
 xtask/                 development tasks written in Rust (`cargo xtask`)
@@ -222,6 +225,41 @@ version, is left as it is until its replacement is ready, and the chunks of
 it that are right are copied into the part file instead of being fetched
 again. Indexing leaves part files out.
 
+## Web
+
+`web::Origin` is a file at a web address, as a `Source`. `engine::copy`
+copies what a source holds into a place: it asks the source what it holds,
+leaves alone a file that is already there with the same size and time,
+fetches the rest, and says how far the bytes were checked.
+
+An origin is found by asking for the first byte of the file. The answer
+says how large the file is and what the server can do:
+
+| The server gives | Read as | After a break | Run again |
+| --- | --- | --- | --- |
+| parts of the file, and a validator | several streams at once | carried on | carried on from the notes |
+| the whole file only, and a validator | one stream | read again from the start | what was stored is kept, and the server sends it all again |
+| no validator, but a digest of the file is known | one stream | read again from the start | begun again |
+| no validator and no digest | one stream | the transfer ends | begun again |
+
+A **validator** is what tells one version of a file from another: a strong
+`ETag`, or else `Last-Modified`. It goes back with every request, as
+`If-Range`, and every answer is held to what the first one said: its
+version, its length, and which part of the file it is. An answer of another
+version ends the transfer. Without a validator two answers could be two
+files, so they are put together only if a digest of the whole file will be
+checked at the end.
+
+A digest of the whole file is given by the user, or by the server in a
+`Repr-Digest` or `Digest` header. With one the transfer is *verified*, and
+without one it is *consistent*.
+
+A request is for the rest of the file from where it starts, and carries a
+run of chunks. A server that does not say how large its file is cannot be
+used. Redirects are followed, a proxy named in the environment is used, and
+certificates are checked against those the system trusts. `headers.rs`
+reads what servers send, and is fuzzed.
+
 ## Network
 
 Each node has an Ed25519 key pair stored at `<config dir>/mux/node.key`.
@@ -329,6 +367,9 @@ chunk, because that waiter may have been stopped a moment before.
 - `engine/src/faults.rs` runs transfers from made-up suppliers that lie,
   stall, break off and are slow, on a clock of its own. Whatever they do, a
   transfer ends with the right bytes or with an error.
+- `web/tests/origin/` fetches from a web server written for the tests,
+  which stops in the middle of a file, stops sending, sends the wrong part,
+  and changes the file as it is read.
 - `tests/connection.rs` checks mutual authentication and id pinning.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
