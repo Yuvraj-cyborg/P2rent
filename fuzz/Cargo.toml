@@ -46,3 +46,10 @@ path = "fuzz_targets/location.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "notes"
+path = "fuzz_targets/notes.rs"
+test = false
+doc = false
+bench = false

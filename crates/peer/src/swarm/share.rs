@@ -18,6 +18,7 @@ const MAX_PARTICIPANTS: usize = 4096;
 /// One artifact this node holds, fully or partly, and offers to peers.
 #[derive(Debug)]
 pub struct Share {
+    artifact: Arc<Artifact>,
     store: Arc<Store>,
     participants: Mutex<HashMap<NodeId, Participant>>,
     uploaded: AtomicU64,
@@ -30,8 +31,9 @@ struct Participant {
 }
 
 impl Share {
-    pub(crate) fn new(store: Arc<Store>) -> Self {
+    pub(crate) fn new(artifact: Arc<Artifact>, store: Arc<Store>) -> Self {
         Self {
+            artifact,
             store,
             participants: Mutex::new(HashMap::new()),
             uploaded: AtomicU64::new(0),
@@ -40,7 +42,7 @@ impl Share {
 
     /// The artifact being shared.
     pub fn artifact(&self) -> &Arc<Artifact> {
-        self.store.artifact()
+        &self.artifact
     }
 
     /// Where its chunks are kept.

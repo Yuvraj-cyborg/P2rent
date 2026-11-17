@@ -318,6 +318,51 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Checks and puts together a tree from entries, each with what is
+    /// recorded about it. The entries must be in order, the root first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidManifest`] naming the first rule the tree
+    /// breaks.
+    pub fn new(
+        name: impl Into<String>,
+        chunk_size: u32,
+        entries: Vec<(Entry, EntryMetadata)>,
+    ) -> Result<Self> {
+        let name = name.into();
+        let (entries, metadata): (Vec<Entry>, Vec<EntryMetadata>) = entries.into_iter().unzip();
+        let layout = checked_layout(&name, chunk_size, &entries, &metadata)?;
+        Ok(Self {
+            name,
+            chunk_size,
+            entries,
+            metadata,
+            layout,
+        })
+    }
+
+    /// The artifact this tree is once the digest of each of its chunks is
+    /// known.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidManifest`] if there is not one digest for
+    /// each chunk, or the manifest is too large to encode.
+    pub fn with_digests(&self, chunks: Vec<Hash>) -> Result<Artifact> {
+        let entries = self
+            .entries
+            .iter()
+            .cloned()
+            .zip(self.metadata.iter().copied());
+        Artifact::new(Manifest::new(
+            self.name.clone(),
+            self.chunk_size,
+            entries.collect(),
+            chunks,
+        ))
+    }
+
     /// The name the root is stored under.
     pub fn name(&self) -> &str {
         &self.name
@@ -639,6 +684,61 @@ mod tests {
         .unwrap();
         tree(vec![]).validate().unwrap();
         manifest(vec![file("", 5)]).validate().unwrap();
+    }
+
+    /// A tree is checked like a manifest, and gains its digests later.
+    #[test]
+    fn a_tree_becomes_an_artifact_when_its_digests_are_known() {
+        let entries = vec![dir(""), file("a.bin", 10_000), dir("sub"), file("sub/b", 1)];
+        let described: Vec<_> = entries
+            .iter()
+            .cloned()
+            .map(|entry| (entry, PLAIN))
+            .collect();
+        let tree = Tree::new("data", MIN_CHUNK_SIZE, described).unwrap();
+        assert_eq!(tree.name(), "data");
+        assert_eq!(tree.chunk_size(), MIN_CHUNK_SIZE);
+        assert_eq!(tree.entries(), &entries[..]);
+        assert_eq!(tree.chunk_count(), 4);
+        assert!(!tree.is_file());
+
+        // It is the artifact a manifest of the same entries makes.
+        let known = manifest(entries);
+        let digests = known.content.chunks.clone();
+        let artifact = tree.with_digests(digests.clone()).unwrap();
+        assert_eq!(artifact, Artifact::new(known).unwrap());
+        assert_eq!(**artifact.tree(), tree);
+
+        // Too few digests, or too many, are not the tree's.
+        assert!(tree.with_digests(digests[1..].to_vec()).is_err());
+        assert!(
+            tree.with_digests([digests, vec![Hash::of(b"x")]].concat())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_tree_that_breaks_a_rule_is_refused() {
+        let plain = |entries: Vec<Entry>| entries.into_iter().map(|e| (e, PLAIN)).collect();
+        let refused = |name: &str, chunk_size, entries| {
+            Tree::new(name, chunk_size, plain(entries))
+                .unwrap_err()
+                .to_string()
+        };
+        let chunk = MIN_CHUNK_SIZE;
+        assert!(refused("data", chunk, vec![]).contains("at least its root"));
+        assert!(refused("data", chunk - 1, vec![file("", 1)]).contains("chunk size"));
+        assert!(refused("a/b", chunk, vec![file("", 1)]).contains("unsafe artifact name"));
+        assert!(refused("data", chunk, vec![dir(""), file("../x", 1)]).contains("unsafe path"));
+        let wild = (
+            file("", 1),
+            EntryMetadata {
+                mode: 0o7777,
+                modified: None,
+            },
+        );
+        let error = Tree::new("data", chunk, vec![wild]).unwrap_err();
+        assert!(error.to_string().contains("beyond the permissions"));
     }
 
     #[test]

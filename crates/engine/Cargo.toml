@@ -14,6 +14,10 @@ conformance = []
 
 [dependencies]
 model.workspace = true
+blake3.workspace = true
+# Already shipped, as the TLS library's own: SHA-256 for a digest a user or a
+# server gives for a whole file.
+ring.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tokio.workspace = true
 tracing.workspace = true

@@ -74,6 +74,11 @@ pub enum Error {
     #[error("the transfer stalled: no supplier made progress for {0:?}")]
     Stalled(Duration),
 
+    /// What was being read changed while it was being read. Everything
+    /// that had been written and not committed has been thrown away.
+    #[error("{0}")]
+    Changed(String),
+
     /// The place being written to failed.
     #[error(transparent)]
     Place(#[from] Failure),
@@ -87,6 +92,7 @@ pub enum Error {
 /// # Errors
 ///
 /// Returns [`Error::Stalled`] if no chunk arrives within the stall timeout,
+/// [`Error::Changed`] if a supplier finds that what it reads has changed,
 /// and [`Error::Place`] if the store cannot keep what arrived.
 pub async fn transfer(
     store: &Arc<Store>,
@@ -106,32 +112,7 @@ pub async fn transfer(
     let mut ticker = tokio::time::interval(MANAGER_TICK);
 
     while !run.is_complete() {
-        let now = Instant::now();
-        let free = run
-            .options
-            .max_suppliers
-            .max(1)
-            .saturating_sub(running.len());
-        // Whoever has waited longest goes first, so that nobody waits for
-        // ever behind suppliers that keep coming back.
-        let mut due: Vec<(Instant, SupplierId)> = slots
-            .iter()
-            .filter(|(_, slot)| slot.is_due(now))
-            .map(|(&id, slot)| (slot.retry_at, id))
-            .collect();
-        due.sort_unstable();
-        // A supplier in use that has nothing wanted gives up its turn when
-        // another is waiting for one.
-        run.crowded.store(due.len() > free, Ordering::Relaxed);
-        for (_, id) in due.into_iter().take(free) {
-            let Some(slot) = slots.get_mut(&id) else {
-                continue;
-            };
-            slot.active = true;
-            slot.stored_before = run.stored_by(&id);
-            let handle = tasks.spawn(supply(run.clone(), slot.supplier.clone()));
-            running.insert(handle.id(), id);
-        }
+        run.start_due(&mut slots, &mut tasks, &mut running);
 
         tokio::select! {
             Some(supplier) = discovered.recv() => {
@@ -174,6 +155,10 @@ pub async fn transfer(
                         slot.dropped = true;
                         warn!(supplier = %short(&id), "dropping supplier: {reason}");
                     }
+                    Ended::Fatal(Failure::Changed(what)) => {
+                        run.store.abandon().await?;
+                        return Err(Error::Changed(what));
+                    }
                     Ended::Fatal(failure) => return Err(failure.into()),
                 }
             }
@@ -181,12 +166,20 @@ pub async fn transfer(
             () = run.wake.notified() => {}
         }
 
+        if let Some(failure) = run.failure() {
+            return Err(failure.into());
+        }
         if run.idle() > run.options.stall_timeout {
             return Err(Error::Stalled(run.options.stall_timeout));
         }
     }
 
     tasks.shutdown().await;
+    // A chunk can be marked done by one supplier while the store fails on
+    // another's, so every chunk being done is not yet success.
+    if let Some(failure) = run.failure() {
+        return Err(failure.into());
+    }
     Ok(Summary {
         sources: run.stored_from(),
         usable: slots
@@ -194,8 +187,7 @@ pub async fn transfer(
             .filter(|(_, slot)| !slot.dropped)
             .map(|(id, _)| id)
             .collect(),
-        // Every chunk was compared with a digest known before the transfer.
-        verification: Verification::Verified,
+        verification: run.store.verification(),
     })
 }
 
@@ -246,6 +238,10 @@ struct Run {
     last_progress: Mutex<Instant>,
     /// Whether a supplier is waiting for a turn that none is free for.
     crowded: AtomicBool,
+    /// The failure of the store that ends the transfer, once there is one.
+    /// It is kept here because whoever was waiting for the chunk to be
+    /// stored may have been stopped before it could pass the failure on.
+    failed: Mutex<Option<Failure>>,
 }
 
 impl Run {
@@ -273,7 +269,54 @@ impl Run {
             stored_from: Mutex::new(HashMap::new()),
             last_progress: Mutex::new(Instant::now()),
             crowded: AtomicBool::new(false),
+            failed: Mutex::new(None),
         })
+    }
+
+    /// Starts every supplier that is due, as far as there are turns free.
+    fn start_due(
+        self: &Arc<Self>,
+        slots: &mut HashMap<SupplierId, Slot>,
+        tasks: &mut JoinSet<Ended>,
+        running: &mut HashMap<tokio::task::Id, SupplierId>,
+    ) {
+        let now = Instant::now();
+        let free = self
+            .options
+            .max_suppliers
+            .max(1)
+            .saturating_sub(running.len());
+        // Whoever has waited longest goes first, so that nobody waits for
+        // ever behind suppliers that keep coming back.
+        let mut due: Vec<(Instant, SupplierId)> = slots
+            .iter()
+            .filter(|(_, slot)| slot.is_due(now))
+            .map(|(&id, slot)| (slot.retry_at, id))
+            .collect();
+        due.sort_unstable();
+        // A supplier in use that has nothing wanted gives up its turn when
+        // another is waiting for one.
+        self.crowded.store(due.len() > free, Ordering::Relaxed);
+        for (_, id) in due.into_iter().take(free) {
+            let Some(slot) = slots.get_mut(&id) else {
+                continue;
+            };
+            slot.active = true;
+            slot.stored_before = self.stored_by(&id);
+            let handle = tasks.spawn(supply(self.clone(), slot.supplier.clone()));
+            running.insert(handle.id(), id);
+        }
+    }
+
+    /// Records that the store failed, which ends the transfer.
+    fn fail(&self, failure: Failure) {
+        sync::lock(&self.failed).get_or_insert(failure);
+        self.wake.notify_waiters();
+    }
+
+    /// The failure of the store, if it has failed.
+    fn failure(&self) -> Option<Failure> {
+        sync::lock(&self.failed).clone()
     }
 
     fn is_complete(&self) -> bool {
@@ -353,7 +396,8 @@ enum Ended {
     /// The supplier sent something wrong, or cannot be used at all. It is
     /// never tried again.
     Dropped(String),
-    /// The store failed, which ends the whole transfer.
+    /// The store failed, or what was being read changed. Either ends the
+    /// whole transfer.
     Fatal(Failure),
 }
 
@@ -363,6 +407,9 @@ impl Ended {
         match failure {
             Failure::Unreachable(why) | Failure::Absent(why) => Self::Failed(why),
             Failure::Corrupt(why) | Failure::Fatal(why) => Self::Dropped(why),
+            // No other supplier can make up for this: what has been stored
+            // may be of two versions.
+            changed @ Failure::Changed(_) => Self::Fatal(changed),
         }
     }
 }
@@ -411,7 +458,7 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
     };
     let _open = Open::new(&run, id);
 
-    let chunks = run.store.artifact().chunk_count();
+    let chunks = run.store.tree().chunk_count();
     let view = Arc::new(RwLock::new(View::new(chunks)));
     if let Err(ended) = refresh(&run, &*supply, &view).await {
         return ended;
@@ -463,10 +510,7 @@ async fn refresh(run: &Run, supply: &dyn Supply, view: &RwLock<View>) -> Result<
         Ok(Err(failure)) => return Err(Ended::by(failure)),
         Err(_) => return Err(Ended::Failed("it did not say what it holds in time".into())),
     };
-    if !status
-        .held
-        .is_well_formed(run.store.artifact().chunk_count())
-    {
+    if !status.held.is_well_formed(run.store.tree().chunk_count()) {
         return Err(Ended::Dropped(
             "it described chunks the artifact does not have".into(),
         ));
@@ -544,7 +588,13 @@ async fn keep(
     data: Vec<u8>,
 ) -> Result<Put, Failure> {
     let bytes = data.len() as u64;
-    let put = run.store.write_chunk(claim.index, data).await?;
+    let put = match run.store.write_chunk(claim.index, data).await {
+        Ok(put) => put,
+        Err(failure) => {
+            run.fail(failure.clone());
+            return Err(failure);
+        }
+    };
     if put != Put::Refused {
         run.complete(claim, from, bytes, put);
     }

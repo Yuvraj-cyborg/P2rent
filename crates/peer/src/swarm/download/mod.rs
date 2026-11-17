@@ -204,7 +204,7 @@ pub async fn download(
         .sum();
     progress.resumed.store(resumed, Ordering::Relaxed);
 
-    let share = node.register(Arc::new(Share::new(store)));
+    let share = node.register(Arc::new(Share::new(artifact.clone(), store)));
 
     progress.set_phase(Phase::Downloading);
     let swarm = Swarm {
