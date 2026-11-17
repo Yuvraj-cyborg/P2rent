@@ -323,6 +323,8 @@ dependencies = [
  "indicatif",
  "model",
  "peer",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
