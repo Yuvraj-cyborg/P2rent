@@ -298,10 +298,24 @@ pub struct Status {
 /// happens, to whoever wants to show or record it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
+    /// What there is to copy is known: the sources have said what they
+    /// hold.
+    Planned {
+        /// The bytes of every file.
+        bytes: u64,
+        /// The number of files.
+        files: u64,
+    },
     /// Bytes that were already at the destination have been looked at, to
     /// find out which of them can be kept.
     Examined {
         /// How many.
+        bytes: u64,
+    },
+    /// What was already at the destination has been looked through, and
+    /// this much of it is kept: it will not be fetched.
+    Kept {
+        /// How many bytes.
         bytes: u64,
     },
     /// A supplier was reached and is in use.
