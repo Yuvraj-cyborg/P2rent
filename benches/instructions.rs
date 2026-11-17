@@ -8,19 +8,25 @@
 //!
 //! Setup functions and the dropping of returned values are not counted. Time
 //! spent in the kernel is not counted either, so the disk benchmarks measure
-//! what the store adds around each read and write (finding the chunk,
+//! what is done around each read and write (finding the chunk, checking it,
 //! building the path, opening the file, any copying), not the disk.
+//!
+//! The engine spreads those steps over several threads. Here they run on
+//! one, in the same order, so that the count is exact: the transfer
+//! benchmark times the real thing.
 //!
 //! Indexing is not here. It hashes on several threads at once, and the
 //! instruction count of a thread pool changes from run to run. The transfer
 //! benchmark times it instead.
 
-use fs::DiskStore;
+use fs::Folder;
 use gungraun::prelude::*;
 use gungraun::{Callgrind, EventKind};
 use model::artifact::{
     Artifact, Bitfield, DEFAULT_CHUNK_SIZE, Entry, EntryKind, EntryMetadata, Hash, Manifest,
 };
+use model::assembly::Assembly;
+use model::place::Sink;
 use model::schedule::{Outcome, Schedule};
 use std::hint::black_box;
 use std::sync::Arc;
@@ -74,13 +80,37 @@ fn encoded(files: u64, chunks_each: u64) -> (Hash, Vec<u8>) {
     (artifact.id(), artifact.encoded().to_vec())
 }
 
-/// A store of one file, and one chunk's bytes.
+/// A folder holding one file, the record of which of its chunks are in
+/// place, and one chunk's bytes.
 struct OnDisk {
-    store: DiskStore,
+    artifact: Arc<Artifact>,
+    folder: Folder,
+    assembly: Assembly,
     chunk: Vec<u8>,
     chunks: u64,
     // Removes the file when dropped, which is after the measurement.
     _dir: TempDir,
+}
+
+impl OnDisk {
+    /// What the engine's store does with a chunk that arrives: checks it
+    /// against the manifest, writes it, and gives the file its final name if
+    /// that was its last chunk.
+    fn store(&mut self, index: u64) -> bool {
+        let Some(at) = self.artifact.locate(index) else {
+            return false;
+        };
+        if Some(Hash::of(&self.chunk)) != self.artifact.chunk_hash(index) {
+            return false;
+        }
+        self.folder
+            .write(at.file, at.offset, &self.chunk)
+            .expect("cannot write");
+        if let Some(file) = self.assembly.add(index) {
+            self.folder.commit(file).expect("cannot rename");
+        }
+        true
+    }
 }
 
 /// A file of `chunks` chunks that are all the same. With `written`, every
@@ -97,18 +127,22 @@ fn on_disk(chunks: u64, written: bool) -> OnDisk {
     );
     let artifact = Arc::new(Artifact::new(manifest).expect("the manifest is valid"));
     let dir = tempfile::tempdir().expect("cannot create a working directory");
-    let store = DiskStore::resume(artifact, dir.path(), &|_| {}).expect("cannot create the file");
-    if written {
-        for index in 0..chunks {
-            assert!(store.write_chunk(index, &chunk).expect("cannot write"));
-        }
-    }
-    OnDisk {
-        store,
+    let folder = Folder::inside(artifact.clone(), dir.path());
+    let held = folder.begin(&|_| {}).expect("cannot create the file");
+    let mut disk = OnDisk {
+        assembly: Assembly::new(artifact.layout().clone(), held),
+        artifact,
+        folder,
         chunk,
         chunks,
         _dir: dir,
+    };
+    if written {
+        for index in 0..chunks {
+            assert!(disk.store(index));
+        }
     }
+    disk
 }
 
 // Hashing one chunk: done for every chunk read from disk or the network.
@@ -182,9 +216,13 @@ fn claim_every_chunk(chunks: u64) -> (u64, Schedule) {
 fn read_chunks(disk: OnDisk) -> (usize, OnDisk) {
     let mut read = 0;
     for index in 0..disk.chunks {
+        let at = disk
+            .artifact
+            .locate(black_box(index))
+            .expect("the chunk is in range");
         let data = disk
-            .store
-            .read_chunk(black_box(index))
+            .folder
+            .read_at(at.file, at.offset, at.len)
             .expect("cannot read");
         read += data.len();
     }
@@ -196,13 +234,9 @@ fn read_chunks(disk: OnDisk) -> (usize, OnDisk) {
 // place: what a downloader does as chunks arrive.
 #[library_benchmark]
 #[bench::sixteen_chunks(args = (16, false), setup = on_disk)]
-fn store_chunks(disk: OnDisk) -> OnDisk {
+fn store_chunks(mut disk: OnDisk) -> OnDisk {
     for index in 0..disk.chunks {
-        let kept = disk
-            .store
-            .write_chunk(black_box(index), black_box(&disk.chunk))
-            .expect("cannot write");
-        assert!(kept);
+        assert!(disk.store(black_box(index)));
     }
     disk
 }

@@ -155,19 +155,15 @@ async fn work(
             Err(_) => return Err(Outcome::Failed(format!("chunk {index} timed out"))),
         };
 
-        let share = session.share.clone();
         // The store checks the bytes against the manifest before it keeps them.
-        let stored =
-            tokio::task::spawn_blocking(move || share.store().write_chunk(index, &data)).await;
-        match stored {
-            Ok(Ok(true)) => session.complete(claim, connection.peer(), u64::from(location.len)),
-            Ok(Ok(false)) => {
+        match session.share.store().write_chunk(index, data).await {
+            Ok(true) => session.complete(claim, connection.peer(), u64::from(location.len)),
+            Ok(false) => {
                 return Err(Outcome::Banned(format!(
                     "chunk {index} failed verification"
                 )));
             }
-            Ok(Err(e)) => return Err(Outcome::Fatal(e.into())),
-            Err(e) => return Err(Outcome::Fatal(Error::Transport(e.to_string()))),
+            Err(e) => return Err(Outcome::Fatal(e.into())),
         }
     }
 }

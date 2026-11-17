@@ -17,6 +17,7 @@ repository = "https://github.com/yuvichh/mux"
 [workspace.dependencies]
 model = { path = "crates/model", version = "0.2.0" }
 fs = { path = "crates/fs", version = "0.2.0" }
+engine = { path = "crates/engine", version = "0.2.0" }
 peer = { path = "crates/peer", version = "0.2.0", default-features = false }
 
 anyhow = "1"
