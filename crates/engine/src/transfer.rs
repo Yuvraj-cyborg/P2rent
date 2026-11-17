@@ -704,10 +704,14 @@ mod tests {
 
     #[test]
     fn a_copy_starts_at_the_first_chunk() {
-        use crate::copy::{HERE, THE_SOURCE};
-        assert_ne!(HERE, THE_SOURCE);
-        let points: Vec<u64> = starting_points(&HERE, &THE_SOURCE, 8, 4).collect();
-        assert_eq!(points, [0, 2, 4, 6]);
+        use crate::copy::{HERE, source_id};
+        for number in [0, 1, 300] {
+            let source = source_id(number);
+            assert_ne!(source, HERE);
+            assert_ne!(source, source_id(number + 1));
+            let points: Vec<u64> = starting_points(&HERE, &source, 8, 4).collect();
+            assert_eq!(points, [0, 2, 4, 6]);
+        }
     }
 
     #[test]

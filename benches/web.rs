@@ -56,7 +56,7 @@ fn main() {
             .block_on(async {
                 let origin = Origin::find(&url, &Options::default()).await?;
                 engine::copy(
-                    Arc::new(origin),
+                    vec![Arc::new(origin)],
                     DEFAULT_CHUNK_SIZE,
                     |tree| Arc::new(Folder::inside(tree.clone(), &out)),
                     limits.clone(),
