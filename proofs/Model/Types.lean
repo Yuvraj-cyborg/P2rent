@@ -88,6 +88,13 @@ inductive mirror.step.Step where
 | Remove : mirror.step.Step
 | Blocked : mirror.step.Step
 
+/-- [model::rolling::Rolling]
+    Source: 'crates/model/src/rolling.rs', lines 26:0-31:1
+    Visibility: public -/
+structure rolling.Rolling where
+  hash : Std.U64
+  leaving : Std.U64
+
 /-- [model::schedule::ChunkState]
     Source: 'crates/model/src/schedule.rs', lines 15:0-22:1
     Visibility: public -/
