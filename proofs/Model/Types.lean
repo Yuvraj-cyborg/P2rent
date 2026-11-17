@@ -53,6 +53,41 @@ structure assembly.Assembly where
   held : artifact.bitfield.Bitfield
   missing : alloc.vec.Vec Std.U64
 
+/-- [model::mirror::step::Kind]
+    Source: 'crates/model/src/mirror/step.rs', lines 11:0-18:1
+    Visibility: public -/
+@[discriminant isize]
+inductive mirror.step.Kind where
+| File : mirror.step.Kind
+| Directory : mirror.step.Kind
+| Link : mirror.step.Kind
+
+/-- [model::mirror::step::Pair]
+    Source: 'crates/model/src/mirror/step.rs', lines 22:0-41:1
+    Visibility: public -/
+@[discriminant isize]
+inductive mirror.step.Pair where
+| OnlySource : mirror.step.Pair
+| OnlyDestination : mirror.step.Pair
+| Both :
+  mirror.step.Kind →
+  mirror.step.Kind →
+  Bool →
+  Bool →
+  mirror.step.Pair
+
+/-- [model::mirror::step::Step]
+    Source: 'crates/model/src/mirror/step.rs', lines 45:0-63:1
+    Visibility: public -/
+@[discriminant isize]
+inductive mirror.step.Step where
+| Keep : mirror.step.Step
+| Add : mirror.step.Step
+| Replace : mirror.step.Step
+| Touch : mirror.step.Step
+| Remove : mirror.step.Step
+| Blocked : mirror.step.Step
+
 /-- [model::schedule::ChunkState]
     Source: 'crates/model/src/schedule.rs', lines 15:0-22:1
     Visibility: public -/

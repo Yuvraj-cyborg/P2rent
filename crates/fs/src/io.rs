@@ -1,7 +1,7 @@
 //! Positional file I/O that does not depend on a shared cursor, so chunks can
 //! be read and written from many threads at once.
 
-use model::artifact::{EntryMetadata, PERMISSION_BITS, Timestamp};
+use model::artifact::{EntryKind, EntryMetadata, PERMISSION_BITS, Timestamp};
 use std::fs::File;
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -130,6 +130,33 @@ pub(crate) fn system_time(time: Timestamp) -> Option<SystemTime> {
 }
 
 /// Gives a directory its recorded time and permissions.
+/// What is recorded of an entry, as this system keeps it: everything.
+#[cfg(unix)]
+pub(crate) fn as_kept(_kind: &EntryKind, recorded: EntryMetadata) -> EntryMetadata {
+    recorded
+}
+
+/// What is recorded of an entry, as this system keeps it: of a file's
+/// permissions whether it may be written, and of a directory nothing.
+#[cfg(not(unix))]
+pub(crate) fn as_kept(kind: &EntryKind, recorded: EntryMetadata) -> EntryMetadata {
+    match kind {
+        EntryKind::File { .. } => EntryMetadata {
+            mode: if recorded.mode & 0o222 == 0 {
+                0o444
+            } else {
+                0o644
+            },
+            ..recorded
+        },
+        EntryKind::Directory => EntryMetadata {
+            mode: 0o755,
+            modified: None,
+        },
+        EntryKind::Symlink { .. } => recorded,
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn restore_directory(path: &std::path::Path, metadata: EntryMetadata) -> io::Result<()> {
     let dir = File::open(path)?;
