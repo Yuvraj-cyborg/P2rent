@@ -10,4 +10,5 @@ public import Model.Layout
 public import Model.Path
 public import Model.Assembly
 public import Model.Mirror
+public import Model.Rolling
 public import Model.Schedule
