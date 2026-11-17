@@ -47,6 +47,26 @@ impl Memory {
         }
     }
 
+    /// A place for `tree` that already holds `files`, the bytes of each
+    /// entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if `files` are not the files of `tree`.
+    pub fn holding(tree: Arc<Tree>, files: &[Vec<u8>]) -> Result<Self, Failure> {
+        let place = Self::new(tree);
+        place.begin(&|_| None, &|_| {})?;
+        let written = files
+            .iter()
+            .enumerate()
+            .filter(|(_, bytes)| !bytes.is_empty());
+        for (file, bytes) in written {
+            place.write(file, 0, bytes)?;
+            place.commit(file)?;
+        }
+        Ok(place)
+    }
+
     /// Whether the tree has been finished.
     pub fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Relaxed)

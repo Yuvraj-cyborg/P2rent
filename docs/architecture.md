@@ -232,6 +232,14 @@ copies what a source holds into a place: it asks the source what it holds,
 leaves alone a file that is already there with the same size and time,
 fetches the rest, and says how far the bytes were checked.
 
+`engine::copy` takes several sources that hold the same files, such as
+several addresses for one file, and each chunk then comes from whichever
+is free to send it. It does so only if a digest of every file is known.
+Sources that give different sizes or different digests are refused, and so
+are sources of which nothing tells that they hold the same bytes. What the
+transfer notes beside a file is then kept under the digest, so it can be
+carried on with from any of them.
+
 An origin is found by asking for the first byte of the file. The answer
 says how large the file is and what the server can do:
 
@@ -248,7 +256,8 @@ A **validator** is what tells one version of a file from another: a strong
 version, its length, and which part of the file it is. An answer of another
 version ends the transfer. Without a validator two answers could be two
 files, so they are put together only if a digest of the whole file will be
-checked at the end.
+checked at the end. The same rule covers two servers: bytes are put
+together only when something ties them to one file.
 
 A digest of the whole file is given by the user, or by the server in a
 `Repr-Digest` or `Digest` header. With one the transfer is *verified*, and

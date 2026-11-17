@@ -78,14 +78,26 @@ async fn fetch_within(
     stall_timeout: Duration,
 ) -> Result<Copied, Error> {
     let origin = Origin::find(&server.url(path), &options).await?;
-    engine::copy(
-        Arc::new(origin),
-        MIN_CHUNK_SIZE,
-        |tree| Arc::new(Folder::inside(tree.clone(), dir)),
-        limits(stall_timeout),
-        Arc::new(|_| {}),
-    )
-    .await
+    copy_into(dir, vec![Arc::new(origin)], limits(stall_timeout)).await
+}
+
+/// Fetches the file that each of `servers` holds into `dir`.
+async fn fetch_from(servers: &[&Server], dir: &Path, options: Options) -> Result<Copied, Error> {
+    let mut origins: Vec<Arc<dyn Source>> = Vec::new();
+    for server in servers {
+        let origin = Origin::find(&server.url("/sample.bin"), &options).await?;
+        origins.push(Arc::new(origin));
+    }
+    copy_into(dir, origins, limits(Duration::from_secs(20))).await
+}
+
+async fn copy_into(
+    dir: &Path,
+    origins: Vec<Arc<dyn Source>>,
+    limits: engine::Options,
+) -> Result<Copied, Error> {
+    let folder = |tree: &Arc<Tree>| Arc::new(Folder::inside(tree.clone(), dir));
+    engine::copy(origins, MIN_CHUNK_SIZE, folder, limits, Arc::new(|_| {})).await
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -194,15 +206,9 @@ async fn a_run_of_chunks_is_one_request() {
         requests_per_supplier: 1,
         ..engine::Options::default()
     };
-    engine::copy(
-        Arc::new(origin),
-        MIN_CHUNK_SIZE,
-        |tree| Arc::new(Folder::inside(tree.clone(), tmp.path())),
-        one_at_a_time,
-        Arc::new(|_| {}),
-    )
-    .await
-    .unwrap();
+    copy_into(tmp.path(), vec![Arc::new(origin)], one_at_a_time)
+        .await
+        .unwrap();
 
     assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
     let asked = server.asked();
@@ -371,15 +377,10 @@ async fn a_file_that_changes_on_the_server_ends_the_transfer() {
         serve.file = bytes(CHUNK * 40 + 123).into_iter().rev().collect();
         serve.etag = Some("\"v2\"".into());
     });
-    let ended = engine::copy(
-        Arc::new(origin),
-        MIN_CHUNK_SIZE,
-        |tree| Arc::new(Folder::inside(tree.clone(), tmp.path())),
-        limits(Duration::from_secs(20)),
-        Arc::new(|_| {}),
-    )
-    .await
-    .unwrap_err();
+    let within = limits(Duration::from_secs(20));
+    let ended = copy_into(tmp.path(), vec![Arc::new(origin)], within)
+        .await
+        .unwrap_err();
 
     let Error::Changed(what) = &ended else {
         panic!("{ended:?}");
@@ -528,6 +529,96 @@ async fn answers_are_not_joined_when_nothing_tells_they_are_one_file() {
         .unwrap();
     assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
     assert_eq!(copied.verification, Some(Verification::Verified));
+}
+
+/// Several addresses for one file feed one transfer, when a digest of the
+/// file tells that they hold the same one.
+#[tokio::test]
+async fn several_addresses_for_one_file_feed_one_transfer() {
+    let file = file();
+    let given = Options {
+        digest: Some(FileDigest::Sha256(sha256(&file))),
+        ..impatient()
+    };
+    let first = Server::start(serving(file.clone())).await;
+    let second = Server::start(serving(file.clone())).await;
+    // The first breaks off every answer a little way in, for good, so
+    // most of the file has to come from the second.
+    first.fail(Fault::Cut(CHUNK * 3 + 100), usize::MAX);
+    let tmp = tempfile::tempdir().unwrap();
+    let copied = fetch_from(&[&first, &second], tmp.path(), given)
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
+    assert_eq!(copied.verification, Some(Verification::Verified));
+    assert_eq!(copied.from.iter().sum::<u64>(), file.len() as u64);
+    assert!(copied.from[1] > 0, "{:?}", copied.from);
+    assert!(second.asked().len() > 1);
+}
+
+#[tokio::test]
+async fn addresses_that_cannot_be_known_to_hold_one_file_are_not_read_together() {
+    let file = file();
+    let given = Options {
+        digest: Some(FileDigest::Sha256(sha256(&file))),
+        ..impatient()
+    };
+    let server = Server::start(serving(file.clone())).await;
+    let same = Server::start(serving(file.clone())).await;
+    let shorter = Server::start(serving(bytes(CHUNK))).await;
+    let mut says = serving(file.clone());
+    says.repr_digest = Some(repr_digest(&file));
+    let says = Server::start(says).await;
+    let mut says_another = serving(file.clone());
+    says_another.repr_digest = Some(repr_digest(b"another file"));
+    let says_another = Server::start(says_another).await;
+
+    for (servers, options, why) in [
+        // Nothing tells that the two hold the same file.
+        (
+            [&server, &same],
+            impatient(),
+            "sample.bin cannot be read from more than one source",
+        ),
+        ([&server, &shorter], given, "does not hold the same files"),
+        ([&says, &says_another], impatient(), "gives another digest"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let refused = fetch_from(&servers, tmp.path(), options).await.unwrap_err();
+        let Error::Place(Failure::Fatal(said)) = &refused else {
+            panic!("{refused:?}");
+        };
+        assert!(said.contains(why), "{said}");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+    // Each was asked what it holds, and for nothing more.
+    assert_eq!(same.asked(), [Some("bytes=0-0".to_owned())]);
+}
+
+/// An address that holds other bytes, at the same length, is found out by
+/// the digest, and nothing of the file is kept.
+#[tokio::test]
+async fn an_address_that_holds_another_file_is_found_out_by_the_digest() {
+    let file = file();
+    let given = Options {
+        digest: Some(FileDigest::Sha256(sha256(&file))),
+        ..impatient()
+    };
+    // The one that holds the file sends nothing of it.
+    let honest = Server::start(serving(file.clone())).await;
+    honest.fail(Fault::Cut(0), usize::MAX);
+    let other = Server::start(serving(file.into_iter().rev().collect())).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let ended = fetch_from(&[&honest, &other], tmp.path(), given)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(ended, Error::Place(Failure::Corrupt(_))),
+        "{ended:?}"
+    );
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
 }
 
 /// Every answer is held to what the server said when it was first asked.
