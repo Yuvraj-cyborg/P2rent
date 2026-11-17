@@ -111,13 +111,14 @@ have them.
 - **The new name**, as in the table above. A machine that ran p2rent keeps
   its identity: its key is copied to the new configuration folder the first
   time mux runs.
-- **`mux cp` copies a file from the web into a folder.**
+- **`mux cp` copies a file from the web, or a folder, into a folder.**
   `mux cp https://example.org/big.iso ./downloads/` reads it over several
   connections, carries on where an interrupted copy stopped, and stops with
   an error if the file changes on the server meanwhile. With
   `--hash sha256:…` the copy is verified, and `--mirror URL` reads from a
-  second server at the same time. [docs/commands.md](docs/commands.md) has
-  the details and the exit codes.
+  second server at the same time. `mux cp ./weights /mnt/backup/` copies a
+  folder with its links, permissions and times.
+  [docs/commands.md](docs/commands.md) has the details and the exit codes.
 
 ## Installation
 

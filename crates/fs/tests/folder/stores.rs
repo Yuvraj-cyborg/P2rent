@@ -1,5 +1,5 @@
 use crate::common::Store;
-use ::fs::{index, measure};
+use ::fs::{index, measure, scan};
 use model::artifact::{EntryKind, MIN_CHUNK_SIZE, PART_SUFFIX};
 use std::fs;
 use std::path::PathBuf;
@@ -22,6 +22,30 @@ fn sample_tree(dir: &std::path::Path) -> std::path::PathBuf {
     fs::write(root.join("nested/b.bin"), bytes(CS, 2)).unwrap();
     fs::write(root.join("nested/deep/c.bin"), bytes(5, 3)).unwrap();
     root
+}
+
+/// A scan finds the tree that an index records, and reads no file to do
+/// it.
+#[test]
+fn a_scan_finds_the_tree_an_index_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    // A part file is this program's own unfinished work, and is left out.
+    fs::write(root.join("nested/unfinished.mux-part"), b"half").unwrap();
+
+    let indexed = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap();
+    assert_eq!(scanned.tree, **indexed.artifact.tree());
+    assert_eq!(scanned.root, indexed.root);
+    assert_eq!((scanned.skipped, indexed.skipped), (1, 1));
+
+    // One file is a tree of one entry.
+    let file = scan(&root.join("a.bin"), MIN_CHUNK_SIZE).unwrap();
+    assert!(file.tree.is_file());
+    assert_eq!(file.tree.name(), "a.bin");
+    assert_eq!(file.tree.total_size(), (CS * 3 + 17) as u64);
+
+    assert!(scan(&root.join("missing"), MIN_CHUNK_SIZE).is_err());
 }
 
 #[test]
