@@ -1383,14 +1383,14 @@ def assembly.Assembly.add
         ok (none, { self with held := b1, missing := v })
 
 /-- [model::schedule::{impl core::clone::Clone for model::schedule::ChunkState}::clone]:
-    Source: 'crates/model/src/schedule.rs', lines 10:9-10:14
+    Source: 'crates/model/src/schedule.rs', lines 14:9-14:14
     Visibility: public -/
 def schedule.ChunkState.Insts.CoreCloneClone.clone
   (self : schedule.ChunkState) : Result schedule.ChunkState := do
   ok self
 
 /-- Trait implementation: [model::schedule::{impl core::clone::Clone for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:9-10:14 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:9-14:14 -/
 @[reducible]
 def schedule.ChunkState.Insts.CoreCloneClone : core.clone.Clone
   schedule.ChunkState := {
@@ -1398,7 +1398,7 @@ def schedule.ChunkState.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [model::schedule::{impl core::marker::Copy for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:16-10:20 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:16-14:20 -/
 @[reducible]
 def schedule.ChunkState.Insts.CoreMarkerCopy : core.marker.Copy
   schedule.ChunkState := {
@@ -1406,7 +1406,7 @@ def schedule.ChunkState.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [model::schedule::{impl core::fmt::Debug for model::schedule::ChunkState}::fmt]:
-    Source: 'crates/model/src/schedule.rs', lines 10:22-10:27
+    Source: 'crates/model/src/schedule.rs', lines 14:22-14:27
     Visibility: public -/
 def schedule.ChunkState.Insts.CoreFmtDebug.fmt
   (self : schedule.ChunkState) (f : core.fmt.Formatter) :
@@ -1415,12 +1415,13 @@ def schedule.ChunkState.Insts.CoreFmtDebug.fmt
   match self with
   | schedule.ChunkState.Missing =>
     core.fmt.Formatter.write_str f (toStr "Missing")
-  | schedule.ChunkState.InFlight =>
-    core.fmt.Formatter.write_str f (toStr "InFlight")
+  | schedule.ChunkState.InFlight __self_0 =>
+    let __self_01 := Dyn.mk _ (core.fmt.DebugShared core.fmt.DebugU32) __self_0
+    core.fmt.Formatter.debug_tuple_field1_finish f (toStr "InFlight") __self_01
   | schedule.ChunkState.Done => core.fmt.Formatter.write_str f (toStr "Done")
 
 /-- Trait implementation: [model::schedule::{impl core::fmt::Debug for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:22-10:27 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:22-14:27 -/
 @[reducible]
 def schedule.ChunkState.Insts.CoreFmtDebug : core.fmt.Debug schedule.ChunkState
   := {
@@ -1428,14 +1429,14 @@ def schedule.ChunkState.Insts.CoreFmtDebug : core.fmt.Debug schedule.ChunkState
 }
 
 /-- Trait implementation: [model::schedule::{impl core::marker::StructuralPartialEq for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:29-10:38 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:29-14:38 -/
 @[reducible]
 def schedule.ChunkState.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq schedule.ChunkState := {
 }
 
 /-- [model::schedule::{impl core::cmp::PartialEq<model::schedule::ChunkState> for model::schedule::ChunkState}::eq]:
-    Source: 'crates/model/src/schedule.rs', lines 10:29-10:38
+    Source: 'crates/model/src/schedule.rs', lines 14:29-14:38
     Visibility: public -/
 def schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq
   (self : schedule.ChunkState) (other : schedule.ChunkState) :
@@ -1443,28 +1444,120 @@ def schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq
   := do
   let self1 := read_discriminant self
   let other1 := read_discriminant other
-  ok (self1 = other1)
+  if self1 = other1
+  then
+    match self with
+    | schedule.ChunkState.Missing => ok true
+    | schedule.ChunkState.InFlight __self_0 =>
+      match other with
+      | schedule.ChunkState.Missing => ok true
+      | schedule.ChunkState.InFlight __arg1_0 =>
+        lift (core.cmp.impls.PartialEqU32.eq __self_0 __arg1_0)
+      | schedule.ChunkState.Done => ok true
+    | schedule.ChunkState.Done => ok true
+  else ok false
 
 /-- Trait implementation: [model::schedule::{impl core::cmp::PartialEq<model::schedule::ChunkState> for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:29-10:38 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:29-14:38 -/
 @[reducible]
 def schedule.ChunkState.Insts.CoreCmpPartialEqChunkState : core.cmp.PartialEq
   schedule.ChunkState schedule.ChunkState := {
   eq := schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq
 }
 
+/-- [model::schedule::{impl core::cmp::Eq for model::schedule::ChunkState}::assert_fields_are_eq]:
+    Source: 'crates/model/src/schedule.rs', lines 14:40-14:42
+    Visibility: public -/
+def schedule.ChunkState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : schedule.ChunkState) : Result Unit := do
+  ok ()
+
 /-- Trait implementation: [model::schedule::{impl core::cmp::Eq for model::schedule::ChunkState}]
-    Source: 'crates/model/src/schedule.rs', lines 10:40-10:42 -/
+    Source: 'crates/model/src/schedule.rs', lines 14:40-14:42 -/
 @[reducible]
-impl_def schedule.ChunkState.Insts.CoreCmpEq : core.cmp.Eq schedule.ChunkState
-  := {
+def schedule.ChunkState.Insts.CoreCmpEq : core.cmp.Eq schedule.ChunkState := {
   partialEqInst := schedule.ChunkState.Insts.CoreCmpPartialEqChunkState
+  assert_fields_are_eq :=
+    schedule.ChunkState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [model::schedule::{impl core::clone::Clone for model::schedule::Outcome}::clone]:
+    Source: 'crates/model/src/schedule.rs', lines 25:9-25:14
+    Visibility: public -/
+def schedule.Outcome.Insts.CoreCloneClone.clone
+  (self : schedule.Outcome) : Result schedule.Outcome := do
+  ok self
+
+/-- Trait implementation: [model::schedule::{impl core::clone::Clone for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:9-25:14 -/
+@[reducible]
+def schedule.Outcome.Insts.CoreCloneClone : core.clone.Clone schedule.Outcome
+  := {
+  clone := schedule.Outcome.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [model::schedule::{impl core::marker::Copy for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:16-25:20 -/
+@[reducible]
+def schedule.Outcome.Insts.CoreMarkerCopy : core.marker.Copy schedule.Outcome
+  := {
+  cloneInst := schedule.Outcome.Insts.CoreCloneClone
+}
+
+/-- [model::schedule::{impl core::fmt::Debug for model::schedule::Outcome}::fmt]:
+    Source: 'crates/model/src/schedule.rs', lines 25:22-25:27
+    Visibility: public -/
+def schedule.Outcome.Insts.CoreFmtDebug.fmt
+  (self : schedule.Outcome) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  match self with
+  | schedule.Outcome.Verified =>
+    core.fmt.Formatter.write_str f (toStr "Verified")
+  | schedule.Outcome.Failed => core.fmt.Formatter.write_str f (toStr "Failed")
+
+/-- Trait implementation: [model::schedule::{impl core::fmt::Debug for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:22-25:27 -/
+@[reducible]
+def schedule.Outcome.Insts.CoreFmtDebug : core.fmt.Debug schedule.Outcome := {
+  fmt := schedule.Outcome.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::schedule::{impl core::marker::StructuralPartialEq for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:29-25:38 -/
+@[reducible]
+def schedule.Outcome.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq schedule.Outcome := {
+}
+
+/-- [model::schedule::{impl core::cmp::PartialEq<model::schedule::Outcome> for model::schedule::Outcome}::eq]:
+    Source: 'crates/model/src/schedule.rs', lines 25:29-25:38
+    Visibility: public -/
+def schedule.Outcome.Insts.CoreCmpPartialEqOutcome.eq
+  (self : schedule.Outcome) (other : schedule.Outcome) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [model::schedule::{impl core::cmp::PartialEq<model::schedule::Outcome> for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:29-25:38 -/
+@[reducible]
+def schedule.Outcome.Insts.CoreCmpPartialEqOutcome : core.cmp.PartialEq
+  schedule.Outcome schedule.Outcome := {
+  eq := schedule.Outcome.Insts.CoreCmpPartialEqOutcome.eq
+}
+
+/-- Trait implementation: [model::schedule::{impl core::cmp::Eq for model::schedule::Outcome}]
+    Source: 'crates/model/src/schedule.rs', lines 25:40-25:42 -/
+@[reducible]
+impl_def schedule.Outcome.Insts.CoreCmpEq : core.cmp.Eq schedule.Outcome := {
+  partialEqInst := schedule.Outcome.Insts.CoreCmpPartialEqOutcome
   assert_fields_are_eq := core.cmp.Eq.assert_fields_are_eq.default
-    schedule.ChunkState.Insts.CoreCmpEq
+    schedule.Outcome.Insts.CoreCmpEq
 }
 
 /-- [model::schedule::{impl core::clone::Clone for model::schedule::Schedule}::clone]:
-    Source: 'crates/model/src/schedule.rs', lines 24:9-24:14
+    Source: 'crates/model/src/schedule.rs', lines 37:9-37:14
     Visibility: public -/
 def schedule.Schedule.Insts.CoreCloneClone.clone
   (self : schedule.Schedule) : Result schedule.Schedule := do
@@ -1475,7 +1568,7 @@ def schedule.Schedule.Insts.CoreCloneClone.clone
   ok { chunks := v, remaining := i }
 
 /-- Trait implementation: [model::schedule::{impl core::clone::Clone for model::schedule::Schedule}]
-    Source: 'crates/model/src/schedule.rs', lines 24:9-24:14 -/
+    Source: 'crates/model/src/schedule.rs', lines 37:9-37:14 -/
 @[reducible]
 def schedule.Schedule.Insts.CoreCloneClone : core.clone.Clone schedule.Schedule
   := {
@@ -1483,7 +1576,7 @@ def schedule.Schedule.Insts.CoreCloneClone : core.clone.Clone schedule.Schedule
 }
 
 /-- [model::schedule::{impl core::fmt::Debug for model::schedule::Schedule}::fmt]:
-    Source: 'crates/model/src/schedule.rs', lines 24:16-24:21
+    Source: 'crates/model/src/schedule.rs', lines 37:16-37:21
     Visibility: public -/
 def schedule.Schedule.Insts.CoreFmtDebug.fmt
   (self : schedule.Schedule) (f : core.fmt.Formatter) :
@@ -1497,7 +1590,7 @@ def schedule.Schedule.Insts.CoreFmtDebug.fmt
     "chunks") dyn (toStr "remaining") dyn1
 
 /-- Trait implementation: [model::schedule::{impl core::fmt::Debug for model::schedule::Schedule}]
-    Source: 'crates/model/src/schedule.rs', lines 24:16-24:21 -/
+    Source: 'crates/model/src/schedule.rs', lines 37:16-37:21 -/
 @[reducible]
 def schedule.Schedule.Insts.CoreFmtDebug : core.fmt.Debug schedule.Schedule
   := {
@@ -1505,14 +1598,14 @@ def schedule.Schedule.Insts.CoreFmtDebug : core.fmt.Debug schedule.Schedule
 }
 
 /-- Trait implementation: [model::schedule::{impl core::marker::StructuralPartialEq for model::schedule::Schedule}]
-    Source: 'crates/model/src/schedule.rs', lines 24:23-24:32 -/
+    Source: 'crates/model/src/schedule.rs', lines 37:23-37:32 -/
 @[reducible]
 def schedule.Schedule.Insts.CoreMarkerStructuralPartialEq :
   core.marker.StructuralPartialEq schedule.Schedule := {
 }
 
 /-- [model::schedule::{impl core::cmp::PartialEq<model::schedule::Schedule> for model::schedule::Schedule}::eq]:
-    Source: 'crates/model/src/schedule.rs', lines 24:23-24:32
+    Source: 'crates/model/src/schedule.rs', lines 37:23-37:32
     Visibility: public -/
 def schedule.Schedule.Insts.CoreCmpPartialEqSchedule.eq
   (self : schedule.Schedule) (other : schedule.Schedule) : Result Bool := do
@@ -1524,7 +1617,7 @@ def schedule.Schedule.Insts.CoreCmpPartialEqSchedule.eq
   else ok false
 
 /-- Trait implementation: [model::schedule::{impl core::cmp::PartialEq<model::schedule::Schedule> for model::schedule::Schedule}]
-    Source: 'crates/model/src/schedule.rs', lines 24:23-24:32 -/
+    Source: 'crates/model/src/schedule.rs', lines 37:23-37:32 -/
 @[reducible]
 def schedule.Schedule.Insts.CoreCmpPartialEqSchedule : core.cmp.PartialEq
   schedule.Schedule schedule.Schedule := {
@@ -1532,14 +1625,14 @@ def schedule.Schedule.Insts.CoreCmpPartialEqSchedule : core.cmp.PartialEq
 }
 
 /-- [model::schedule::{impl core::cmp::Eq for model::schedule::Schedule}::assert_fields_are_eq]:
-    Source: 'crates/model/src/schedule.rs', lines 24:34-24:36
+    Source: 'crates/model/src/schedule.rs', lines 37:34-37:36
     Visibility: public -/
 def schedule.Schedule.Insts.CoreCmpEq.assert_fields_are_eq
   (self : schedule.Schedule) : Result Unit := do
   ok ()
 
 /-- Trait implementation: [model::schedule::{impl core::cmp::Eq for model::schedule::Schedule}]
-    Source: 'crates/model/src/schedule.rs', lines 24:34-24:36 -/
+    Source: 'crates/model/src/schedule.rs', lines 37:34-37:36 -/
 @[reducible]
 def schedule.Schedule.Insts.CoreCmpEq : core.cmp.Eq schedule.Schedule := {
   partialEqInst := schedule.Schedule.Insts.CoreCmpPartialEqSchedule
@@ -1548,7 +1641,7 @@ def schedule.Schedule.Insts.CoreCmpEq : core.cmp.Eq schedule.Schedule := {
 }
 
 /-- [model::schedule::{model::schedule::Schedule}::new]: loop body 0:
-    Source: 'crates/model/src/schedule.rs', lines 38:8-46:9
+    Source: 'crates/model/src/schedule.rs', lines 51:8-59:9
     Visibility: public -/
 @[rust_loop_body]
 def schedule.Schedule.new_loop.body
@@ -1577,7 +1670,7 @@ def schedule.Schedule.new_loop.body
   else ok (done (chunks, remaining))
 
 /-- [model::schedule::{model::schedule::Schedule}::new]: loop 0:
-    Source: 'crates/model/src/schedule.rs', lines 38:8-46:9
+    Source: 'crates/model/src/schedule.rs', lines 51:8-59:9
     Visibility: public -/
 @[rust_loop]
 def schedule.Schedule.new_loop
@@ -1592,7 +1685,7 @@ def schedule.Schedule.new_loop
     (chunks, remaining, index)
 
 /-- [model::schedule::{model::schedule::Schedule}::new]:
-    Source: 'crates/model/src/schedule.rs', lines 33:4-48:5
+    Source: 'crates/model/src/schedule.rs', lines 46:4-61:5
     Visibility: public -/
 def schedule.Schedule.new
   («have» : artifact.bitfield.Bitfield) : Result schedule.Schedule := do
@@ -1604,34 +1697,34 @@ def schedule.Schedule.new
   ok { chunks := chunks1, remaining }
 
 /-- [model::schedule::{model::schedule::Schedule}::len]:
-    Source: 'crates/model/src/schedule.rs', lines 51:4-53:5
+    Source: 'crates/model/src/schedule.rs', lines 64:4-66:5
     Visibility: public -/
 def schedule.Schedule.len (self : schedule.Schedule) : Result Std.U64 := do
   let i := alloc.vec.Vec.len self.chunks
   ok (UScalar.cast .U64 i)
 
 /-- [model::schedule::{model::schedule::Schedule}::is_empty]:
-    Source: 'crates/model/src/schedule.rs', lines 56:4-58:5
+    Source: 'crates/model/src/schedule.rs', lines 69:4-71:5
     Visibility: public -/
 def schedule.Schedule.is_empty (self : schedule.Schedule) : Result Bool := do
   alloc.vec.Vec.is_empty self.chunks
 
 /-- [model::schedule::{model::schedule::Schedule}::remaining]:
-    Source: 'crates/model/src/schedule.rs', lines 61:4-63:5
+    Source: 'crates/model/src/schedule.rs', lines 74:4-76:5
     Visibility: public -/
 def schedule.Schedule.impl.remaining
   (self : schedule.Schedule) : Result Std.U64 := do
   ok self.remaining
 
 /-- [model::schedule::{model::schedule::Schedule}::is_complete]:
-    Source: 'crates/model/src/schedule.rs', lines 66:4-68:5
+    Source: 'crates/model/src/schedule.rs', lines 79:4-81:5
     Visibility: public -/
 def schedule.Schedule.is_complete
   (self : schedule.Schedule) : Result Bool := do
   ok (self.remaining = 0#u64)
 
 /-- [model::schedule::{model::schedule::Schedule}::state]:
-    Source: 'crates/model/src/schedule.rs', lines 71:4-78:5
+    Source: 'crates/model/src/schedule.rs', lines 84:4-91:5
     Visibility: public -/
 def schedule.Schedule.state
   (self : schedule.Schedule) (index : Std.U64) :
@@ -1647,12 +1740,20 @@ def schedule.Schedule.state
     ok (some cs)
   else ok none
 
+/-- [model::schedule::is_missing]:
+    Source: 'crates/model/src/schedule.rs', lines 147:0-149:1 -/
+def schedule.is_missing (state : schedule.ChunkState) : Result Bool := do
+  match state with
+  | schedule.ChunkState.Missing => ok true
+  | schedule.ChunkState.InFlight _ => ok false
+  | schedule.ChunkState.Done => ok false
+
 /-- [model::schedule::{model::schedule::Schedule}::claim]: loop body 0:
-    Source: 'crates/model/src/schedule.rs', lines 97:8-109:5
+    Source: 'crates/model/src/schedule.rs', lines 110:8-122:5
     Visibility: public -/
 @[rust_loop_body]
 def schedule.Schedule.claim_loop.body
-  (v : alloc.vec.Vec schedule.ChunkState)
+  (v : alloc.vec.Vec schedule.ChunkState) (owner : Std.U32)
   (available : artifact.bitfield.Bitfield) (cursor : Std.U64) (total : Std.U64)
   (index : Std.U64) (step : Std.U64) :
   Result (ControlFlow (Std.U64 × Std.U64) ((Option Std.U64) × (alloc.vec.Vec
@@ -1668,9 +1769,7 @@ def schedule.Schedule.claim_loop.body
     let cs ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
         schedule.ChunkState) v slot
-    let b ←
-      schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq cs
-        schedule.ChunkState.Missing
+    let b ← schedule.is_missing cs
     if b
     then
       let b1 ← artifact.bitfield.Bitfield.get available index
@@ -1679,7 +1778,7 @@ def schedule.Schedule.claim_loop.body
         let (_, index_mut_back) ←
           alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
             schedule.ChunkState) v slot
-        let v1 := index_mut_back schedule.ChunkState.InFlight
+        let v1 := index_mut_back (schedule.ChunkState.InFlight owner)
         ok (done (some index, v1, next))
       else let step1 ← step + 1#u64
            ok (cont (next, step1))
@@ -1688,26 +1787,26 @@ def schedule.Schedule.claim_loop.body
   else ok (done (none, v, cursor))
 
 /-- [model::schedule::{model::schedule::Schedule}::claim]: loop 0:
-    Source: 'crates/model/src/schedule.rs', lines 97:8-109:5
+    Source: 'crates/model/src/schedule.rs', lines 110:8-122:5
     Visibility: public -/
 @[rust_loop]
 def schedule.Schedule.claim_loop
-  (v : alloc.vec.Vec schedule.ChunkState)
+  (v : alloc.vec.Vec schedule.ChunkState) (owner : Std.U32)
   (available : artifact.bitfield.Bitfield) (cursor : Std.U64) (total : Std.U64)
   (index : Std.U64) (step : Std.U64) :
   Result ((Option Std.U64) × (alloc.vec.Vec schedule.ChunkState) × Std.U64)
   := do
   loop
-    (fun (index1, step1) => schedule.Schedule.claim_loop.body v available
+    (fun (index1, step1) => schedule.Schedule.claim_loop.body v owner available
       cursor total index1 step1)
     (index, step)
 
 /-- [model::schedule::{model::schedule::Schedule}::claim]:
-    Source: 'crates/model/src/schedule.rs', lines 87:4-109:5
+    Source: 'crates/model/src/schedule.rs', lines 100:4-122:5
     Visibility: public -/
 def schedule.Schedule.claim
-  (self : schedule.Schedule) (available : artifact.bitfield.Bitfield)
-  (cursor : Std.U64) :
+  (self : schedule.Schedule) (owner : Std.U32)
+  (available : artifact.bitfield.Bitfield) (cursor : Std.U64) :
   Result ((Option Std.U64) × schedule.Schedule × Std.U64)
   := do
   let total ← schedule.Schedule.len self
@@ -1716,14 +1815,25 @@ def schedule.Schedule.claim
   else
     let index ← cursor % total
     let (o, v, cursor1) ←
-      schedule.Schedule.claim_loop self.chunks available cursor total index
-        0#u64
+      schedule.Schedule.claim_loop self.chunks owner available cursor total
+        index 0#u64
     ok (o, { self with chunks := v }, cursor1)
 
+/-- [model::schedule::is_held_by]:
+    Source: 'crates/model/src/schedule.rs', lines 152:0-157:1 -/
+def schedule.is_held_by
+  (state : schedule.ChunkState) (owner : Std.U32) : Result Bool := do
+  match state with
+  | schedule.ChunkState.Missing => ok false
+  | schedule.ChunkState.InFlight «by» => ok («by» = owner)
+  | schedule.ChunkState.Done => ok false
+
 /-- [model::schedule::{model::schedule::Schedule}::settle]:
-    Source: 'crates/model/src/schedule.rs', lines 131:4-139:5 -/
+    Source: 'crates/model/src/schedule.rs', lines 130:4-144:5
+    Visibility: public -/
 def schedule.Schedule.settle
-  (self : schedule.Schedule) (index : Std.U64) (state : schedule.ChunkState) :
+  (self : schedule.Schedule) (index : Std.U64) (owner : Std.U32)
+  (outcome : schedule.Outcome) :
   Result (Bool × schedule.Schedule)
   := do
   let slot ← artifact.to_usize index
@@ -1733,41 +1843,24 @@ def schedule.Schedule.settle
     let cs ←
       alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
         schedule.ChunkState) self.chunks slot
-    let b ←
-      schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq cs
-        schedule.ChunkState.InFlight
+    let b ← schedule.is_held_by cs owner
     if b
     then
-      let (_, index_mut_back) ←
-        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
-          schedule.ChunkState) self.chunks slot
-      let v := index_mut_back state
-      ok (true, { self with chunks := v })
+      match outcome with
+      | schedule.Outcome.Verified =>
+        let (_, index_mut_back) ←
+          alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+            schedule.ChunkState) self.chunks slot
+        let i1 ← self.remaining - 1#u64
+        let v := index_mut_back schedule.ChunkState.Done
+        ok (true, { chunks := v, remaining := i1 })
+      | schedule.Outcome.Failed =>
+        let (_, index_mut_back) ←
+          alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+            schedule.ChunkState) self.chunks slot
+        let v := index_mut_back schedule.ChunkState.Missing
+        ok (true, { self with chunks := v })
     else ok (false, self)
   else ok (false, self)
-
-/-- [model::schedule::{model::schedule::Schedule}::complete]:
-    Source: 'crates/model/src/schedule.rs', lines 114:4-120:5
-    Visibility: public -/
-def schedule.Schedule.complete
-  (self : schedule.Schedule) (index : Std.U64) :
-  Result (Bool × schedule.Schedule)
-  := do
-  let (settled, self1) ←
-    schedule.Schedule.settle self index schedule.ChunkState.Done
-  if settled
-  then
-    let i ← self1.remaining - 1#u64
-    ok (settled, { self1 with remaining := i })
-  else ok (settled, self1)
-
-/-- [model::schedule::{model::schedule::Schedule}::release]:
-    Source: 'crates/model/src/schedule.rs', lines 125:4-127:5
-    Visibility: public -/
-def schedule.Schedule.release
-  (self : schedule.Schedule) (index : Std.U64) :
-  Result (Bool × schedule.Schedule)
-  := do
-  schedule.Schedule.settle self index schedule.ChunkState.Missing
 
 end model

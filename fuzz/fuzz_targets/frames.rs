@@ -28,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
     let mut schedule = Schedule::new(&model::artifact::Bitfield::new(chunks));
     let mut cursor = chunks / 2;
     let mut claimed = 0;
-    while let Some(index) = schedule.claim(&have, &mut cursor) {
+    while let Some(index) = schedule.claim(0, &have, &mut cursor) {
         assert!(index < chunks && have.get(index));
         claimed += 1;
         assert!(claimed <= chunks);

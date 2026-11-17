@@ -4,7 +4,7 @@ use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Timestamp,
 };
 use model::hex;
-use model::schedule::{ChunkState, Schedule};
+use model::schedule::{ChunkState, Outcome, Owner, Schedule};
 use proptest::collection::{btree_set, vec};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -121,21 +121,35 @@ fn naive_layout(manifest: &Manifest) -> Vec<(usize, u64, u32)> {
 #[derive(Clone, Debug)]
 enum Step {
     Claim {
+        owner: Owner,
         available: BTreeSet<u64>,
         cursor: u64,
     },
-    Complete(u64),
-    Release(u64),
+    Settle {
+        index: u64,
+        owner: Owner,
+        outcome: Outcome,
+    },
 }
 
+/// Three fetchers are enough for one to settle what another claimed.
 fn steps(len: u64) -> impl Strategy<Value = Vec<Step>> {
-    let index = 0..len + 2;
+    let owner = 0..3u32;
+    let outcome = prop_oneof![Just(Outcome::Verified), Just(Outcome::Failed)];
     vec(
         prop_oneof![
-            (btree_set(0..len.max(1), 0..16), any::<u64>())
-                .prop_map(|(available, cursor)| Step::Claim { available, cursor }),
-            index.clone().prop_map(Step::Complete),
-            index.prop_map(Step::Release),
+            (owner.clone(), btree_set(0..len.max(1), 0..16), any::<u64>()).prop_map(
+                |(owner, available, cursor)| Step::Claim {
+                    owner,
+                    available,
+                    cursor
+                }
+            ),
+            (0..len + 2, owner, outcome).prop_map(|(index, owner, outcome)| Step::Settle {
+                index,
+                owner,
+                outcome
+            }),
         ],
         0..48,
     )
@@ -300,7 +314,7 @@ proptest! {
 
         for step in steps {
             match step {
-                Step::Claim { available, mut cursor } => {
+                Step::Claim { owner, available, mut cursor } => {
                     let available: BTreeSet<u64> =
                         available.into_iter().filter(|&i| i < len).collect();
                     // The first candidate at or after the cursor, wrapping.
@@ -310,27 +324,24 @@ proptest! {
                             model[usize::try_from(i).unwrap()] == ChunkState::Missing
                                 && available.contains(&i)
                         });
-                    let claimed = schedule.claim(&bitfield(len, &available), &mut cursor);
+                    let claimed = schedule.claim(owner, &bitfield(len, &available), &mut cursor);
                     prop_assert_eq!(claimed, expected);
                     if let Some(index) = claimed {
-                        model[usize::try_from(index).unwrap()] = ChunkState::InFlight;
+                        model[usize::try_from(index).unwrap()] = ChunkState::InFlight(owner);
                         prop_assert_eq!(cursor, (index + 1) % len);
                     }
                 }
-                Step::Complete(index) => {
+                Step::Settle { index, owner, outcome } => {
                     let slot = usize::try_from(index).unwrap();
-                    let in_flight = model.get(slot) == Some(&ChunkState::InFlight);
-                    prop_assert_eq!(schedule.complete(index), in_flight);
-                    if in_flight {
-                        model[slot] = ChunkState::Done;
-                    }
-                }
-                Step::Release(index) => {
-                    let slot = usize::try_from(index).unwrap();
-                    let in_flight = model.get(slot) == Some(&ChunkState::InFlight);
-                    prop_assert_eq!(schedule.release(index), in_flight);
-                    if in_flight {
-                        model[slot] = ChunkState::Missing;
+                    // Only the fetcher of a chunk settles it, and only a
+                    // verified chunk is done.
+                    let mine = model.get(slot) == Some(&ChunkState::InFlight(owner));
+                    prop_assert_eq!(schedule.settle(index, owner, outcome), mine);
+                    if mine {
+                        model[slot] = match outcome {
+                            Outcome::Verified => ChunkState::Done,
+                            Outcome::Failed => ChunkState::Missing,
+                        };
                     }
                 }
             }

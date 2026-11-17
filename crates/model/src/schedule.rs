@@ -6,15 +6,28 @@
 use crate::artifact::{Bitfield, to_usize};
 use alloc::vec::Vec;
 
+/// Names whoever is fetching a chunk. The caller chooses the numbers, one
+/// for each supplier it runs.
+pub type Owner = u32;
+
 /// Where one chunk stands in a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChunkState {
     /// Not held, and nobody is fetching it.
     Missing,
-    /// Reserved by exactly one fetcher.
-    InFlight,
+    /// Reserved by exactly one fetcher, which is named.
+    InFlight(Owner),
     /// Verified and stored.
     Done,
+}
+
+/// How the fetch of a chunk ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The bytes arrived, matched what was expected and are stored.
+    Verified,
+    /// The fetch failed or was given up, or it brought the wrong bytes.
+    Failed,
 }
 
 /// The state of every chunk in one transfer.
@@ -77,14 +90,14 @@ impl Schedule {
         }
     }
 
-    /// Reserves a missing chunk that `available` holds and returns its
-    /// index, or `None` if there is no such chunk.
+    /// Reserves for `owner` a missing chunk that `available` holds and
+    /// returns its index, or `None` if there is no such chunk.
     ///
     /// The search starts at `cursor` and wraps round. On success the cursor
     /// moves just past the chosen chunk, so the next search carries on from
     /// there. Fetchers that start from different cursors therefore collect
     /// different chunks first and can trade them afterwards.
-    pub fn claim(&mut self, available: &Bitfield, cursor: &mut u64) -> Option<u64> {
+    pub fn claim(&mut self, owner: Owner, available: &Bitfield, cursor: &mut u64) -> Option<u64> {
         let total = self.len();
         if self.remaining == 0 {
             return None;
@@ -97,8 +110,8 @@ impl Schedule {
         while step < total {
             let slot = to_usize(index);
             let next = if index + 1 == total { 0 } else { index + 1 };
-            if self.chunks[slot] == ChunkState::Missing && available.get(index) {
-                self.chunks[slot] = ChunkState::InFlight;
+            if is_missing(self.chunks[slot]) && available.get(index) {
+                self.chunks[slot] = ChunkState::InFlight(owner);
                 *cursor = next;
                 return Some(index);
             }
@@ -108,30 +121,22 @@ impl Schedule {
         None
     }
 
-    /// Records that a claimed chunk was verified and stored.
+    /// Ends the fetch of a chunk that `owner` reserved. A verified chunk
+    /// becomes done, which is the only way a chunk becomes done. A failed
+    /// one goes back to missing, to be claimed again.
     ///
-    /// Returns `false`, changing nothing, if the chunk was not in flight.
-    pub fn complete(&mut self, index: u64) -> bool {
-        let settled = self.settle(index, ChunkState::Done);
-        if settled {
-            self.remaining -= 1;
-        }
-        settled
-    }
-
-    /// Puts a claimed chunk back, so that it can be claimed again.
-    ///
-    /// Returns `false`, changing nothing, if the chunk was not in flight.
-    pub fn release(&mut self, index: u64) -> bool {
-        self.settle(index, ChunkState::Missing)
-    }
-
-    /// Moves a chunk that is in flight to `state`. Does nothing and returns
-    /// `false` for any other chunk, or for an index out of range.
-    fn settle(&mut self, index: u64, state: ChunkState) -> bool {
+    /// Returns `false`, changing nothing, unless the chunk is in flight and
+    /// `owner` is the one fetching it.
+    pub fn settle(&mut self, index: u64, owner: Owner, outcome: Outcome) -> bool {
         let slot = to_usize(index);
-        if slot < self.chunks.len() && self.chunks[slot] == ChunkState::InFlight {
-            self.chunks[slot] = state;
+        if slot < self.chunks.len() && is_held_by(self.chunks[slot], owner) {
+            match outcome {
+                Outcome::Verified => {
+                    self.chunks[slot] = ChunkState::Done;
+                    self.remaining -= 1;
+                }
+                Outcome::Failed => self.chunks[slot] = ChunkState::Missing,
+            }
             true
         } else {
             false
@@ -139,9 +144,24 @@ impl Schedule {
     }
 }
 
+fn is_missing(state: ChunkState) -> bool {
+    matches!(state, ChunkState::Missing)
+}
+
+/// Whether `owner` is the one fetching a chunk in this state.
+fn is_held_by(state: ChunkState, owner: Owner) -> bool {
+    match state {
+        ChunkState::InFlight(by) => by == owner,
+        ChunkState::Missing | ChunkState::Done => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ME: Owner = 7;
+    const OTHER: Owner = 8;
 
     fn states(schedule: &Schedule) -> Vec<ChunkState> {
         (0..schedule.len())
@@ -170,11 +190,11 @@ mod tests {
         let mut schedule = Schedule::new(&Bitfield::new(3));
         let everything = Bitfield::full(3);
         let mut cursor = 2;
-        assert_eq!(schedule.claim(&everything, &mut cursor), Some(2));
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), Some(2));
         assert_eq!(cursor, 0);
-        assert_eq!(schedule.claim(&everything, &mut cursor), Some(0));
-        assert_eq!(schedule.claim(&everything, &mut cursor), Some(1));
-        assert_eq!(schedule.claim(&everything, &mut cursor), None);
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), Some(0));
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), Some(1));
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), None);
     }
 
     #[test]
@@ -183,8 +203,8 @@ mod tests {
         let mut only_last = Bitfield::new(3);
         only_last.set(2);
         let mut cursor = 0;
-        assert_eq!(schedule.claim(&only_last, &mut cursor), Some(2));
-        assert_eq!(schedule.claim(&only_last, &mut cursor), None);
+        assert_eq!(schedule.claim(ME, &only_last, &mut cursor), Some(2));
+        assert_eq!(schedule.claim(ME, &only_last, &mut cursor), None);
     }
 
     #[test]
@@ -192,32 +212,62 @@ mod tests {
         let mut schedule = Schedule::new(&Bitfield::new(3));
         let mut cursor = u64::MAX;
         assert_eq!(
-            schedule.claim(&Bitfield::full(3), &mut cursor),
+            schedule.claim(ME, &Bitfield::full(3), &mut cursor),
             Some(u64::MAX % 3)
         );
     }
 
     #[test]
-    fn a_released_chunk_can_be_claimed_again() {
+    fn a_claimed_chunk_names_its_fetcher() {
+        let mut schedule = Schedule::new(&Bitfield::new(2));
+        let everything = Bitfield::full(2);
+        let mut cursor = 0;
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), Some(0));
+        assert_eq!(schedule.claim(OTHER, &everything, &mut cursor), Some(1));
+        assert_eq!(
+            states(&schedule),
+            [ChunkState::InFlight(ME), ChunkState::InFlight(OTHER)]
+        );
+    }
+
+    #[test]
+    fn a_failed_chunk_can_be_claimed_again() {
         let mut schedule = Schedule::new(&Bitfield::new(1));
         let everything = Bitfield::full(1);
         let mut cursor = 0;
-        assert_eq!(schedule.claim(&everything, &mut cursor), Some(0));
-        assert!(schedule.release(0));
+        assert_eq!(schedule.claim(ME, &everything, &mut cursor), Some(0));
+        assert!(schedule.settle(0, ME, Outcome::Failed));
         assert_eq!(schedule.state(0), Some(ChunkState::Missing));
-        assert_eq!(schedule.claim(&everything, &mut cursor), Some(0));
-        assert!(schedule.complete(0));
+        assert_eq!(schedule.remaining(), 1);
+        assert_eq!(schedule.claim(OTHER, &everything, &mut cursor), Some(0));
+        assert!(schedule.settle(0, OTHER, Outcome::Verified));
+        assert_eq!(schedule.state(0), Some(ChunkState::Done));
         assert!(schedule.is_complete());
     }
 
     #[test]
-    fn completing_or_releasing_an_unclaimed_chunk_changes_nothing() {
+    fn only_the_fetcher_of_a_chunk_can_settle_it() {
+        let mut schedule = Schedule::new(&Bitfield::new(1));
+        let mut cursor = 0;
+        assert_eq!(schedule.claim(ME, &Bitfield::full(1), &mut cursor), Some(0));
+        let before = schedule.clone();
+        assert!(!schedule.settle(0, OTHER, Outcome::Verified));
+        assert!(!schedule.settle(0, OTHER, Outcome::Failed));
+        assert_eq!(schedule, before);
+        assert!(schedule.settle(0, ME, Outcome::Verified));
+        // Done is final: nobody settles it again.
+        assert!(!schedule.settle(0, ME, Outcome::Failed));
+        assert!(schedule.is_complete());
+    }
+
+    #[test]
+    fn settling_an_unclaimed_chunk_changes_nothing() {
         let mut schedule = Schedule::new(&Bitfield::new(2));
         let before = schedule.clone();
-        assert!(!schedule.complete(0));
-        assert!(!schedule.release(1));
-        assert!(!schedule.complete(9));
-        assert!(!schedule.release(9));
+        assert!(!schedule.settle(0, ME, Outcome::Verified));
+        assert!(!schedule.settle(1, ME, Outcome::Failed));
+        assert!(!schedule.settle(9, ME, Outcome::Verified));
+        assert!(!schedule.settle(9, ME, Outcome::Failed));
         assert_eq!(schedule, before);
     }
 }
@@ -248,13 +298,13 @@ mod proofs {
     }
 
     /// A schedule of `len` chunks in any state it can reach: each chunk
-    /// missing, in flight or done.
+    /// missing, in flight with any fetcher, or done.
     fn any_schedule(len: u64) -> Schedule {
         let mut schedule = Schedule::new(&any_bitfield(len));
         let mut index = 0;
         while index < len {
             if schedule.chunks[to_usize(index)] == ChunkState::Missing && kani::any() {
-                schedule.chunks[to_usize(index)] = ChunkState::InFlight;
+                schedule.chunks[to_usize(index)] = ChunkState::InFlight(kani::any());
             }
             index += 1;
         }
@@ -288,15 +338,15 @@ mod proofs {
                 None => assert!(index >= len),
                 Some(ChunkState::Done) => assert!(have.get(index)),
                 Some(ChunkState::Missing) => assert!(index < len && !have.get(index)),
-                Some(ChunkState::InFlight) => unreachable!(),
+                Some(ChunkState::InFlight(_)) => unreachable!(),
             }
             len += 1;
         }
     }
 
     /// A claim hands out only a missing chunk the supplier holds, marks
-    /// exactly that chunk as in flight, and refuses only when there is no
-    /// such chunk.
+    /// exactly that chunk as in flight with the claimant as its fetcher, and
+    /// refuses only when there is no such chunk.
     #[kani::proof]
     #[kani::unwind(6)]
     fn a_claim_reserves_one_missing_chunk_the_supplier_holds() {
@@ -305,14 +355,15 @@ mod proofs {
             let mut schedule = any_schedule(len);
             let before = schedule.clone();
             let available = any_bitfield(len);
+            let owner: Owner = kani::any();
             let mut cursor: u64 = kani::any();
             let other: u64 = kani::any();
 
-            match schedule.claim(&available, &mut cursor) {
+            match schedule.claim(owner, &available, &mut cursor) {
                 Some(index) => {
                     assert!(before.state(index) == Some(ChunkState::Missing));
                     assert!(available.get(index));
-                    assert!(schedule.state(index) == Some(ChunkState::InFlight));
+                    assert!(schedule.state(index) == Some(ChunkState::InFlight(owner)));
                     assert!(cursor < len);
                     if other != index {
                         assert!(schedule.state(other) == before.state(other));
@@ -330,11 +381,12 @@ mod proofs {
         }
     }
 
-    /// Completing and releasing act only on a chunk that is in flight, and
-    /// only on that chunk. The count of chunks left stays right throughout.
+    /// Settling acts only on a chunk in flight, only for its fetcher, and
+    /// only on that chunk. A chunk becomes done only when its fetcher
+    /// reports it verified. The count of chunks left stays right throughout.
     #[kani::proof]
     #[kani::unwind(6)]
-    fn completing_and_releasing_touch_only_a_chunk_in_flight() {
+    fn only_its_fetcher_settles_a_chunk_and_only_verified_is_done() {
         let mut len = 0;
         while len <= MAX_CHUNKS {
             let mut schedule = any_schedule(len);
@@ -342,24 +394,29 @@ mod proofs {
             let index: u64 = kani::any();
             let other: u64 = kani::any();
             kani::assume(other != index);
-            let in_flight = before.state(index) == Some(ChunkState::InFlight);
-
-            if kani::any() {
-                assert!(schedule.complete(index) == in_flight);
-                if in_flight {
-                    assert!(schedule.state(index) == Some(ChunkState::Done));
-                    assert!(schedule.remaining() + 1 == before.remaining());
-                }
+            let owner: Owner = kani::any();
+            let verified: bool = kani::any();
+            let outcome = if verified {
+                Outcome::Verified
             } else {
-                assert!(schedule.release(index) == in_flight);
-                if in_flight {
-                    assert!(schedule.state(index) == Some(ChunkState::Missing));
-                    assert!(schedule.remaining() == before.remaining());
-                }
-            }
-            if !in_flight {
+                Outcome::Failed
+            };
+            let mine = before.state(index) == Some(ChunkState::InFlight(owner));
+
+            assert!(schedule.settle(index, owner, outcome) == mine);
+            if mine && verified {
+                assert!(schedule.state(index) == Some(ChunkState::Done));
+                assert!(schedule.remaining() + 1 == before.remaining());
+            } else if mine {
+                assert!(schedule.state(index) == Some(ChunkState::Missing));
+                assert!(schedule.remaining() == before.remaining());
+            } else {
                 assert!(schedule.state(index) == before.state(index));
                 assert!(schedule.remaining() == before.remaining());
+            }
+            // Nothing becomes done any other way.
+            if schedule.state(index) == Some(ChunkState::Done) {
+                assert!(before.state(index) == Some(ChunkState::Done) || (mine && verified));
             }
             assert!(schedule.state(other) == before.state(other));
             assert!(schedule.remaining() == not_done(&schedule));

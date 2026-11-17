@@ -5,7 +5,7 @@
 //! interleaving of two fetchers by the model test at the bottom.
 
 use model::artifact::Bitfield;
-use model::schedule::Schedule;
+use model::schedule::{Outcome, Owner, Schedule};
 use std::sync::PoisonError;
 use std::time::Instant;
 
@@ -59,13 +59,19 @@ impl Claims {
         self.state().last_progress
     }
 
-    /// Reserves a missing chunk that `available` holds, searching from
-    /// `cursor`. See [`Schedule::claim`].
-    pub(super) fn claim(claims: &Shared, available: &Bitfield, cursor: &mut u64) -> Option<Claim> {
-        let index = claims.state().schedule.claim(available, cursor)?;
+    /// Reserves for `owner` a missing chunk that `available` holds,
+    /// searching from `cursor`. See [`Schedule::claim`].
+    pub(super) fn claim(
+        claims: &Shared,
+        owner: Owner,
+        available: &Bitfield,
+        cursor: &mut u64,
+    ) -> Option<Claim> {
+        let index = claims.state().schedule.claim(owner, available, cursor)?;
         Some(Claim {
             claims: claims.clone(),
             index,
+            owner,
             settled: false,
         })
     }
@@ -75,7 +81,9 @@ impl Claims {
         claim.settled = true;
         let finished = {
             let mut state = self.state();
-            state.schedule.complete(claim.index);
+            state
+                .schedule
+                .settle(claim.index, claim.owner, Outcome::Verified);
             state.last_progress = Instant::now();
             state.schedule.is_complete()
         };
@@ -84,8 +92,8 @@ impl Claims {
         }
     }
 
-    fn release(&self, index: u64) {
-        self.state().schedule.release(index);
+    fn release(&self, index: u64, owner: Owner) {
+        self.state().schedule.settle(index, owner, Outcome::Failed);
         (self.wake)();
     }
 }
@@ -95,13 +103,14 @@ impl Claims {
 pub(super) struct Claim {
     claims: Shared,
     pub index: u64,
+    owner: Owner,
     settled: bool,
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
         if !self.settled {
-            self.claims.release(self.index);
+            self.claims.release(self.index, self.owner);
         }
     }
 }
@@ -118,10 +127,11 @@ mod interleavings {
     /// Claims a chunk and checks that nobody else holds it at the same time.
     fn claim_exclusively(
         claims: &Arc<Claims>,
+        owner: Owner,
         held: &[AtomicBool],
         cursor: &mut u64,
     ) -> Option<Claim> {
-        let claim = Claims::claim(claims, &Bitfield::full(CHUNKS), cursor)?;
+        let claim = Claims::claim(claims, owner, &Bitfield::full(CHUNKS), cursor)?;
         let slot = usize::try_from(claim.index).unwrap();
         assert!(
             !held[slot].swap(true, Ordering::SeqCst),
@@ -148,7 +158,7 @@ mod interleavings {
                 let (claims, held) = (claims.clone(), held.clone());
                 move || {
                     let mut cursor = 0;
-                    while let Some(claim) = claim_exclusively(&claims, &held, &mut cursor) {
+                    while let Some(claim) = claim_exclusively(&claims, 0, &held, &mut cursor) {
                         let_go(&held, &claim);
                         claims.complete(claim);
                     }
@@ -158,7 +168,7 @@ mod interleavings {
                 let (claims, held) = (claims.clone(), held.clone());
                 move || {
                     let mut cursor = 1;
-                    if let Some(claim) = claim_exclusively(&claims, &held, &mut cursor) {
+                    if let Some(claim) = claim_exclusively(&claims, 1, &held, &mut cursor) {
                         let_go(&held, &claim);
                         drop(claim);
                     }
@@ -170,7 +180,7 @@ mod interleavings {
             // Whatever the quitter put back after the completer had stopped
             // is still claimable, so the download can always be finished.
             let mut cursor = 0;
-            while let Some(claim) = claim_exclusively(&claims, &held, &mut cursor) {
+            while let Some(claim) = claim_exclusively(&claims, 0, &held, &mut cursor) {
                 let_go(&held, &claim);
                 claims.complete(claim);
             }
