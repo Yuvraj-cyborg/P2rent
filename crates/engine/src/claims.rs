@@ -61,19 +61,40 @@ impl Claims {
     /// stored.
     pub(crate) fn any_in_flight(&self) -> bool {
         let schedule = self.schedule();
-        (0..schedule.len())
-            .any(|index| matches!(schedule.state(index), Some(ChunkState::InFlight(_))))
+        (0..schedule.len()).any(|index| is_in_flight(&schedule, Some(index)))
     }
 
     /// Reserves for `owner` a missing chunk that `available` holds,
     /// searching from `cursor`. See [`Schedule::claim`].
+    ///
+    /// A fetcher reads a run of chunks from one stream, and the chunk at
+    /// its cursor carries its run on. When it cannot have that one, it
+    /// starts another run at the first chunk it can have. But right behind
+    /// a chunk that someone is fetching is where that fetcher's stream
+    /// will be next: taken from there, the two would take turns and every
+    /// chunk would need a stream of its own. So the new run starts further
+    /// on, in the middle of what can be had from there.
     pub(crate) fn claim(
         claims: &Shared,
         owner: Owner,
         available: &Bitfield,
         cursor: &mut u64,
     ) -> Option<Claim> {
-        let index = claims.schedule().claim(owner, available, cursor)?;
+        let mut schedule = claims.schedule();
+        let wanted = *cursor;
+        let mut index = schedule.claim(owner, available, cursor)?;
+        let carries_on = index == wanted % schedule.len();
+        if !carries_on && is_in_flight(&schedule, index.checked_sub(1)) {
+            let behind = (index + 1..schedule.len())
+                .take_while(|&next| {
+                    schedule.state(next) == Some(ChunkState::Missing) && available.get(next)
+                })
+                .count() as u64;
+            schedule.settle(index, owner, Outcome::Failed);
+            *cursor = index + behind.div_ceil(2);
+            index = schedule.claim(owner, available, cursor)?;
+        }
+        drop(schedule);
         Some(Claim {
             claims: claims.clone(),
             index,
@@ -99,6 +120,12 @@ impl Claims {
         self.schedule().settle(index, owner, Outcome::Failed);
         (self.wake)();
     }
+}
+
+/// Whether someone is fetching the chunk at `index`, if there is one.
+fn is_in_flight(schedule: &Schedule, index: Option<u64>) -> bool {
+    let state = index.and_then(|index| schedule.state(index));
+    matches!(state, Some(ChunkState::InFlight(_)))
 }
 
 /// A reserved chunk. Dropping it without completing puts the chunk back, so
@@ -136,6 +163,106 @@ mod tests {
         claims.complete(kept);
         assert!(!claims.any_in_flight());
         assert!(!claims.is_complete());
+    }
+
+    /// Two fetchers, each reading a run of chunks from a stream of its
+    /// own. One step lets a fetcher finish the chunk it has and take its
+    /// next, and `quick` takes that many steps for each one of `slow`.
+    /// Returns how many streams were opened: one for each run.
+    fn streams_opened(chunks: u64, quick: usize) -> usize {
+        let claims = Claims::new(&Bitfield::new(chunks), || {});
+        let held = Bitfield::full(chunks);
+        let mut cursors = [0, chunks / 2];
+        let mut fetching: [Option<Claim>; 2] = [None, None];
+        let mut streams = 0;
+        while !claims.is_complete() {
+            for (fetcher, steps) in [(0, quick), (1, 1)] {
+                for _ in 0..steps {
+                    if let Some(done) = fetching[fetcher].take() {
+                        claims.complete(done);
+                    }
+                    let carried_on_from = cursors[fetcher];
+                    let owner = Owner::try_from(fetcher).unwrap();
+                    let next = Claims::claim(&claims, owner, &held, &mut cursors[fetcher]);
+                    if next
+                        .as_ref()
+                        .is_some_and(|next| next.index != carried_on_from)
+                    {
+                        streams += 1;
+                    }
+                    fetching[fetcher] = next;
+                }
+            }
+        }
+        // The first chunk of each fetcher was the start of a stream too.
+        streams + 2
+    }
+
+    /// When the quicker fetcher has finished its half, it goes on in the
+    /// middle of what is left, again and again, and each time that is one
+    /// stream more. Taking the chunk right behind the slower one's would
+    /// be a stream for every chunk from there on: 87 of them at two to one.
+    #[test]
+    fn fetchers_that_meet_do_not_take_turns() {
+        let streams = [1, 2, 3, 7].map(|quick| streams_opened(512, quick));
+        assert_eq!(streams, [2, 7, 7, 8]);
+    }
+
+    #[test]
+    fn a_new_run_starts_in_the_middle_of_what_another_is_reading_into() {
+        let claims = Claims::new(&Bitfield::new(16), || {});
+        let held = Bitfield::full(16);
+        // One fetcher has read the first half, and another is at chunk 8.
+        let mut first = 0;
+        for _ in 0..8 {
+            let claim = Claims::claim(&claims, 1, &held, &mut first).unwrap();
+            claims.complete(claim);
+        }
+        let mut second = 8;
+        let ahead = Claims::claim(&claims, 2, &held, &mut second).unwrap();
+        assert_eq!(ahead.index, 8);
+
+        // The first one's run has ended. Chunks 9 to 15 are left, and it
+        // goes on from the middle of them, not from chunk 9.
+        let jumped = Claims::claim(&claims, 1, &held, &mut first).unwrap();
+        assert_eq!(jumped.index, 12);
+        assert_eq!(first, 13);
+        // So the other one's stream carries on.
+        claims.complete(ahead);
+        let carried_on = Claims::claim(&claims, 2, &held, &mut second).unwrap();
+        assert_eq!(carried_on.index, 9);
+
+        // With one chunk left behind another's, there is no middle.
+        let claims = Claims::new(&Bitfield::new(3), || {});
+        let held = Bitfield::full(3);
+        let _ahead = Claims::claim(&claims, 2, &held, &mut 1).unwrap();
+        let last = Claims::claim(&claims, 1, &held, &mut 1).unwrap();
+        assert_eq!(last.index, 2);
+    }
+
+    /// The rule is for a new run that would start behind another's stream,
+    /// and for nothing else.
+    #[test]
+    fn a_run_is_moved_only_when_it_is_new_and_right_behind_another() {
+        // A new run, with nobody reading into it: it starts where it can.
+        let claims = Claims::new(&Bitfield::new(8), || {});
+        let held = Bitfield::full(8);
+        let done = Claims::claim(&claims, 1, &held, &mut 4).unwrap();
+        claims.complete(done);
+        let after = Claims::claim(&claims, 1, &held, &mut 4).unwrap();
+        assert_eq!(after.index, 5);
+
+        // A run that carries on, though the chunk before it is now being
+        // fetched by another: its own fetch of that chunk failed, and the
+        // other took the chunk up.
+        let claims = Claims::new(&Bitfield::new(8), || {});
+        let mut cursor = 5;
+        let failed = Claims::claim(&claims, 1, &held, &mut cursor).unwrap();
+        assert_eq!((failed.index, cursor), (5, 6));
+        drop(failed);
+        let _taken_up = Claims::claim(&claims, 2, &held, &mut 5).unwrap();
+        let carried_on = Claims::claim(&claims, 1, &held, &mut cursor).unwrap();
+        assert_eq!(carried_on.index, 6);
     }
 }
 
