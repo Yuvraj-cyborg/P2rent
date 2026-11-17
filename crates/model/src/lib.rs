@@ -20,6 +20,7 @@ pub mod assembly;
 mod error;
 pub mod hex;
 pub mod location;
+pub mod notes;
 pub mod place;
 pub mod retry;
 pub mod schedule;

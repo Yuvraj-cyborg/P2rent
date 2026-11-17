@@ -25,7 +25,7 @@ use thiserror::Error;
 /// How an operation on a place failed, by what can be done about it.
 ///
 /// The text is for a person. The kind is for the engine, which is why a
-/// backend sorts its own errors into these four and the engine never has to
+/// backend sorts its own errors into these five and the engine never has to
 /// know what a socket or a disk is.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum Failure {
@@ -41,6 +41,12 @@ pub enum Failure {
     /// The place answered with something it must not. It is not used again.
     #[error("{0}")]
     Corrupt(String),
+
+    /// What is being read is no longer what it was when the transfer
+    /// began. No part of it can be trusted to go with the rest, so the
+    /// transfer ends and what it has written so far is thrown away.
+    #[error("{0}")]
+    Changed(String),
 
     /// Trying again gains nothing: the disk is full, or access is refused.
     #[error("{0}")]
@@ -110,6 +116,36 @@ pub trait Sink: fmt::Debug + Send + Sync {
     ///
     /// Returns a failure if the bytes cannot be written.
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure>;
+
+    /// Reads back `len` bytes that were written to `file` at `offset` and
+    /// are not committed yet. The engine does this to check a whole file
+    /// before it commits it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if the range was not written or cannot be read.
+    fn read_back(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>, Failure>;
+
+    /// Returns the notes kept beside what is being written to `file`: bytes
+    /// that mean something only to the engine, which uses them to carry on
+    /// with a transfer that was interrupted. Empty if there are none.
+    ///
+    /// No more than `limit` bytes are returned, from the start. Notes can
+    /// be read before [`Sink::begin`]. They last until the file is
+    /// committed or aborted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if there are notes and they cannot be read.
+    fn notes(&self, file: usize, limit: usize) -> Result<Vec<u8>, Failure>;
+
+    /// Writes `data` into the notes of `file` at `offset`. It is called
+    /// after [`Sink::begin`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if the notes cannot be written.
+    fn note(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure>;
 
     /// Gives `file` its final name, in one step. It is called once every
     /// byte of the file has been written.

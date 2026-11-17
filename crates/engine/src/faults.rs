@@ -7,8 +7,8 @@
 //! takes no time at all.
 
 use crate::conformance::{Memory, Sample};
-use crate::{Error, Options, Store, Summary, transfer};
-use model::artifact::Bitfield;
+use crate::{Error, Foreknown, Options, Store, Summary, transfer};
+use model::artifact::{Bitfield, FileDigest, Hash};
 use model::place::{
     Capabilities, Event, Expected, Failure, Observer, Pending, Sink, Source, Status, Supplier,
     SupplierId, Supply, Verification,
@@ -37,6 +37,8 @@ struct Script {
     delay: Duration,
     /// How many times it cannot be reached before it can.
     unreachable_for: usize,
+    /// After this many chunks, what it reads from has changed.
+    changes_after: Option<usize>,
     /// Suppliers it tells of.
     others: Vec<Made>,
 }
@@ -162,6 +164,9 @@ impl Supply for Reached {
             if script.breaks_after.is_some_and(|limit| sent >= limit) {
                 return Err(Failure::Unreachable("the line went dead".into()));
             }
+            if script.changes_after.is_some_and(|limit| sent >= limit) {
+                return Err(Failure::Changed("the file is not what it was".into()));
+            }
             if Script::says(&script.withholds, index) {
                 return Err(Failure::Absent(format!("no chunk {index} after all")));
             }
@@ -216,6 +221,18 @@ impl Sink for Hooked {
         self.place.write(file, offset, data)
     }
 
+    fn read_back(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>, Failure> {
+        self.place.read_back(file, offset, len)
+    }
+
+    fn notes(&self, file: usize, limit: usize) -> Result<Vec<u8>, Failure> {
+        self.place.notes(file, limit)
+    }
+
+    fn note(&self, file: usize, offset: u64, data: &[u8]) -> Result<(), Failure> {
+        self.place.note(file, offset, data)
+    }
+
     fn commit(&self, file: usize) -> Result<(), Failure> {
         self.place.commit(file)
     }
@@ -239,12 +256,17 @@ struct Ran {
     took: Duration,
 }
 
-/// One transfer of the sample into an empty place in memory.
+/// One transfer of the sample into a place in memory.
 struct Setup {
     sample: Arc<Sample>,
     options: Options,
     before_write: Box<dyn Fn() -> Result<(), Failure> + Send + Sync>,
     on_event: Box<dyn Fn(Event) + Send + Sync>,
+    /// The place to fill. A new, empty one if `None`.
+    place: Option<Memory>,
+    /// If set, the digests of the chunks are not known beforehand, and this
+    /// is what is known of each entry instead.
+    foreknown: Option<Vec<Foreknown>>,
 }
 
 impl Setup {
@@ -257,12 +279,34 @@ impl Setup {
             },
             before_write: Box::new(|| Ok(())),
             on_event: Box::new(|_| {}),
+            place: None,
+            foreknown: None,
         }
+    }
+
+    /// A transfer that knows no chunk's digest, and of each file knows
+    /// `validator` and no digest.
+    fn learning(sample: &Arc<Sample>, validator: &[u8]) -> Self {
+        let known = Foreknown {
+            validator: validator.to_vec(),
+            digest: None,
+        };
+        Self {
+            foreknown: Some(vec![known; sample.artifact.entries().len()]),
+            ..Self::new(sample)
+        }
+    }
+
+    /// The same transfer, into a place an earlier one left.
+    fn into(mut self, place: &Memory) -> Self {
+        self.place = Some(place.clone());
+        self
     }
 
     /// Runs the transfer, with a clock that jumps to the next thing due.
     fn run(self, suppliers: &[Made]) -> Ran {
-        let place = Memory::new(self.sample.artifact.tree().clone());
+        let tree = self.sample.artifact.tree().clone();
+        let place = self.place.unwrap_or_else(|| Memory::new(tree.clone()));
         let hooked = Arc::new(Hooked {
             place: place.clone(),
             before_write: self.before_write,
@@ -284,9 +328,11 @@ impl Setup {
             .build()
             .unwrap();
         let (outcome, store, took) = runtime.block_on(async {
-            let store = Store::resume(self.sample.artifact.clone(), hooked, |_| {})
-                .await
-                .unwrap();
+            let store = match self.foreknown {
+                Some(files) => Store::learn(tree, hooked, files, |_| {}).await,
+                None => Store::resume(self.sample.artifact.clone(), hooked, |_| {}).await,
+            }
+            .unwrap();
             let started = tokio::time::Instant::now();
             // A transfer always ends, with every chunk or by stalling. One
             // that does not is a fault, and is not waited for.
@@ -730,6 +776,285 @@ fn a_slow_place_holds_the_suppliers_back() {
     );
 }
 
+// From here on, the digests of the chunks are not known beforehand.
+
+/// A supplier, and a count of the chunks it has handed over.
+fn counted(number: u8, script: Script, sample: &Arc<Sample>) -> (Made, Arc<AtomicUsize>) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let counting = count.clone();
+    let hook = Hook(Arc::new(move || {
+        counting.fetch_add(1, Ordering::SeqCst);
+    }));
+    (Made::watched(number, script, sample, hook), count)
+}
+
+/// What is known of each entry when a digest is given for every file that
+/// has bytes. Nothing is given for a directory or an empty file.
+fn with_file_digests(sample: &Sample, sha256: bool) -> Vec<Foreknown> {
+    let digest = |bytes: &[u8]| {
+        if sha256 {
+            let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+            FileDigest::Sha256(digest.as_ref().try_into().unwrap())
+        } else {
+            FileDigest::Blake3(Hash::of(bytes))
+        }
+    };
+    let known = |bytes: &Vec<u8>| Foreknown {
+        validator: b"v1".to_vec(),
+        digest: (!bytes.is_empty()).then(|| digest(bytes)),
+    };
+    sample.files.iter().map(known).collect()
+}
+
+/// A supplier that lacks two chunks, so that a transfer from it stalls with
+/// two files unfinished and one committed.
+fn lacking_two(sample: &Sample) -> Script {
+    let mut most = Script::honest(sample);
+    most.holds[0] = false;
+    most.holds[5] = false;
+    most
+}
+
+#[test]
+fn digests_that_were_not_known_are_learned_as_the_chunks_arrive() {
+    let sample = sample();
+    let supplier = Made::new(1, Script::honest(&sample), &sample);
+    let ran = Setup::learning(&sample, b"v1").run(&[supplier]);
+
+    let summary = ran.outcome.as_ref().unwrap();
+    assert!(ran.has_every_file(&sample));
+    // Nothing vouched for the bytes but the source staying what it was.
+    assert_eq!(summary.verification, Verification::Consistent);
+    // What was learned is the artifact that the bytes are.
+    assert_eq!(ran.store.artifact().as_deref(), Some(&*sample.artifact));
+    // And nothing noted along the way is left beside a finished file.
+    assert_eq!(ran.place.notes(1, 100), Ok(Vec::new()));
+}
+
+#[test]
+fn a_digest_given_for_every_file_makes_the_transfer_verified() {
+    for sha256 in [false, true] {
+        let sample = sample();
+        let mut setup = Setup::learning(&sample, b"v1");
+        setup.foreknown = Some(with_file_digests(&sample, sha256));
+        let ran = setup.run(&[Made::new(1, Script::honest(&sample), &sample)]);
+
+        assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+        assert_eq!(ran.outcome.unwrap().verification, Verification::Verified);
+    }
+}
+
+/// A digest for some files is not a digest for every file.
+#[test]
+fn a_file_with_bytes_and_no_digest_keeps_the_transfer_from_being_verified() {
+    let sample = sample();
+    let mut known = with_file_digests(&sample, false);
+    // The last file is one byte long.
+    known.last_mut().unwrap().digest = None;
+    let mut setup = Setup::learning(&sample, b"v1");
+    setup.foreknown = Some(known);
+    let ran = setup.run(&[Made::new(1, Script::honest(&sample), &sample)]);
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(ran.outcome.unwrap().verification, Verification::Consistent);
+}
+
+/// With no digest for a chunk, a wrong chunk cannot be told from a right
+/// one. The file it is in can, if a digest was given for the file.
+#[test]
+fn a_file_without_the_digest_given_for_it_is_thrown_away() {
+    for sha256 in [false, true] {
+        let sample = sample();
+        let mut lies = vec![false; chunks(&sample)];
+        lies[1] = true;
+        let liar = Script {
+            lies,
+            ..Script::honest(&sample)
+        };
+        let mut setup = Setup::learning(&sample, b"v1");
+        setup.foreknown = Some(with_file_digests(&sample, sha256));
+        let ran = setup.run(&[Made::new(1, liar, &sample)]);
+
+        let Err(Error::Place(Failure::Corrupt(reason))) = &ran.outcome else {
+            panic!("{:?}", ran.outcome);
+        };
+        assert!(
+            reason.contains("a.bin does not have the digest"),
+            "{reason}"
+        );
+        let kind = if sha256 { "sha256:" } else { "blake3:" };
+        assert!(reason.contains(&format!("expected {kind}")), "{reason}");
+        assert!(reason.contains(&format!("found {kind}")), "{reason}");
+        assert!(ran.has_no_wrong_file(&sample));
+        // Nothing of it is left to be taken for the file later.
+        assert_eq!(ran.place.committed(1), None);
+        assert!(ran.place.read_back(1, 0, 1).is_err());
+        assert_eq!(ran.place.notes(1, 100), Ok(Vec::new()));
+    }
+}
+
+/// Found by the property test below. The supplier that completes the bad
+/// file breaks off at that moment, so whoever was waiting to hear that the
+/// file was thrown away is stopped first. The transfer must end with that
+/// failure all the same: with every chunk marked done by another supplier,
+/// it used to report success with the file missing.
+#[test]
+fn a_file_thrown_away_as_its_supplier_breaks_off_still_ends_the_transfer() {
+    let sample = sample();
+    let total = chunks(&sample);
+    let has = |held: &[usize]| (0..total).map(|index| held.contains(&index)).collect();
+    let honest = Script {
+        holds: has(&[1, 2, 3, 6]),
+        ..Script::default()
+    };
+    // The second file is chunks 4 and 5.
+    let mut lies = vec![false; total];
+    lies[4] = true;
+    let liar = Script {
+        holds: has(&[0, 4, 5]),
+        lies,
+        breaks_after: Some(1),
+        ..Script::default()
+    };
+    let mut setup = Setup::learning(&sample, b"v1");
+    setup.foreknown = Some(with_file_digests(&sample, false));
+    let ran = setup.run(&[Made::new(1, honest, &sample), Made::new(2, liar, &sample)]);
+
+    let thrown_away = matches!(&ran.outcome, Err(Error::Place(Failure::Corrupt(_))));
+    assert!(thrown_away, "{:?}", ran.outcome);
+    assert!(!ran.store.is_complete());
+    assert_eq!(ran.place.committed(4), None);
+    assert!(ran.has_no_wrong_file(&sample));
+    // The store takes nothing more, having thrown part of itself away.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let later = runtime.block_on(ran.store.write_chunk(0, sample.chunk(0)));
+    assert!(matches!(later, Err(Failure::Corrupt(_))), "{later:?}");
+}
+
+#[test]
+fn an_interrupted_transfer_carries_on_from_what_it_noted() {
+    let sample = sample();
+    let first = Setup::learning(&sample, b"v1").run(&[Made::new(1, lacking_two(&sample), &sample)]);
+    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
+    assert_eq!(
+        first.store.artifact(),
+        None,
+        "not every digest is known yet"
+    );
+
+    let (supplier, handed_over) = counted(2, Script::honest(&sample), &sample);
+    let second = Setup::learning(&sample, b"v1")
+        .into(&first.place)
+        .run(&[supplier]);
+    assert!(second.has_every_file(&sample), "{:?}", second.outcome);
+    assert_eq!(second.store.artifact().as_deref(), Some(&*sample.artifact));
+    // The two chunks that were missing, and the one file that was already
+    // finished: once a file is committed its notes are gone, so nothing
+    // here says what it should be. Leaving a finished file alone is for
+    // whoever plans the transfer, who can compare it with the source.
+    assert_eq!(handed_over.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn notes_about_another_version_are_not_believed() {
+    let sample = sample();
+    let first = Setup::learning(&sample, b"v1").run(&[Made::new(1, lacking_two(&sample), &sample)]);
+    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
+
+    let (supplier, handed_over) = counted(2, Script::honest(&sample), &sample);
+    let second = Setup::learning(&sample, b"v2")
+        .into(&first.place)
+        .run(&[supplier]);
+    assert!(second.has_every_file(&sample), "{:?}", second.outcome);
+    assert_eq!(handed_over.load(Ordering::SeqCst), chunks(&sample));
+}
+
+#[test]
+fn with_nothing_to_tell_versions_apart_nothing_is_carried_over() {
+    let sample = sample();
+    let first = Setup::learning(&sample, b"").run(&[Made::new(1, lacking_two(&sample), &sample)]);
+    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
+    assert_eq!(first.place.notes(1, 100), Ok(Vec::new()), "notes were kept");
+
+    let (supplier, handed_over) = counted(2, Script::honest(&sample), &sample);
+    let second = Setup::learning(&sample, b"")
+        .into(&first.place)
+        .run(&[supplier]);
+    assert!(second.has_every_file(&sample), "{:?}", second.outcome);
+    assert_eq!(handed_over.load(Ordering::SeqCst), chunks(&sample));
+}
+
+#[test]
+fn a_chunk_damaged_since_it_was_noted_is_fetched_again() {
+    let sample = sample();
+    let first = Setup::learning(&sample, b"v1").run(&[Made::new(1, lacking_two(&sample), &sample)]);
+    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
+    // Chunk 1 is the second chunk of the first file.
+    let within = sample.artifact.locate(1).unwrap();
+    first.place.write(1, within.offset + 7, b"damage").unwrap();
+
+    let (supplier, handed_over) = counted(2, Script::honest(&sample), &sample);
+    let second = Setup::learning(&sample, b"v1")
+        .into(&first.place)
+        .run(&[supplier]);
+    assert!(second.has_every_file(&sample), "{:?}", second.outcome);
+    // As when nothing was damaged, and the damaged chunk.
+    assert_eq!(handed_over.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn a_source_that_changes_ends_the_transfer_and_leaves_nothing_half_written() {
+    let sample = sample();
+    let changing = Script {
+        changes_after: Some(2),
+        ..Script::honest(&sample)
+    };
+    let mut setup = Setup::learning(&sample, b"v1");
+    setup.options.requests_per_supplier = 1;
+    let ran = setup.run(&[Made::new(1, changing, &sample)]);
+
+    let Err(Error::Changed(what)) = &ran.outcome else {
+        panic!("{:?}", ran.outcome);
+    };
+    assert_eq!(what, "the file is not what it was");
+    assert!(ran.has_no_wrong_file(&sample));
+    for (file, entry) in sample.artifact.entries().iter().enumerate() {
+        if entry.size() > 0 {
+            assert!(
+                ran.place.read_back(file, 0, 1).is_err(),
+                "file {file} is half written"
+            );
+            assert_eq!(ran.place.notes(file, 100), Ok(Vec::new()));
+        }
+    }
+}
+
+#[tokio::test]
+async fn with_no_digest_bytes_of_the_wrong_length_are_still_refused() {
+    let sample = sample();
+    let place = Arc::new(Memory::new(sample.artifact.tree().clone()));
+    let tree = sample.artifact.tree().clone();
+    // Nothing is said of any entry, which is as good as nothing known.
+    let store = Store::learn(tree, place, Vec::new(), |_| {}).await.unwrap();
+    assert_eq!(store.verification(), Verification::Consistent);
+
+    let mut short = sample.chunk(0);
+    short.pop();
+    assert_eq!(store.write_chunk(0, short).await, Ok(crate::Put::Refused));
+    assert_eq!(
+        store.write_chunk(0, Vec::new()).await,
+        Ok(crate::Put::Refused)
+    );
+    assert!(!store.has(0));
+    assert_eq!(
+        store.write_chunk(0, sample.chunk(0)).await,
+        Ok(crate::Put::Stored)
+    );
+    assert_eq!(store.artifact(), None);
+}
+
 fn script(chunks: usize) -> impl Strategy<Value = Script> {
     let flags = move |likely: f64| vec(proptest::bool::weighted(likely), chunks);
     (
@@ -748,6 +1073,7 @@ fn script(chunks: usize) -> impl Strategy<Value = Script> {
                 breaks_after,
                 delay: Duration::from_millis(delay),
                 unreachable_for,
+                changes_after: None,
                 others: Vec::new(),
             },
         )
@@ -791,6 +1117,55 @@ proptest! {
                 prop_assert!(!reliable, "a reliable supplier was there, yet: {}", error);
                 prop_assert!(matches!(error, Error::Stalled(_)), "{}", error);
             }
+        }
+    }
+
+    /// The same, when the digests are learned. With a digest given for
+    /// every file, a liar cannot get a wrong file committed. With none, a
+    /// transfer from suppliers that do not lie learns the artifact that the
+    /// bytes are.
+    #[test]
+    fn a_transfer_that_learns_ends_with_the_right_bytes_or_an_error(
+        mut scripts in vec(script(7), 1..4),
+        digests_given in any::<bool>(),
+        sha256 in any::<bool>(),
+    ) {
+        let sample = sample();
+        if !digests_given {
+            for script in &mut scripts {
+                script.lies.fill(false);
+            }
+        }
+        let reliable = scripts.iter().any(|script| script.is_reliable(7));
+        let lies = scripts.iter().any(|script| script.lies.contains(&true));
+        let suppliers: Vec<Made> = scripts
+            .into_iter()
+            .zip(1u8..)
+            .map(|(script, number)| Made::new(number, script, &sample))
+            .collect();
+        let mut setup = Setup::learning(&sample, b"v1");
+        if digests_given {
+            setup.foreknown = Some(with_file_digests(&sample, sha256));
+        }
+        let ran = setup.run(&suppliers);
+
+        prop_assert!(ran.has_no_wrong_file(&sample), "a wrong file was committed");
+        match &ran.outcome {
+            Ok(summary) => {
+                prop_assert!(ran.has_every_file(&sample));
+                let expected = if digests_given {
+                    Verification::Verified
+                } else {
+                    Verification::Consistent
+                };
+                prop_assert_eq!(summary.verification, expected);
+                let learned = ran.store.artifact();
+                prop_assert_eq!(learned.as_deref(), Some(&*sample.artifact));
+            }
+            Err(Error::Stalled(_)) => prop_assert!(!reliable || lies, "it stalled"),
+            // A liar's chunk got into a file, which was then found out.
+            Err(Error::Place(Failure::Corrupt(_))) => prop_assert!(lies),
+            Err(error) => prop_assert!(false, "{}", error),
         }
     }
 }

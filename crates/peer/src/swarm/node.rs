@@ -58,7 +58,8 @@ impl Node {
     /// served straight from those files.
     pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf) -> Arc<Share> {
         let files = Arc::new(Folder::whole(artifact.tree().clone(), root));
-        self.register(Arc::new(Share::new(Store::whole(artifact, files))))
+        let store = Store::whole(artifact.clone(), files);
+        self.register(Arc::new(Share::new(artifact, store)))
     }
 
     /// Adds a share, or returns the one already registered for its content.
