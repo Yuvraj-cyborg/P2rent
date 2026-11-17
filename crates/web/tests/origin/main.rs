@@ -507,12 +507,15 @@ async fn answers_are_not_joined_when_nothing_tells_they_are_one_file() {
     let mut reader = origin.open(0, 0).await.unwrap();
     assert_eq!(reader.read(5).await.unwrap(), file[..5]);
 
-    // So an answer that breaks off ends the transfer, with nothing kept.
+    // So an answer that breaks off ends the transfer, which says why, and
+    // nothing is kept.
     server.fail(Fault::Cut(CHUNK * 3 + 100), 1);
     let tmp = tempfile::tempdir().unwrap();
-    let wait = Duration::from_secs(2);
-    let ended = fetch_within(&server, "/sample.bin", tmp.path(), impatient(), wait).await;
-    assert!(matches!(ended, Err(Error::Stalled(_))), "{ended:?}");
+    let ended = fetch(&server, "/sample.bin", tmp.path(), impatient()).await;
+    let Err(Error::Unsupplied(why)) = &ended else {
+        panic!("{ended:?}");
+    };
+    assert!(why.contains("cannot be carried on with"), "{why}");
     assert!(!tmp.path().join("sample.bin").exists());
 
     // With a digest of the file, it is carried on, and checked at the end.
@@ -618,11 +621,13 @@ async fn a_server_that_sends_the_wrong_part_is_not_used() {
     confused.mistake = Some(Mistake::PartBefore);
     let server = Server::start(confused).await;
     let tmp = tempfile::tempdir().unwrap();
-    let wait = Duration::from_secs(2);
-    let ended = fetch_within(&server, "/sample.bin", tmp.path(), impatient(), wait).await;
+    let ended = fetch(&server, "/sample.bin", tmp.path(), impatient()).await;
 
-    // Nobody else has the file, so the transfer cannot finish.
-    assert!(matches!(ended, Err(Error::Stalled(_))), "{ended:?}");
+    // Nobody else has the file, so the transfer ends, and says why.
+    let Err(Error::Unsupplied(why)) = &ended else {
+        panic!("{ended:?}");
+    };
+    assert!(why.contains("was asked for the bytes from"), "{why}");
     assert!(!tmp.path().join("sample.bin").exists());
 }
 
