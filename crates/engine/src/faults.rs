@@ -7,11 +7,11 @@
 //! takes no time at all.
 
 use crate::conformance::{Memory, Sample};
-use crate::{Error, Foreknown, Options, Store, Summary, transfer};
+use crate::{Error, Options, Store, Summary, transfer};
 use model::artifact::{Bitfield, FileDigest, Hash};
 use model::place::{
-    Capabilities, Event, Expected, Failure, Observer, Pending, Sink, Source, Status, Supplier,
-    SupplierId, Supply, Verification,
+    Capabilities, Description, Event, Expected, Failure, Foreknown, Observer, Pending, Reader,
+    Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -39,6 +39,8 @@ struct Script {
     unreachable_for: usize,
     /// After this many chunks, what it reads from has changed.
     changes_after: Option<usize>,
+    /// It is one stream: it gives its chunks only in order, one at a time.
+    in_order: bool,
     /// Suppliers it tells of.
     others: Vec<Made>,
 }
@@ -82,6 +84,8 @@ struct Inner {
     /// How many times it has been reached for.
     opened: AtomicUsize,
     handed_over: Hook,
+    /// Every chunk it has been asked for, in the order it was asked.
+    asked: Mutex<Vec<u64>>,
 }
 
 /// Called each time a supplier hands over a chunk that is right.
@@ -106,6 +110,7 @@ impl Made {
             sample: sample.clone(),
             opened: AtomicUsize::new(0),
             handed_over,
+            asked: Mutex::default(),
         }))
     }
 }
@@ -159,6 +164,7 @@ impl Supply for Reached {
     fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>> {
         Box::pin(async move {
             let script = &self.made.script;
+            self.made.asked.lock().unwrap().push(index);
             tokio::time::sleep(script.delay).await;
             let sent = self.sent.fetch_add(1, Ordering::Relaxed);
             if script.breaks_after.is_some_and(|limit| sent >= limit) {
@@ -179,6 +185,12 @@ impl Supply for Reached {
             Ok(data)
         })
     }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: !self.made.script.in_order,
+        }
+    }
 }
 
 /// A place in memory with something done before each write.
@@ -198,8 +210,12 @@ impl Source for Hooked {
         Source::capabilities(&self.place)
     }
 
-    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
-        self.place.read(file, offset, len)
+    fn describe(&self) -> Pending<'_, Description> {
+        self.place.describe()
+    }
+
+    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+        self.place.open(file, offset)
     }
 }
 
@@ -305,16 +321,21 @@ impl Setup {
 
     /// Runs the transfer, with a clock that jumps to the next thing due.
     fn run(self, suppliers: &[Made]) -> Ran {
+        let suppliers = suppliers
+            .iter()
+            .map(|made| Arc::new(made.clone()) as Arc<dyn Supplier>)
+            .collect();
+        self.run_from(suppliers)
+    }
+
+    /// The same, from suppliers of any kind.
+    fn run_from(self, suppliers: Vec<Arc<dyn Supplier>>) -> Ran {
         let tree = self.sample.artifact.tree().clone();
         let place = self.place.unwrap_or_else(|| Memory::new(tree.clone()));
         let hooked = Arc::new(Hooked {
             place: place.clone(),
             before_write: self.before_write,
         });
-        let suppliers = suppliers
-            .iter()
-            .map(|made| Arc::new(made.clone()) as Arc<dyn Supplier>)
-            .collect();
         let events: Arc<Mutex<Vec<Event>>> = Arc::default();
         let (seen, on_event) = (events.clone(), self.on_event);
         let observer: Observer = Arc::new(move |event| {
@@ -1055,6 +1076,127 @@ async fn with_no_digest_bytes_of_the_wrong_length_are_still_refused() {
     assert_eq!(store.artifact(), None);
 }
 
+// From here on, the supplier is a source: a place that is read in order.
+
+/// A place that holds the whole sample, and counts how it is read.
+#[derive(Debug)]
+struct Watched {
+    place: Memory,
+    /// Whether any range may be asked for, or only a stream from the start.
+    random_access: bool,
+    /// The file and offset of every reader that was opened.
+    opened: Mutex<Vec<(usize, u64)>>,
+}
+
+impl Watched {
+    fn new(sample: &Arc<Sample>, random_access: bool) -> Arc<Self> {
+        let filled = Setup::new(sample).run(&[Made::new(1, Script::honest(sample), sample)]);
+        assert!(filled.has_every_file(sample));
+        Arc::new(Self {
+            place: filled.place,
+            random_access,
+            opened: Mutex::default(),
+        })
+    }
+
+    fn supplier(self: &Arc<Self>, sample: &Sample) -> Vec<Arc<dyn Supplier>> {
+        vec![crate::supplier(
+            [9; 32],
+            sample.artifact.tree().clone(),
+            self.clone(),
+        )]
+    }
+}
+
+impl Source for Watched {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: self.random_access,
+        }
+    }
+
+    fn describe(&self) -> Pending<'_, Description> {
+        self.place.describe()
+    }
+
+    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+        self.opened.lock().unwrap().push((file, offset));
+        self.place.open(file, offset)
+    }
+}
+
+#[test]
+fn a_source_supplies_its_chunks() {
+    let sample = sample();
+    let source = Watched::new(&sample, true);
+    let ran = Setup::new(&sample).run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(ran.stored_from(9), sample.artifact.total_size());
+    assert_eq!(ran.outcome.unwrap().verification, Verification::Verified);
+}
+
+/// A chunk that follows the one before it is read on from the same reader,
+/// so a run of chunks is one opening and not one for each.
+#[test]
+fn chunks_in_a_row_come_from_one_reader() {
+    let sample = sample();
+    let source = Watched::new(&sample, true);
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 1;
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    // One pipeline goes once round the chunks from wherever it starts. It
+    // needs a new reader where a file begins, and where it comes back
+    // round to the start: the three files, and at most once more.
+    let opened = source.opened.lock().unwrap().len();
+    assert!(
+        (3..=4).contains(&opened),
+        "{opened} readers for seven chunks"
+    );
+}
+
+/// A source that is one stream is read from its start, each file once, by
+/// one pipeline, however many are asked for.
+#[test]
+fn a_source_that_is_one_stream_is_read_in_order() {
+    let sample = sample();
+    let source = Watched::new(&sample, false);
+    let mut setup = Setup::learning(&sample, b"v1");
+    setup.options.requests_per_supplier = 4;
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(*source.opened.lock().unwrap(), [(1, 0), (4, 0), (5, 0)]);
+    let stored = ran
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Stored { .. }));
+    assert_eq!(stored.count(), chunks(&sample));
+    let learned = ran.store.artifact();
+    assert_eq!(learned.as_deref(), Some(&*sample.artifact));
+}
+
+/// A made-up supplier that is one stream is asked for its chunks in order.
+#[test]
+fn a_supplier_that_is_one_stream_is_asked_in_order() {
+    let sample = sample();
+    let stream = Script {
+        in_order: true,
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, stream, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let asked = supplier.0.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked,
+        (0..sample.artifact.chunk_count()).collect::<Vec<_>>()
+    );
+}
+
 fn script(chunks: usize) -> impl Strategy<Value = Script> {
     let flags = move |likely: f64| vec(proptest::bool::weighted(likely), chunks);
     (
@@ -1074,6 +1216,7 @@ fn script(chunks: usize) -> impl Strategy<Value = Script> {
                 delay: Duration::from_millis(delay),
                 unreachable_for,
                 changes_after: None,
+                in_order: false,
                 others: Vec::new(),
             },
         )

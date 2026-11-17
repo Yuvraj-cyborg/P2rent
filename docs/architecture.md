@@ -28,7 +28,7 @@ crates/
 │   ├── retry.rs
 │   ├── ticket.rs
 │   └── hex.rs
-├── engine/src/        store.rs  transfer.rs  claims.rs  conformance.rs  faults.rs
+├── engine/src/        store.rs  transfer.rs  source.rs  claims.rs  conformance.rs  faults.rs
 ├── fs/
 │   ├── src/           index.rs  folder.rs  io.rs
 │   └── tests/folder/  what a store over a folder leaves on disk
@@ -125,7 +125,7 @@ to the rest of the program.
 
 | Trait | Does |
 | --- | --- |
-| `Source` | Reads a range of bytes of one file. |
+| `Source` | Says what it holds; opens a file to be read in order from an offset; reads a range of bytes. |
 | `Sink` | Makes the place ready and says which chunks it already holds; writes bytes at an offset and reads them back; keeps notes for the engine beside a file being written; commits a file; aborts a file; finishes the tree. |
 | `Supplier` | Is reached, says which chunks it holds and which other suppliers it knows of, and hands over a chunk. |
 
@@ -266,7 +266,14 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
 `peer` knows the wire protocol and nothing about fetching. A peer is a
 **supplier**: something that can be reached, asked which chunks it holds and
 whom else it knows, and asked for a chunk. The engine does the rest, and
-would do the same for a supplier that is a web server or a folder.
+does the same for a supplier that is a web server or a folder.
+
+Any `Source` is a supplier through `engine::supplier`. It keeps a reader
+open after each chunk, and whoever asks for the chunk that follows reads on
+from it. For a web server that is one request for a long run of chunks and
+not one for each. A source that cannot be opened part of the way in is one
+stream: the engine then runs a single pipeline over it, from the first
+chunk that is missing.
 
 ## Transfer
 
