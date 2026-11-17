@@ -1,6 +1,8 @@
 //! The command-line interface. Everything here is presentation; the engine
 //! lives in the library.
 
+mod cp;
+mod exit;
 mod get;
 mod seed;
 mod ui;
@@ -34,6 +36,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Copy from one place to another
+    Cp(cp::Args),
     /// Offer files or directories to other machines
     Seed(seed::Args),
     /// Download an artifact from a swarm
@@ -58,13 +62,18 @@ pub(crate) fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");
-            ExitCode::FAILURE
+            let exit = exit::Exit::of(&error);
+            if let Some(hint) = exit.hint() {
+                eprintln!("hint: {hint}");
+            }
+            exit.into()
         }
     }
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Cp(args) => cp::run(args).await,
         Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?).await,
         Command::Get(args) => get::run(args, &identity(cli.key.as_deref())?).await,
         Command::Id => {

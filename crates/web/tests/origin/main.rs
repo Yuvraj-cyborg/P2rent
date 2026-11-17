@@ -97,7 +97,15 @@ async fn copy_into(
     limits: engine::Options,
 ) -> Result<Copied, Error> {
     let folder = |tree: &Arc<Tree>| Arc::new(Folder::inside(tree.clone(), dir));
-    engine::copy(origins, MIN_CHUNK_SIZE, folder, limits, Arc::new(|_| {})).await
+    engine::copy(
+        origins,
+        None,
+        MIN_CHUNK_SIZE,
+        folder,
+        limits,
+        Arc::new(|_| {}),
+    )
+    .await
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
