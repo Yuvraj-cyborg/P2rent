@@ -55,8 +55,21 @@ pub(super) enum Line<'a> {
         parts: bool,
         digests: Vec<Digest>,
     },
-    /// One thing a sync would do, from a dry run.
+    /// One thing a sync does, or with a dry run, would do.
     Step { step: &'a str, path: &'a str },
+    /// Everything a sync did, after its steps.
+    Synced {
+        source: &'a str,
+        destination: &'a str,
+        add: usize,
+        replace: usize,
+        touch: usize,
+        remove: usize,
+        keep: usize,
+        blocked: usize,
+        bytes: u64,
+        trash: Option<&'a str>,
+    },
     /// Everything a sync would do, from a dry run, after its steps.
     SyncPlan {
         source: &'a str,
@@ -144,6 +157,16 @@ mod tests {
                 },
                 r#"{"v":1,"event":"done","path":"out/a.bin","bytes":5,"checked":"verified","fetched":2,"kept":3}"#,
             ),
+        ];
+        for (line, written) in lines {
+            assert_eq!(json(&line), written);
+        }
+    }
+
+    /// The same, for the lines that are not about a copy.
+    #[test]
+    fn the_other_lines_are_written_as_documented() {
+        let lines = [
             (
                 Line::Plan {
                     source: "./a",
@@ -191,6 +214,21 @@ mod tests {
                     bytes: 7,
                 },
                 r#"{"v":1,"event":"sync_plan","source":"./a","destination":"./b","add":1,"replace":2,"touch":3,"remove":4,"keep":5,"blocked":6,"bytes":7}"#,
+            ),
+            (
+                Line::Synced {
+                    source: "./a",
+                    destination: "./b",
+                    add: 1,
+                    replace: 2,
+                    touch: 3,
+                    remove: 4,
+                    keep: 5,
+                    blocked: 6,
+                    bytes: 7,
+                    trash: Some("./b/.mux-trash/1.000000002"),
+                },
+                r#"{"v":1,"event":"synced","source":"./a","destination":"./b","add":1,"replace":2,"touch":3,"remove":4,"keep":5,"blocked":6,"bytes":7,"trash":"./b/.mux-trash/1.000000002"}"#,
             ),
             (
                 Line::Error {
