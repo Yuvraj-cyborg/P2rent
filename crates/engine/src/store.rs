@@ -2,7 +2,7 @@ use crate::sync;
 use model::artifact::{Artifact, Bitfield, EntryKind, FileDigest, Hash, Tree};
 use model::assembly::Assembly;
 use model::notes::Notes;
-use model::place::{Failure, Sink, Source, Verification};
+use model::place::{Failure, Foreknown, Sink, Source, Verification};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// What became of a chunk handed to a [`Store`].
@@ -15,19 +15,6 @@ pub enum Put {
     /// The chunk is stored, and it was the last of this file, which now has
     /// its final name.
     Completed(usize),
-}
-
-/// What is known about a file before any of it has been read, when the
-/// digests of its chunks are not.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Foreknown {
-    /// What the source gives to tell one version of the file from another:
-    /// bytes that change when the file does. Empty if it gives nothing, and
-    /// then a transfer that is interrupted starts the file again.
-    pub validator: Vec<u8>,
-    /// The digest of the whole file, if the source or the user gave one.
-    /// The file is committed only if its bytes have it.
-    pub digest: Option<FileDigest>,
 }
 
 /// A tree's chunks in a place, addressed by chunk index.

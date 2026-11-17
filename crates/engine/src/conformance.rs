@@ -12,7 +12,7 @@ use crate::{Put, Store};
 use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Tree,
 };
-use model::place::{Capabilities, Expected, Failure, Pending, Sink, Source};
+use model::place::{Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -133,6 +133,13 @@ impl Memory {
     }
 }
 
+/// `len` bytes of `bytes` from `offset`, if every one of them is there.
+fn range_of(bytes: Option<&Vec<u8>>, offset: u64, len: u32) -> Option<Vec<u8>> {
+    let start = usize::try_from(offset).ok()?;
+    let end = start.checked_add(len as usize)?;
+    bytes?.get(start..end).map(<[u8]>::to_vec)
+}
+
 /// Copies `data` into `buffer` at `offset`. A buffer that may `grow` is made
 /// long enough to take it, with zeros where nothing was written. `None` if
 /// the bytes do not fit.
@@ -150,6 +157,19 @@ fn ready<'a, T: Send + 'a>(result: Result<T, Failure>) -> Pending<'a, T> {
     Box::pin(std::future::ready(result))
 }
 
+impl Memory {
+    /// The bytes of `file` from `offset`, `len` of them, as they are now.
+    fn bytes(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>, Failure> {
+        self.slot(file, |slot| {
+            // What is being written replaces what is committed, as a part
+            // file does, so that is where a chunk just stored is found.
+            let bytes = slot.pending.as_ref().or(slot.committed.as_ref());
+            range_of(bytes, offset, len)
+                .ok_or_else(|| Failure::Absent(format!("file {file} does not reach that far")))
+        })
+    }
+}
+
 impl Source for Memory {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -157,18 +177,36 @@ impl Source for Memory {
         }
     }
 
-    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
-        ready(self.slot(file, |slot| {
-            // What is being written replaces what is committed, as a part
-            // file does, so that is where a chunk just stored is found.
-            let bytes = slot.pending.as_ref().or(slot.committed.as_ref());
-            let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            start
-                .checked_add(len as usize)
-                .and_then(|end| bytes?.get(start..end))
-                .map(<[u8]>::to_vec)
-                .ok_or_else(|| Failure::Absent(format!("file {file} does not reach that far")))
-        }))
+    fn describe(&self) -> Pending<'_, Description> {
+        ready(Ok(Description::of(&self.tree)))
+    }
+
+    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+        let reader: Box<dyn Reader> = Box::new(MemoryReader {
+            place: self.clone(),
+            file,
+            offset,
+        });
+        // A file that is not there cannot be opened.
+        ready(self.bytes(file, offset, 0).map(|_| reader))
+    }
+}
+
+/// One file of a place in memory, read in order.
+#[derive(Debug)]
+struct MemoryReader {
+    place: Memory,
+    file: usize,
+    offset: u64,
+}
+
+impl Reader for MemoryReader {
+    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+        let read = self.place.bytes(self.file, self.offset, len);
+        if read.is_ok() {
+            self.offset += u64::from(len);
+        }
+        ready(read)
     }
 }
 
@@ -198,11 +236,7 @@ impl Sink for Memory {
 
     fn read_back(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>, Failure> {
         self.slot(file, |slot| {
-            let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            let end = start.checked_add(len as usize);
-            let written = slot.pending.as_ref();
-            end.and_then(|end| written?.get(start..end))
-                .map(<[u8]>::to_vec)
+            range_of(slot.pending.as_ref(), offset, len)
                 .ok_or_else(|| Failure::Absent(format!("file {file} was not written that far")))
         })
     }
@@ -661,6 +695,73 @@ where
     }
 }
 
+/// Runs the checks of a source on `source`, which must hold exactly the
+/// tree and the bytes of `sample`.
+///
+/// # Errors
+///
+/// Returns what is wrong with the first check the source fails.
+pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wrong> {
+    let tree = sample.artifact.tree();
+    let described = source.describe().await;
+    let described = described.map_err(|e| wrong("describing the source", &e))?;
+    ensure(
+        described.name == tree.name(),
+        "the source gives another name",
+    )?;
+    let entries: Vec<_> = described.entries.iter().map(|(entry, _)| entry).collect();
+    let expected: Vec<_> = tree.entries().iter().collect();
+    ensure(entries == expected, "the source describes another tree")?;
+    let known = described.known.len() == tree.entries().len();
+    ensure(
+        known,
+        "what is known beforehand is not listed for each entry",
+    )?;
+
+    let random = source.capabilities().random_access;
+    for (file, bytes) in sample.files.iter().enumerate() {
+        if bytes.is_empty() {
+            continue;
+        }
+        // Read in order, in pieces of uneven sizes, a file is its bytes.
+        let reader = source.open(file, 0).await;
+        let mut reader = reader.map_err(|e| wrong("opening a file", &e))?;
+        let mut read = Vec::new();
+        for size in [1usize, 7, 4096, 5000].into_iter().cycle() {
+            let left = bytes.len() - read.len();
+            if left == 0 {
+                break;
+            }
+            let piece = reader
+                .read(u32::try_from(size.min(left)).unwrap_or(1))
+                .await;
+            read.extend(piece.map_err(|e| wrong("reading on", &e))?);
+        }
+        ensure(&read == bytes, "a file read in order is not its bytes")?;
+        let past = reader.read(1).await;
+        ensure(past.is_err(), "a reader went on past the end of its file")?;
+
+        // Opened part of the way in, it gives the rest.
+        let middle = bytes.len() / 2;
+        let rest = u32::try_from(bytes.len() - middle).unwrap_or(u32::MAX);
+        if random || middle == 0 {
+            let reader = source.open(file, middle as u64).await;
+            let mut reader = reader.map_err(|e| wrong("opening part of the way in", &e))?;
+            let tail = reader.read(rest).await;
+            ensure(
+                tail.as_deref() == Ok(&bytes[middle..]),
+                "the rest of a file reads wrong",
+            )?;
+        }
+        let range = source.read(file, middle as u64, rest).await;
+        ensure(
+            range.as_deref() == Ok(&bytes[middle..]),
+            "a range reads wrong",
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure(holds: bool, otherwise: &str) -> Result<(), Wrong> {
     if holds {
         Ok(())
@@ -714,6 +815,30 @@ mod tests {
         assert_eq!(
             checked.await,
             Err("a finished tree is not found again".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tree_in_memory_is_a_source() {
+        let (sample, place, store) = filled().await;
+        for index in 0..sample.chunks() {
+            put(&store, &sample, index).await;
+        }
+        assert_eq!(check_source(&*place, &sample).await, Ok(()));
+    }
+
+    /// And the check notices a source that holds something else.
+    #[tokio::test]
+    async fn a_source_with_other_bytes_does_not_pass() {
+        let (mut sample, place, store) = filled().await;
+        for index in 0..sample.chunks() {
+            put(&store, &sample, index).await;
+        }
+        sample.files[FIRST_FILE][9] ^= 1;
+        let checked = check_source(&*place, &sample).await;
+        assert_eq!(
+            checked,
+            Err("a file read in order is not its bytes".to_owned())
         );
     }
 

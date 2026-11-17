@@ -18,9 +18,11 @@ mod claims;
 pub mod conformance;
 #[cfg(test)]
 mod faults;
+mod source;
 mod store;
 pub mod sync;
 mod transfer;
 
-pub use store::{Foreknown, Put, Store};
+pub use source::supplier;
+pub use store::{Put, Store};
 pub use transfer::{Error, Options, Summary, transfer};
