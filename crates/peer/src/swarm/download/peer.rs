@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::net::{Connection, PeerInfo};
 use crate::sync;
 use model::artifact::Bitfield;
+use model::schedule::Owner;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -48,6 +49,7 @@ pub(super) async fn run(session: Arc<Session>, peer: PeerInfo) -> Outcome {
     }
 
     let mut workers = JoinSet::new();
+    let owner = session.new_owner();
     let total = session.artifact.chunk_count().max(1);
     // Reduced first, so that adding a worker's share cannot overflow.
     let origin = stagger(&session, &peer) % total;
@@ -58,6 +60,7 @@ pub(super) async fn run(session: Arc<Session>, peer: PeerInfo) -> Outcome {
             session.clone(),
             connection.clone(),
             view.clone(),
+            owner,
             cursor,
         ));
     }
@@ -115,6 +118,7 @@ async fn work(
     session: Arc<Session>,
     connection: Connection,
     view: Arc<RwLock<Bitfield>>,
+    owner: Owner,
     mut cursor: u64,
 ) -> Result<(), Outcome> {
     let artifact = session.artifact.clone();
@@ -122,7 +126,7 @@ async fn work(
         if session.is_complete() {
             return Ok(());
         }
-        let claim = session.claim(&sync::read(&view), &mut cursor);
+        let claim = session.claim(owner, &sync::read(&view), &mut cursor);
         let Some(claim) = claim else {
             // The peer has nothing we need right now. It may gain chunks, or
             // another peer may release one it holds.

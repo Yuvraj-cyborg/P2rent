@@ -1,14 +1,20 @@
 -- What is proven about `model::schedule`.
 --
 -- A schedule records, for each chunk of a transfer, whether it is missing,
--- being fetched or done, and how many are not done yet.
+-- being fetched or done, and how many are not done yet. A chunk being
+-- fetched names the one fetcher that reserved it.
 --
---   * `complete` and `release` change a chunk only if it is being fetched,
---     and change no other chunk.
+--   * A chunk is in exactly one of the three states, and a chunk being
+--     fetched has exactly one fetcher: that is what the type says.
+--   * `settle` changes a chunk only if it is being fetched and only for
+--     its fetcher. For anyone else, and for any other chunk, it changes
+--     nothing.
+--   * A chunk becomes done in one way only: its fetcher settles it as
+--     verified. `claim` and a failed fetch never make a chunk done.
 --   * The count of chunks not yet done stays right through every operation.
 --   * `claim` hands out only a chunk that is missing and that the supplier
---     holds, marks exactly that chunk as being fetched, and otherwise
---     changes nothing.
+--     holds, marks exactly that chunk as being fetched by the claimant, and
+--     otherwise changes nothing.
 --   * No operation can fail: none overflows, divides by zero or reads past
 --     the end of the list.
 module
@@ -31,55 +37,20 @@ def notDone (chunks : List ChunkState) : Nat :=
 def schedule.Schedule.Counted (s : Schedule) : Prop :=
   s.remaining.val = notDone s.chunks.val
 
-/-- Comparing two states never fails and says whether they are the same. -/
+/-- `is_missing` says whether a chunk is missing. -/
 @[step]
-theorem schedule.ChunkState.eq.spec (a b : ChunkState) :
-    schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq a b
-    ⦃ r => r = decide (a = b) ⦄ := by
-  unfold schedule.ChunkState.Insts.CoreCmpPartialEqChunkState.eq
-  cases a <;> cases b <;> simp [read_discriminant]
+theorem schedule.is_missing.spec (state : ChunkState) :
+    schedule.is_missing state ⦃ r => r = decide (state = ChunkState.Missing) ⦄ := by
+  unfold schedule.is_missing
+  cases state <;> simp
 
-/-- `settle` moves a chunk that is being fetched to the given state and
-leaves every other chunk alone. For any other chunk, and for an index past
-the end, it changes nothing and says so. -/
+/-- `is_held_by` says whether a chunk is being fetched by the fetcher named. -/
 @[step]
-theorem schedule.Schedule.settle.spec (s : Schedule) (index : U64) (state : ChunkState) :
-    schedule.Schedule.settle s index state
-    ⦃ settled s' =>
-      if s.chunks.val[index.val]? = some ChunkState.InFlight then
-        settled = true ∧ s'.chunks.val = s.chunks.val.set index.val state ∧
-        s'.remaining = s.remaining
-      else settled = false ∧ s' = s ⦄ := by
-  unfold schedule.Schedule.settle
-  step as ⟨ slot, hfits, hover ⟩
-  -- A slot inside the list is the index itself: clamping only happens to
-  -- indices far past any list.
-  have hslot : slot.val < s.chunks.val.length → slot.val = index.val := by
-    intro hin
-    by_cases h : index.val ≤ Usize.max
-    · exact hfits h
-    · have := hover (by omega)
-      scalar_tac
-  have hpast : ¬ slot.val < s.chunks.val.length → s.chunks.val.length ≤ index.val := by
-    intro hout
-    by_cases h : index.val ≤ Usize.max
-    · have := hfits h
-      omega
-    · scalar_tac
-  split
-  · rename_i hin
-    have heq := hslot (by scalar_tac)
-    have hidx : index.val < s.chunks.val.length := by scalar_tac
-    rw [List.getElem?_eq_getElem hidx]
-    step as ⟨ cs, hcs ⟩
-    step as ⟨ b, hb ⟩
-    split
-    · step as ⟨ old, back, hold, hback ⟩
-      simp_all
-    · simp_all
-  · rename_i hout
-    have := hpast (by scalar_tac)
-    simp_all
+theorem schedule.is_held_by.spec (state : ChunkState) (owner : U32) :
+    schedule.is_held_by state owner
+    ⦃ r => r = decide (state = ChunkState.InFlight owner) ⦄ := by
+  unfold schedule.is_held_by
+  cases state <;> simp
 
 /-- Changing one chunk's state changes the count of chunks not yet done by
 the difference between the old state and the new one. -/
@@ -101,53 +72,147 @@ theorem notDone_set (chunks : List ChunkState) (i : Nat) (old new : ChunkState)
       simp [notDone, List.countP_cons] at *
       omega
 
-/-- `release` puts a chunk that is being fetched back to missing, and
-changes nothing else. The count stays right. -/
-@[step]
-theorem schedule.Schedule.release.spec (s : Schedule) (index : U64)
-    (hs : s.Counted) :
-    schedule.Schedule.release s index
-    ⦃ released s' =>
-      s'.Counted ∧
-      if s.chunks.val[index.val]? = some ChunkState.InFlight then
-        released = true ∧
-        s'.chunks.val = s.chunks.val.set index.val ChunkState.Missing ∧
-        s'.remaining = s.remaining
-      else released = false ∧ s' = s ⦄ := by
-  unfold schedule.Schedule.release
-  step as ⟨ released, s', h ⟩
-  split at h
-  · rename_i hflight
-    obtain ⟨ hreleased, hchunks, hremaining ⟩ := h
-    have := notDone_set s.chunks.val index.val ChunkState.InFlight ChunkState.Missing hflight
-    simp_all [Schedule.Counted]
-  · simp_all
+/-- What `settle` does. If the chunk is being fetched by the fetcher named,
+it becomes done when the outcome is "verified" and missing when the fetch
+failed, and no other chunk changes. Otherwise nothing changes at all. -/
+def schedule.Schedule.Settled (s : Schedule) (index : U64) (owner : U32)
+    (outcome : Outcome) (settled : Bool) (s' : Schedule) : Prop :=
+  if s.chunks.val[index.val]? = some (ChunkState.InFlight owner) then
+    settled = true ∧
+    match outcome with
+    | Outcome.Verified =>
+      s'.chunks.val = s.chunks.val.set index.val ChunkState.Done ∧
+      s'.remaining.val + 1 = s.remaining.val
+    | Outcome.Failed =>
+      s'.chunks.val = s.chunks.val.set index.val ChunkState.Missing ∧
+      s'.remaining = s.remaining
+  else settled = false ∧ s' = s
 
-/-- `complete` marks a chunk that is being fetched as done, and changes
-nothing else. The count goes down by exactly one, and stays right. -/
+/-- `settle` does what `Settled` says, keeps the count right, and cannot
+fail. -/
 @[step]
-theorem schedule.Schedule.complete.spec (s : Schedule) (index : U64)
-    (hs : s.Counted) :
-    schedule.Schedule.complete s index
-    ⦃ completed s' =>
-      s'.Counted ∧
-      if s.chunks.val[index.val]? = some ChunkState.InFlight then
-        completed = true ∧
-        s'.chunks.val = s.chunks.val.set index.val ChunkState.Done ∧
-        s'.remaining.val + 1 = s.remaining.val
-      else completed = false ∧ s' = s ⦄ := by
-  unfold schedule.Schedule.complete
-  step as ⟨ settled, s1, h ⟩
+theorem schedule.Schedule.settle.spec (s : Schedule) (index : U64) (owner : U32)
+    (outcome : Outcome) (hs : s.Counted) :
+    schedule.Schedule.settle s index owner outcome
+    ⦃ settled s' => s'.Counted ∧ s.Settled index owner outcome settled s' ⦄ := by
+  unfold schedule.Schedule.settle
+  step as ⟨ slot, hfits, hover ⟩
+  -- A slot inside the list is the index itself: clamping only happens to
+  -- indices far past any list.
+  have hslot : slot.val < s.chunks.val.length → slot.val = index.val := by
+    intro hin
+    by_cases h : index.val ≤ Usize.max
+    · exact hfits h
+    · have := hover (by omega)
+      scalar_tac
+  have hpast : ¬ slot.val < s.chunks.val.length → s.chunks.val.length ≤ index.val := by
+    intro hout
+    by_cases h : index.val ≤ Usize.max
+    · have := hfits h
+      omega
+    · scalar_tac
+  split
+  · rename_i hin
+    have heq := hslot (by scalar_tac)
+    have hidx : index.val < s.chunks.val.length := by scalar_tac
+    step as ⟨ cs, hcs ⟩
+    step as ⟨ b, hb ⟩
+    have hstate : s.chunks.val[index.val]? = some cs := by
+      rw [List.getElem?_eq_getElem hidx]
+      simp_all
+    split
+    · rename_i hmine
+      have hflight : s.chunks.val[index.val]? = some (ChunkState.InFlight owner) := by
+        simp_all
+      cases outcome with
+      | Verified =>
+        have hcount := notDone_set s.chunks.val index.val (ChunkState.InFlight owner)
+          ChunkState.Done hflight
+        simp at hcount
+        simp only [Schedule.Counted] at hs
+        step as ⟨ old, back, hold, hback ⟩
+        step as ⟨ remaining, hsub ⟩
+        simp only [Schedule.Counted, Schedule.Settled, hflight, ↓reduceIte]
+        simp_all
+        omega
+      | Failed =>
+        have hcount := notDone_set s.chunks.val index.val (ChunkState.InFlight owner)
+          ChunkState.Missing hflight
+        simp at hcount
+        simp only [Schedule.Counted] at hs
+        step as ⟨ old, back, hold, hback ⟩
+        simp only [Schedule.Counted, Schedule.Settled, hflight, ↓reduceIte]
+        simp_all
+    · rename_i hnotmine
+      have hother : s.chunks.val[index.val]? ≠ some (ChunkState.InFlight owner) := by
+        simp_all
+      simp [Schedule.Settled, hother, hs]
+  · rename_i hout
+    have hlen := hpast (by scalar_tac)
+    have hnone : s.chunks.val[index.val]? = none := List.getElem?_eq_none hlen
+    simp [Schedule.Settled, hnone, hs]
+
+/-- Only the fetcher of a chunk settles it. If someone else is fetching the
+chunk, `settle` changes nothing and says so. -/
+theorem schedule.Schedule.Settled.only_by_its_fetcher {s s' : Schedule} {index : U64}
+    {owner other : U32} {outcome : Outcome} {settled : Bool}
+    (h : s.Settled index other outcome settled s')
+    (hflight : s.chunks.val[index.val]? = some (ChunkState.InFlight owner))
+    (hother : other ≠ owner) : settled = false ∧ s' = s := by
+  unfold Schedule.Settled at h
+  have hnot : ¬ s.chunks.val[index.val]? = some (ChunkState.InFlight other) := by
+    rw [hflight]
+    intro heq
+    cases heq
+    exact hother rfl
+  simpa [hnot] using h
+
+/-- A chunk becomes done only when its fetcher settles it as verified. If a
+chunk is done after `settle`, either it was done before, or it is the chunk
+settled, the one settling it was its fetcher, and the outcome was
+"verified". -/
+theorem schedule.Schedule.Settled.done_only_when_verified {s s' : Schedule}
+    {index : U64} {owner : U32} {outcome : Outcome} {settled : Bool}
+    (h : s.Settled index owner outcome settled s') (j : Nat)
+    (hdone : s'.chunks.val[j]? = some ChunkState.Done) :
+    s.chunks.val[j]? = some ChunkState.Done ∨
+      (j = index.val ∧ outcome = Outcome.Verified ∧
+        s.chunks.val[j]? = some (ChunkState.InFlight owner)) := by
+  unfold Schedule.Settled at h
   split at h
   · rename_i hflight
-    obtain ⟨ hsettled, hchunks, hremaining ⟩ := h
-    have hcount := notDone_set s.chunks.val index.val ChunkState.InFlight ChunkState.Done hflight
-    simp [Schedule.Counted] at hs
-    simp [hsettled]
-    step as ⟨ remaining, hsub ⟩
-    simp_all [Schedule.Counted]
-    omega
-  · simp_all
+    obtain ⟨ _, h ⟩ := h
+    by_cases hj : j = index.val
+    · subst hj
+      cases outcome with
+      | Verified => exact Or.inr ⟨ rfl, rfl, hflight ⟩
+      | Failed =>
+        obtain ⟨ hchunks, _ ⟩ := h
+        rw [hchunks] at hdone
+        simp [List.getElem?_set] at hdone
+    · have hne : index.val ≠ j := fun heq => hj heq.symm
+      cases outcome with
+      | Verified =>
+        obtain ⟨ hchunks, _ ⟩ := h
+        rw [hchunks, List.getElem?_set_ne hne] at hdone
+        exact Or.inl hdone
+      | Failed =>
+        obtain ⟨ hchunks, _ ⟩ := h
+        rw [hchunks, List.getElem?_set_ne hne] at hdone
+        exact Or.inl hdone
+  · obtain ⟨ _, hsame ⟩ := h
+    subst hsame
+    exact Or.inl hdone
+
+/-- Marking a chunk as being fetched makes no chunk done. This is what
+`claim` does to the list, so `claim` never makes a chunk done. -/
+theorem claiming_makes_nothing_done (chunks : List ChunkState) (i j : Nat) (owner : U32)
+    (hdone : (chunks.set i (ChunkState.InFlight owner))[j]? = some ChunkState.Done) :
+    chunks[j]? = some ChunkState.Done := by
+  by_cases hij : i = j
+  · subst hij
+    simp [List.getElem?_set] at hdone
+  · rwa [List.getElem?_set_ne hij] at hdone
 
 open artifact.bitfield in
 /-- What a chunk's state is at the start: done if it is already held, and
@@ -303,17 +368,17 @@ def claimInv (chunks : List ChunkState) (available : Bitfield) (start : Nat)
   ∀ k, k < p.2.val → ¬ claimable chunks available (ringAt chunks.length start k)
 
 open artifact.bitfield in
-theorem schedule.Schedule.claim_loop.spec (v : alloc.vec.Vec ChunkState)
+theorem schedule.Schedule.claim_loop.spec (v : alloc.vec.Vec ChunkState) (owner : U32)
     (available : Bitfield) (cursor total index step : U64) (start : Nat)
     (hsized : available.Sized) (htotal : total.val = v.val.length)
     (hstart : start < v.val.length)
     (hinv : claimInv v.val available start (index, step)) :
-    schedule.Schedule.claim_loop v available cursor total index step
+    schedule.Schedule.claim_loop v owner available cursor total index step
     ⦃ found v' cursor' =>
       match found with
       | some chosen =>
         claimable v.val available chosen.val ∧
-        v'.val = v.val.set chosen.val ChunkState.InFlight ∧
+        v'.val = v.val.set chosen.val (ChunkState.InFlight owner) ∧
         cursor'.val < v.val.length
       | none =>
         v' = v ∧ cursor' = cursor ∧ ∀ i, ¬ claimable v.val available i ⦄ := by
@@ -424,20 +489,20 @@ theorem none_missing_when_all_done (chunks : List ChunkState) (h : notDone chunk
 
 open artifact.bitfield in
 /-- `claim` hands out a chunk only if that chunk is missing and the
-supplier holds it. It then marks exactly that chunk as being fetched and
-moves the cursor to a valid position. It returns nothing only when no chunk
+supplier holds it. It then marks exactly that chunk as being fetched by the
+claimant and moves the cursor to a valid position. It returns nothing only when no chunk
 at all could be claimed, and then changes nothing. The count stays right
 either way, and the call cannot fail. -/
 @[step]
-theorem schedule.Schedule.claim.spec (s : Schedule) (available : Bitfield) (cursor : U64)
-    (hs : s.Counted) (hsized : available.Sized) :
-    schedule.Schedule.claim s available cursor
+theorem schedule.Schedule.claim.spec (s : Schedule) (owner : U32) (available : Bitfield)
+    (cursor : U64) (hs : s.Counted) (hsized : available.Sized) :
+    schedule.Schedule.claim s owner available cursor
     ⦃ found s' cursor' =>
       s'.Counted ∧
       match found with
       | some chosen =>
         claimable s.chunks.val available chosen.val ∧
-        s'.chunks.val = s.chunks.val.set chosen.val ChunkState.InFlight ∧
+        s'.chunks.val = s.chunks.val.set chosen.val (ChunkState.InFlight owner) ∧
         s'.remaining = s.remaining ∧ cursor'.val < s.chunks.val.length
       | none =>
         s' = s ∧ cursor' = cursor ∧ ∀ i, ¬ claimable s.chunks.val available i ⦄ := by
@@ -466,14 +531,14 @@ theorem schedule.Schedule.claim.spec (s : Schedule) (available : Bitfield) (curs
       · simp [ringAt, hindexlt]
       · intro k hk
         simp at hk
-    step with schedule.Schedule.claim_loop.spec s.chunks available cursor total index 0#u64
+    step with schedule.Schedule.claim_loop.spec s.chunks owner available cursor total index 0#u64
       index.val hsized htotal hindexlt hinv as ⟨ found, chunks', cursor', hpost ⟩
     cases found with
     | some chosen =>
       obtain ⟨ hclaim, hchunks, hcursor ⟩ := hpost
       -- A missing chunk and one being fetched both count as not done.
       have hcount := notDone_set s.chunks.val chosen.val ChunkState.Missing
-        ChunkState.InFlight hclaim.1
+        (ChunkState.InFlight owner) hclaim.1
       refine ⟨ ?_, hclaim, hchunks, hcursor ⟩
       simp only [schedule.Schedule.Counted] at hs ⊢
       simp at hcount
