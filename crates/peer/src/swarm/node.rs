@@ -1,6 +1,6 @@
 use super::server;
 use super::share::Share;
-use super::ticket::{Ticket, TicketPeer};
+use super::{Ticket, TicketPeer};
 use crate::error::Result;
 use crate::net::{Endpoint, Identity, NodeId};
 use crate::sync;

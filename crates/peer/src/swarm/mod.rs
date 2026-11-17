@@ -5,9 +5,8 @@ mod download;
 mod node;
 mod server;
 mod share;
-mod ticket;
 
 pub use download::{DownloadOptions, Phase, Progress, Report, announce, download};
+pub use model::ticket::{Ticket, TicketPeer};
 pub use node::Node;
 pub use share::Share;
-pub use ticket::{Ticket, TicketPeer};

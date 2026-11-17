@@ -7,5 +7,6 @@ pub mod proto;
 mod tls;
 
 pub use endpoint::{Connection, Endpoint, Incoming};
-pub use identity::{Identity, NodeId};
+pub use identity::Identity;
+pub use model::ticket::NodeId;
 pub use proto::PeerInfo;
