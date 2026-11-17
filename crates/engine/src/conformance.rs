@@ -194,6 +194,7 @@ impl Source for Memory {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
+            multiplexed: false,
         }
     }
 
@@ -234,6 +235,7 @@ impl Sink for Memory {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
+            multiplexed: false,
         }
     }
 
@@ -339,14 +341,25 @@ impl Sample {
     /// a mistake in this function.
     pub fn new() -> Result<Self, model::Error> {
         let chunk = MIN_CHUNK_SIZE as usize;
-        let tree: [(&str, Option<usize>); 6] = [
+        Self::of(&[
             ("", None),
             ("a.bin", Some(3 * chunk + 5)),
             ("empty", Some(0)),
             ("sub", None),
             ("sub/b.bin", Some(2 * chunk)),
             ("sub/c", Some(1)),
-        ];
+        ])
+    }
+
+    /// Builds a tree of these entries, in this order: each a path, and the
+    /// size of a file or `None` for a directory. The chunks are of the
+    /// smallest size there is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entries are not a valid artifact.
+    pub fn of(tree: &[(&str, Option<usize>)]) -> Result<Self, model::Error> {
+        let chunk = MIN_CHUNK_SIZE as usize;
         // Bytes that do not repeat, so that no two chunks are the same.
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next_byte = move || {

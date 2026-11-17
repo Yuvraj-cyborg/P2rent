@@ -47,7 +47,6 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     let options = DownloadOptions {
         max_peers: args.max_peers,
         stall_timeout: Duration::from_secs(args.stall_timeout),
-        ..DownloadOptions::default()
     };
 
     let report = download_with_progress(&node, &ticket, &args.out, options).await?;
