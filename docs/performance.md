@@ -25,13 +25,13 @@ counted, and neither is time in the kernel.
 | Benchmark | Hot path | Instructions |
 | --- | --- | ---: |
 | `hash_chunk` | Hash one 1 MiB chunk | 2,619,342 |
-| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,422,858 |
-| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 5,009,843 |
+| `build_artifact` | Check, encode and name a manifest of 1000 files and 10,000 chunks | 5,425,852 |
+| `decode_artifact` | Check and decode the same manifest as bytes from a peer | 5,012,817 |
 | `locate_every_chunk` | Find the file, offset and length of each of 10,000 chunks | 1,493,611 |
 | `mark_and_count` | Set every third bit of a 10,000-bit bitfield, then count them | 67,093 |
-| `claim_every_chunk` | Claim and complete each of 10,000 chunks | 580,971 |
-| `read_chunks` | Read 16 chunks of 1 MiB from a file | 909,183 |
-| `store_chunks` | Check 16 chunks of 1 MiB against the manifest, write them to a part file, then flush it and rename it into place | 41,931,238 |
+| `claim_every_chunk` | Claim and complete each of 10,000 chunks | 581,002 |
+| `read_chunks` | Read 16 chunks of 1 MiB from a file | 908,460 |
+| `store_chunks` | Check 16 chunks of 1 MiB against the manifest, write them to a part file, then flush it and rename it into place | 41,929,685 |
 
 These figures are from one build: Linux on x86-64, Rust 1.100, 17 November
 2026. Another compiler or processor gives other figures, so only compare two
@@ -218,6 +218,37 @@ checks more too, because of one choice that was measured first.
 | Derive the artifact id from the content id and the metadata | Kept. The content is hashed once, and the artifact id still pins it. |
 
 No other benchmark moved.
+
+## Places and the engine
+
+Storage was split in two
+([#17](https://github.com/yuvichh/mux/issues/17)). A place, such as a local
+folder, only moves bytes. The engine's store checks each chunk and decides
+when a file is whole, for whatever place it is given. A chunk goes through
+the same steps as before, and they cost the same:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| `read_chunks`, instructions | 909,183 | 908,460 (-0.1%) |
+| `store_chunks`, instructions | 41,931,238 | 41,929,685 (0.0%) |
+| One 1 GiB file, throughput | 423 MiB/s | 416 MiB/s |
+| One 1 GiB file, CPU seconds per GiB | 6.77 | 6.81 (+0.6%) |
+| 1 GiB in 2000 files, throughput | 438 MiB/s | 430 MiB/s |
+| 1 GiB in 2000 files, CPU seconds per GiB | 6.88 | 6.95 (+1.0%) |
+
+The timed rows are the median of five loopback runs on the Linux machine in
+the table above. The runs of one build differ from each other by more than
+the two builds differ, so the timed rows show no change.
+
+The instruction benchmarks run the store's steps on one thread, through the
+folder. The engine runs the same steps on a thread that may wait.
+
+One design was measured and dropped:
+
+| Change | Result |
+| --- | --- |
+| Every operation on a place returns a future, and a folder does each one on a thread of its own choosing | Tried first. Checking a chunk and writing it became two hand-offs between threads where there had been one, and CPU seconds per GiB rose by 1.3% (6.86 against 6.77). |
+| Reading returns a future. Writing is a plain call, which the engine makes on the thread that has just checked the chunk | Kept. One hand-off for each chunk, as before. |
 
 ## The fast path
 

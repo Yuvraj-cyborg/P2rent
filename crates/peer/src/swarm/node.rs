@@ -4,7 +4,8 @@ use super::{Ticket, TicketPeer};
 use crate::error::Result;
 use crate::net::{Endpoint, Identity, NodeId};
 use crate::sync;
-use fs::DiskStore;
+use engine::Store;
+use fs::Folder;
 use model::artifact::{Artifact, Hash};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -57,7 +58,8 @@ impl Node {
     /// Offers a complete artifact whose files live at `root`. Chunks are
     /// served straight from those files.
     pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf) -> Arc<Share> {
-        self.register(Arc::new(Share::new(DiskStore::whole(artifact, root))))
+        let files = Arc::new(Folder::whole(artifact.clone(), root));
+        self.register(Arc::new(Share::new(Store::whole(artifact, files))))
     }
 
     /// Adds a share, or returns the one already registered for its content.

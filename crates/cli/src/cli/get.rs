@@ -126,7 +126,7 @@ fn print_summary(report: &Report) {
     let artifact = report.share.artifact();
     eprintln!(
         "saved    {}  ({})",
-        report.share.store().root().display(),
+        report.root.display(),
         ui::bytes(artifact.total_size()),
     );
     if report.resumed_bytes > 0 {

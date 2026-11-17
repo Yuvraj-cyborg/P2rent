@@ -304,6 +304,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "engine",
  "fs",
  "indicatif",
  "model",
@@ -501,6 +502,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "engine"
+version = "0.2.0"
+dependencies = [
+ "model",
+ "tokio",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,11 +547,13 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 name = "fs"
 version = "0.2.0"
 dependencies = [
+ "engine",
  "model",
  "proptest",
  "rayon",
  "tempfile",
  "thiserror",
+ "tokio",
  "walkdir",
 ]
 
@@ -907,6 +918,7 @@ name = "peer"
 version = "0.2.0"
 dependencies = [
  "dirs",
+ "engine",
  "fs",
  "loom",
  "model",

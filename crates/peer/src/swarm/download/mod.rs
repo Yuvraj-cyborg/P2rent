@@ -15,11 +15,12 @@ use self::session::Session;
 use super::{Node, Share, Ticket};
 use crate::error::{Error, Result};
 use crate::net::{NodeId, PeerInfo};
-use fs::DiskStore;
+use engine::Store;
+use fs::Folder;
 use model::artifact::{Artifact, Hash};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -138,6 +139,8 @@ impl Progress {
 pub struct Report {
     /// The artifact, now registered with the node and served to others.
     pub share: Arc<Share>,
+    /// The file, or the directory holding the tree, that was written.
+    pub root: PathBuf,
     /// Bytes that were already on disk and valid.
     pub resumed_bytes: u64,
     /// Bytes fetched from peers.
@@ -160,7 +163,7 @@ pub struct Report {
 ///
 /// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached,
 /// [`Error::ManifestUnavailable`] if none supplies a valid manifest, [`Error::Stalled`] if no
-/// chunk arrives within the stall timeout, and [`Error::Io`] for local disk failures.
+/// chunk arrives within the stall timeout, and [`Error::Place`] for local disk failures.
 pub async fn download(
     node: &Arc<Node>,
     ticket: &Ticket,
@@ -184,14 +187,11 @@ pub async fn download(
 
     progress.set_phase(Phase::Scanning);
     let scan_progress = progress.clone();
-    let (wanted, dir) = (artifact.clone(), out_dir.to_owned());
-    let store = tokio::task::spawn_blocking(move || {
-        DiskStore::resume(wanted, &dir, &|bytes| {
-            scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
-        })
-    })
-    .await
-    .map_err(|e| Error::Transport(e.to_string()))??;
+    let folder = Arc::new(Folder::inside(artifact.clone(), out_dir));
+    let examined = move |bytes| {
+        scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
+    };
+    let store = Store::resume(artifact.clone(), folder.clone(), examined).await?;
     let have = store.held();
 
     let resumed: u64 = (0..artifact.chunk_count())
@@ -216,14 +216,12 @@ pub async fn download(
     // arrived. What is left is to give the directories their times and
     // permissions, and to make the renames themselves last.
     let peers = manage(&session, bootstrap, discovered_rx).await?;
-    let renamed = share.clone();
-    tokio::task::spawn_blocking(move || renamed.store().seal())
-        .await
-        .map_err(|e| Error::Transport(e.to_string()))??;
+    share.store().finish().await?;
     progress.set_phase(Phase::Done);
 
     Ok(Report {
-        skipped_links: share.store().skipped_links(),
+        skipped_links: folder.skipped_links(),
+        root: folder.root().to_owned(),
         share,
         resumed_bytes: resumed,
         fetched_bytes: progress.fetched_bytes(),
