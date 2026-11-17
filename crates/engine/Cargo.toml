@@ -1,0 +1,20 @@
+[package]
+name = "engine"
+description = "Runs a mux transfer: the tasks, locks and timers around the logic in `model`"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The checks every place must pass, and a place held in memory to run them
+# on. For the tests of crates that implement a place.
+conformance = []
+
+[dependencies]
+model.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

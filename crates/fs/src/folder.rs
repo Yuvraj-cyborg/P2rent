@@ -1,79 +1,88 @@
 use super::io;
 use model::artifact::{Artifact, Bitfield, EntryKind, Hash, PART_SUFFIX};
 use model::assembly::Assembly;
+use model::place::{Capabilities, Failure, Pending, Sink, Source};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
-/// An artifact's files on disk, addressed by chunk index.
+/// An artifact's files in a local folder.
 ///
 /// A file that is whole lives under its final name. A file that is still
 /// being filled lives in a part file beside it, named with
 /// [`PART_SUFFIX`]. It is flushed to disk and renamed into place only when
-/// every one of its chunks has been verified. So a file under a final name
-/// is always complete and correct, however the program stops, and a file
-/// that was already there is replaced in one step or left alone, never
-/// changed in place.
+/// it is committed. So a file under a final name is always complete,
+/// however the program stops, and a file that was already there is replaced
+/// in one step or left alone, never changed in place.
 ///
-/// Chunks can be read from either kind of file, so a node serves what it
+/// Bytes can be read from either kind of file, so a node serves what it
 /// holds while it is still downloading the rest.
+///
+/// The folder is a [`Source`] and a [`Sink`]. Reading through [`Source`]
+/// runs on a thread that may block, and so needs a Tokio runtime.
+#[derive(Debug, Clone)]
+pub struct Folder(Arc<Inner>);
+
 #[derive(Debug)]
-pub struct DiskStore {
+struct Inner {
     artifact: Arc<Artifact>,
     root: PathBuf,
-    /// Which chunks are on disk and verified, and which files are whole.
-    assembly: RwLock<Assembly>,
-    files: Vec<FileState>,
+    /// Whether each entry has its final name. Set after the rename, so a
+    /// reader that sees it finds the file there.
+    in_place: Vec<AtomicBool>,
     /// Directories that have had a file renamed into them since they were
-    /// last flushed. See [`DiskStore::seal`].
+    /// last flushed. See [`Sink::finish`].
     unflushed: Mutex<BTreeSet<PathBuf>>,
     /// Links the artifact holds that this system cannot create.
-    skipped_links: usize,
+    skipped_links: AtomicUsize,
 }
 
-#[derive(Debug)]
-struct FileState {
-    /// Whether the file has its final name. Set after the rename, so a
-    /// reader that sees it finds the file there.
-    in_place: AtomicBool,
-    /// Held while a chunk is added to the file, so that the file is not
-    /// renamed while another chunk is being written into it.
-    writing: Mutex<()>,
-}
-
-impl FileState {
-    fn new(in_place: bool) -> Self {
-        Self {
-            in_place: AtomicBool::new(in_place),
-            writing: Mutex::new(()),
-        }
-    }
-}
-
-impl DiskStore {
-    /// A store over files that are already whole, as after indexing them.
-    /// Nothing is read: the caller vouches for the content.
+impl Folder {
+    /// Files that are already whole, as after indexing them. Nothing is
+    /// read: the caller vouches for the content.
     ///
     /// `root` is the file itself for a file artifact, or the directory that
     /// holds the tree for a directory artifact.
     pub fn whole(artifact: Arc<Artifact>, root: PathBuf) -> Self {
-        let held = Bitfield::full(artifact.chunk_count());
-        let entries = artifact.entries().len();
-        Self {
-            assembly: RwLock::new(Assembly::new(artifact.layout().clone(), held)),
-            files: (0..entries).map(|_| FileState::new(true)).collect(),
-            unflushed: Mutex::default(),
-            skipped_links: 0,
-            artifact,
-            root,
-        }
+        Self::over(artifact, root, true)
     }
 
-    /// Opens the artifact inside `dir`, under its own name, to be filled in.
+    /// The artifact inside `dir`, under its own name, to be filled in.
+    /// Nothing is touched until [`Sink::begin`].
+    pub fn inside(artifact: Arc<Artifact>, dir: &Path) -> Self {
+        let root = dir.join(artifact.name());
+        Self::over(artifact, root, false)
+    }
+
+    fn over(artifact: Arc<Artifact>, root: PathBuf, in_place: bool) -> Self {
+        Self(Arc::new(Inner {
+            in_place: (0..artifact.entries().len())
+                .map(|_| AtomicBool::new(in_place))
+                .collect(),
+            unflushed: Mutex::default(),
+            skipped_links: AtomicUsize::new(0),
+            artifact,
+            root,
+        }))
+    }
+
+    /// The file itself, or the directory holding the tree.
+    pub fn root(&self) -> &Path {
+        &self.0.root
+    }
+
+    /// How many links of the artifact were left out because this system
+    /// cannot create them.
+    pub fn skipped_links(&self) -> usize {
+        self.0.skipped_links.load(Ordering::Relaxed)
+    }
+
+    /// Makes the folder ready to be filled in, and returns the chunks that
+    /// are already there and right.
     ///
     /// Its directories are created, and so are its links, which are small
     /// enough to need no download. A directory must be a real directory: a
@@ -87,7 +96,7 @@ impl DiskStore {
     /// part file keeps each chunk that is right, so an interrupted download
     /// carries on from where it stopped.
     ///
-    /// `on_bytes` is called from worker threads with the size of each chunk
+    /// `examined` is called from worker threads with the size of each chunk
     /// examined.
     ///
     /// # Errors
@@ -95,201 +104,87 @@ impl DiskStore {
     /// Returns an error if a file cannot be read or created, if something of
     /// another kind is in the way, or if this file system treats two of the
     /// artifact's names as one.
-    pub fn resume(
-        artifact: Arc<Artifact>,
-        dir: &Path,
-        on_bytes: &(dyn Fn(u64) + Sync),
-    ) -> Result<Self> {
-        let root = dir.join(artifact.name());
+    fn prepare(&self, examined: &(dyn Fn(u64) + Sync)) -> Result<Bitfield> {
+        let artifact = &self.0.artifact;
         let entries = artifact.entries().len();
-        let mut store = Self {
-            assembly: RwLock::new(Assembly::new(
-                artifact.layout().clone(),
-                Bitfield::new(artifact.chunk_count()),
-            )),
-            files: Vec::new(),
-            unflushed: Mutex::default(),
-            skipped_links: 0,
-            artifact,
-            root,
-        };
 
         // Directories first. Paths are in order, so each comes after the
         // directory that holds it.
-        std::fs::create_dir_all(dir)?;
-        for (entry, described) in store.artifact.entries().iter().enumerate() {
+        if let Some(dir) = self.0.root.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        for (entry, described) in artifact.entries().iter().enumerate() {
             if described.kind == EntryKind::Directory {
-                ensure_directory(&store.final_path(entry))?;
+                ensure_directory(&self.final_path(entry))?;
             }
         }
 
         let found: Vec<Found> = (0..entries)
             .into_par_iter()
-            .map(|entry| store.survey(entry, on_bytes))
+            .map(|entry| self.survey(entry, examined))
             .collect::<Result<_>>()?;
 
-        let mut held = Bitfield::new(store.artifact.chunk_count());
-        for file in &found {
+        let mut held = Bitfield::new(artifact.chunk_count());
+        for (entry, file) in found.iter().enumerate() {
             for &index in &file.valid {
                 held.set(index);
             }
+            self.0.in_place[entry].store(file.in_place, Ordering::Release);
         }
-        store.files = found
-            .iter()
-            .map(|file| FileState::new(file.in_place))
-            .collect();
-        store.assembly = RwLock::new(Assembly::new(store.artifact.layout().clone(), held));
-        store.check_distinct()?;
+        self.check_distinct()?;
 
         // A part file with every chunk right is a download that stopped just
         // before its rename. A file with no chunks has nothing to wait for.
+        let assembly = Assembly::new(artifact.layout().clone(), held.clone());
         for entry in 0..entries {
-            if !store.is_in_place(entry) && store.is_whole(entry) {
-                store.finish(entry)?;
+            if !self.is_in_place(entry) && assembly.is_whole(entry) {
+                self.put_in_place(entry)?;
             }
         }
-        for entry in 0..entries {
-            if let EntryKind::Symlink { target } = &store.artifact.entries()[entry].kind {
-                let target = target.clone();
-                store.skipped_links += usize::from(!store.place_link(entry, &target)?);
+        let mut skipped = 0;
+        for (entry, described) in artifact.entries().iter().enumerate() {
+            if let EntryKind::Symlink { target } = &described.kind {
+                skipped += usize::from(!self.place_link(entry, target)?);
             }
         }
-        Ok(store)
+        self.0.skipped_links.store(skipped, Ordering::Relaxed);
+        Ok(held)
     }
 
-    /// The artifact this store holds.
-    pub fn artifact(&self) -> &Arc<Artifact> {
-        &self.artifact
-    }
-
-    /// The file itself, or the directory holding the tree.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    /// Whether chunk `index` is on disk and verified.
-    pub fn has(&self, index: u64) -> bool {
-        self.assembly().has(index)
-    }
-
-    /// A snapshot of which chunks are on disk and verified.
-    pub fn held(&self) -> Bitfield {
-        self.assembly().held().clone()
-    }
-
-    /// Whether every chunk is on disk and verified, which is also when every
-    /// file has its final name.
-    pub fn is_complete(&self) -> bool {
-        self.assembly().is_complete()
-    }
-
-    /// How many links of the artifact were left out because this system
-    /// cannot create them.
-    pub fn skipped_links(&self) -> usize {
-        self.skipped_links
-    }
-
-    /// Reads one chunk from disk.
+    /// Reads `len` bytes of `file` at `offset`, from its part file or from
+    /// the file under its final name, whichever holds it now.
     ///
     /// # Errors
     ///
-    /// Returns an error if the chunk is not held or the file cannot be read.
-    pub fn read_chunk(&self, index: u64) -> Result<Vec<u8>> {
-        let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
-        if !self.has(index) {
-            return Err(Error::new(ErrorKind::NotFound, "chunk is not held"));
-        }
-        let file = self.open(location.file)?;
-        let mut buf = vec![0; location.len as usize];
-        io::read_exact_at(&file, &mut buf, location.offset)?;
+    /// Returns an error if the file is not there or is too short.
+    pub fn read_at(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>> {
+        let opened = self.open(file)?;
+        let mut buf = vec![0; len as usize];
+        io::read_exact_at(&opened, &mut buf, offset)?;
         Ok(buf)
     }
 
-    /// Checks `data` against the manifest and, if it is chunk `index`, writes
-    /// it to its file. When that makes the file whole, the file is flushed
-    /// and renamed into place. Call [`DiskStore::seal`] once the last chunk
-    /// is in.
-    ///
-    /// Returns `false`, having written nothing, if `data` is not the chunk.
+    /// Writes `data` into the part file of `file` at `offset`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the index is out of range or the file cannot be
-    /// written, flushed or renamed.
-    pub fn write_chunk(&self, index: u64, data: &[u8]) -> Result<bool> {
-        let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
-        if Some(Hash::of(data)) != self.artifact.chunk_hash(index) {
-            return Ok(false);
-        }
-
-        let state = &self.files[location.file];
-        let _writing = state.writing.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.has(index) {
-            return Ok(true);
-        }
-        let part = OpenOptions::new()
-            .write(true)
-            .open(self.part_path(location.file))?;
-        io::write_all_at(&part, data, location.offset)?;
-        drop(part);
-
-        let whole = self
-            .assembly
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .add(index);
-        if let Some(file) = whole {
-            self.finish(file)?;
-        }
-        Ok(true)
+    /// Returns an error if the part file is not there or cannot be written.
+    fn write_at(&self, file: usize, offset: u64, data: &[u8]) -> Result<()> {
+        let part = OpenOptions::new().write(true).open(self.part_path(file))?;
+        io::write_all_at(&part, data, offset)
     }
 
-    /// Finishes the tree once the last chunk is in: gives each directory its
-    /// recorded time and permissions, then flushes every directory that has
-    /// had a file renamed into it, so that the renames survive a power cut.
-    ///
-    /// A file's bytes are flushed before it is renamed, so a power cut never
-    /// leaves a file with holes under a final name. What it can do, until
-    /// this is called, is undo a rename: the file is then found whole under
-    /// its part name by the next [`DiskStore::resume`], which renames it
-    /// again. Flushing a directory is slow, which is why it is done once
-    /// here and not once for each file.
-    ///
-    /// While chunks are still missing, only the flush is done.
+    /// Gives a file that has every byte its final name: sets its time and
+    /// permissions, flushes it, then renames it over whatever is there.
     ///
     /// # Errors
     ///
-    /// Returns an error if a directory cannot be changed or flushed.
-    pub fn seal(&self) -> Result<()> {
-        if self.is_complete() {
-            // Children before parents: filling a directory changes its
-            // time, and one that may not be written cannot be filled.
-            for (entry, described) in self.artifact.entries().iter().enumerate().rev() {
-                if described.kind == EntryKind::Directory
-                    && let Some(metadata) = self.artifact.metadata(entry)
-                {
-                    io::restore_directory(&self.final_path(entry), metadata)?;
-                }
-            }
-        }
-        let renamed_into = std::mem::take(
-            &mut *self
-                .unflushed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-        for dir in renamed_into {
-            io::sync_dir(&dir)?;
-        }
-        Ok(())
-    }
-
-    /// Gives a whole file its final name: sets its time and permissions,
-    /// flushes it, then renames it over whatever is there.
-    fn finish(&self, file: usize) -> Result<()> {
+    /// Returns an error if the part file cannot be changed, flushed or
+    /// renamed.
+    fn put_in_place(&self, file: usize) -> Result<()> {
         let part = self.part_path(file);
         let written = OpenOptions::new().write(true).open(&part)?;
-        if let Some(metadata) = self.artifact.metadata(file) {
+        if let Some(metadata) = self.0.artifact.metadata(file) {
             if let Some(time) = metadata.modified.and_then(io::system_time) {
                 written.set_modified(time)?;
             }
@@ -298,6 +193,57 @@ impl DiskStore {
         written.sync_all()?;
         drop(written);
         self.rename_into_place(file, &part)
+    }
+
+    /// Removes the part file of `file`. Whatever has the final name stays.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the part file is there and cannot be removed.
+    fn discard(&self, file: usize) -> Result<()> {
+        remove_if_present(&self.part_path(file))
+    }
+
+    /// Finishes the tree: gives each directory its recorded time and
+    /// permissions, then flushes every directory that has had a file renamed
+    /// into it, so that the renames survive a power cut.
+    ///
+    /// A file's bytes are flushed before it is renamed, so a power cut never
+    /// leaves a file with holes under a final name. What it can do, until
+    /// this is called, is undo a rename: the file is then found whole under
+    /// its part name the next time the folder is made ready, which renames it
+    /// again. Flushing a directory is slow, which is why it is done once
+    /// here and not once for each file.
+    ///
+    /// While a file is still without its final name, only the flush is done.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a directory cannot be changed or flushed.
+    fn seal(&self) -> Result<()> {
+        let entries = self.0.artifact.entries();
+        if (0..entries.len()).all(|entry| self.is_in_place(entry)) {
+            // Children before parents: filling a directory changes its
+            // time, and one that may not be written cannot be filled.
+            for (entry, described) in entries.iter().enumerate().rev() {
+                if described.kind == EntryKind::Directory
+                    && let Some(metadata) = self.0.artifact.metadata(entry)
+                {
+                    io::restore_directory(&self.final_path(entry), metadata)?;
+                }
+            }
+        }
+        let renamed_into = std::mem::take(
+            &mut *self
+                .0
+                .unflushed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for dir in renamed_into {
+            io::sync_dir(&dir)?;
+        }
+        Ok(())
     }
 
     /// Creates the link `entry` if this system can, replacing whatever has
@@ -325,12 +271,13 @@ impl DiskStore {
         let path = self.final_path(entry);
         std::fs::rename(part, &path)?;
         if let Some(parent) = path.parent() {
-            self.unflushed
+            self.0
+                .unflushed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(parent.to_owned());
         }
-        self.files[entry].in_place.store(true, Ordering::Release);
+        self.0.in_place[entry].store(true, Ordering::Release);
         Ok(())
     }
 
@@ -340,7 +287,7 @@ impl DiskStore {
     /// one file would both be wrong.
     fn check_distinct(&self) -> Result<()> {
         let mut seen = std::collections::HashMap::new();
-        for entry in 0..self.artifact.entries().len() {
+        for entry in 0..self.0.artifact.entries().len() {
             if let Some(identity) = self.identity(entry)?
                 && let Some(other) = seen.insert(identity, entry)
             {
@@ -356,10 +303,10 @@ impl DiskStore {
     #[cfg(unix)]
     fn identity(&self, entry: usize) -> Result<Option<(u64, u64)>> {
         use std::os::unix::fs::MetadataExt;
-        let on_disk = match self.artifact.entries()[entry].kind {
+        let on_disk = match self.0.artifact.entries()[entry].kind {
             EntryKind::Directory => self.final_path(entry),
-            // A part file is always this store's own. A whole file that was
-            // already there may be a hard link, which is harmless.
+            // A part file is always this folder's own. A whole file that
+            // was already there may be a hard link, which is harmless.
             EntryKind::File { .. } if !self.is_in_place(entry) => self.part_path(entry),
             EntryKind::File { .. } | EntryKind::Symlink { .. } => return Ok(None),
         };
@@ -371,11 +318,11 @@ impl DiskStore {
     /// for every way of writing it.
     #[cfg(not(unix))]
     fn identity(&self, entry: usize) -> Result<Option<String>> {
-        Ok(Some(self.artifact.entries()[entry].path.to_lowercase()))
+        Ok(Some(self.0.artifact.entries()[entry].path.to_lowercase()))
     }
 
     fn clash(&self, one: usize, other: usize) -> Error {
-        let entries = self.artifact.entries();
+        let entries = self.0.artifact.entries();
         Error::new(
             ErrorKind::AlreadyExists,
             format!(
@@ -387,22 +334,23 @@ impl DiskStore {
 
     /// Finds out what is already on disk for one file, and makes sure there
     /// is a file to write the rest into.
-    fn survey(&self, file: usize, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Found> {
-        let EntryKind::File { size } = self.artifact.entries()[file].kind else {
+    fn survey(&self, file: usize, examined: &(dyn Fn(u64) + Sync)) -> Result<Found> {
+        let artifact = &self.0.artifact;
+        let EntryKind::File { size } = artifact.entries()[file].kind else {
             // A directory is already there, and a link is made afterwards.
             return Ok(Found {
                 valid: Vec::new(),
                 in_place: true,
             });
         };
-        let chunks = self.artifact.file_chunks(file);
+        let chunks = artifact.file_chunks(file);
         let path = self.final_path(file);
         let part = self.part_path(file);
 
         // Whatever has the final name is only ever read.
         let existing = open_regular(&path)?;
         let reusable = match &existing {
-            Some(old) => self.verify(file, old, on_bytes)?,
+            Some(old) => self.verify(file, old, examined)?,
             None => Vec::new(),
         };
         if let Some(old) = &existing
@@ -434,11 +382,10 @@ impl DiskStore {
         // Nothing has been written to a new part file, so there is nothing
         // in it to check.
         let mut valid = if started {
-            self.verify(file, &target, on_bytes)?
+            self.verify(file, &target, examined)?
         } else {
             Vec::new()
         };
-
         // A chunk that is right in the old file is copied across, so that
         // only what is wrong or missing has to be fetched.
         if let Some(old) = &existing {
@@ -461,22 +408,22 @@ impl DiskStore {
         &self,
         file: usize,
         on_disk: &File,
-        on_bytes: &(dyn Fn(u64) + Sync),
+        examined: &(dyn Fn(u64) + Sync),
     ) -> Result<Vec<u64>> {
+        let artifact = &self.0.artifact;
         let len = on_disk.metadata()?.len();
-        let valid = self
-            .artifact
+        let valid = artifact
             .file_chunks(file)
             .into_par_iter()
             .map_init(Vec::new, |buf: &mut Vec<u8>, index| {
-                let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
-                on_bytes(u64::from(location.len));
+                let location = artifact.locate(index).ok_or_else(out_of_range)?;
+                examined(u64::from(location.len));
                 if location.offset + u64::from(location.len) > len {
                     return Ok(None);
                 }
                 buf.resize(location.len as usize, 0);
                 io::read_exact_at(on_disk, buf, location.offset)?;
-                let matches = Some(Hash::of(buf)) == self.artifact.chunk_hash(index);
+                let matches = Some(Hash::of(buf)) == artifact.chunk_hash(index);
                 Ok(matches.then_some(index))
             })
             .collect::<Result<Vec<Option<u64>>>>()?;
@@ -486,10 +433,11 @@ impl DiskStore {
     /// Copies chunk `index` from one file to the same place in another, if
     /// it is still right when read. Returns whether it was copied.
     fn copy(&self, index: u64, from: &File, to: &File) -> Result<bool> {
-        let location = self.artifact.locate(index).ok_or_else(out_of_range)?;
+        let artifact = &self.0.artifact;
+        let location = artifact.locate(index).ok_or_else(out_of_range)?;
         let mut buf = vec![0; location.len as usize];
         io::read_exact_at(from, &mut buf, location.offset)?;
-        if Some(Hash::of(&buf)) != self.artifact.chunk_hash(index) {
+        if Some(Hash::of(&buf)) != artifact.chunk_hash(index) {
             return Ok(false);
         }
         io::write_all_at(to, &buf, location.offset)?;
@@ -511,23 +459,15 @@ impl DiskStore {
     }
 
     fn is_in_place(&self, file: usize) -> bool {
-        self.files[file].in_place.load(Ordering::Acquire)
-    }
-
-    fn is_whole(&self, file: usize) -> bool {
-        self.assembly().is_whole(file)
-    }
-
-    fn assembly(&self) -> std::sync::RwLockReadGuard<'_, Assembly> {
-        self.assembly.read().unwrap_or_else(PoisonError::into_inner)
+        self.0.in_place[file].load(Ordering::Acquire)
     }
 
     fn final_path(&self, entry: usize) -> PathBuf {
-        let mut path = self.root.clone();
+        let mut path = self.0.root.clone();
         // Paths were validated with the manifest: every name is a plain
         // name, so the result stays inside `root`. The root's own path is
         // empty.
-        let relative = &self.artifact.entries()[entry].path;
+        let relative = &self.0.artifact.entries()[entry].path;
         if !relative.is_empty() {
             path.extend(relative.split('/'));
         }
@@ -541,6 +481,74 @@ impl DiskStore {
         let mut name = self.final_path(file).into_os_string();
         name.push(PART_SUFFIX);
         PathBuf::from(name)
+    }
+}
+
+/// The result of an operation on a place.
+type Placed<T> = std::result::Result<T, Failure>;
+
+/// A file that cannot be read because it is not there is absent. Anything
+/// else that goes wrong on a local disk is not cured by trying again.
+fn unread(error: &Error) -> Failure {
+    match error.kind() {
+        ErrorKind::NotFound | ErrorKind::UnexpectedEof => Failure::Absent(error.to_string()),
+        _ => Failure::Fatal(error.to_string()),
+    }
+}
+
+/// Nothing that goes wrong writing to a local disk is cured by trying
+/// again.
+fn placed<T>(done: Result<T>) -> Placed<T> {
+    done.map_err(|error| Failure::Fatal(error.to_string()))
+}
+
+impl Source for Folder {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: true,
+        }
+    }
+
+    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
+        let folder = self.clone();
+        Box::pin(async move {
+            // Reading a file may wait on the disk.
+            let read = tokio::task::spawn_blocking(move || folder.read_at(file, offset, len));
+            match read.await {
+                Ok(read) => read.map_err(|error| unread(&error)),
+                Err(stopped) => Err(Failure::Fatal(format!(
+                    "reading a local file was cut short: {stopped}"
+                ))),
+            }
+        })
+    }
+}
+
+impl Sink for Folder {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: true,
+        }
+    }
+
+    fn begin(&self, examined: &(dyn Fn(u64) + Sync)) -> Placed<Bitfield> {
+        placed(self.prepare(examined))
+    }
+
+    fn write(&self, file: usize, offset: u64, data: &[u8]) -> Placed<()> {
+        placed(self.write_at(file, offset, data))
+    }
+
+    fn commit(&self, file: usize) -> Placed<()> {
+        placed(self.put_in_place(file))
+    }
+
+    fn abort(&self, file: usize) -> Placed<()> {
+        placed(self.discard(file))
+    }
+
+    fn finish(&self) -> Placed<()> {
+        placed(self.seal())
     }
 }
 

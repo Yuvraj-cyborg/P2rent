@@ -1,14 +1,15 @@
 # Architecture
 
-mux is built from four crates. Each depends only on the ones above it in
+mux is built from five crates. Each depends only on the ones above it in
 this table.
 
 | Crate | Responsibility | Knows about |
 | --- | --- | --- |
 | `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, the schedule of which chunk to fetch next, and how a place is named: locations and tickets | nothing else |
-| `fs` | Local folders: hashing files into artifacts; reading chunks from them; writing chunks to part files that are renamed into place when whole | model |
-| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, fs |
-| `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the three above | all of the above |
+| `engine` | What is the same for every place: checking a chunk before it is stored, knowing which chunks are held, and having a file committed when its last chunk is in | model |
+| `fs` | Local folders: hashing files into artifacts; reading and writing byte ranges; part files that are renamed into place when committed | model |
+| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, multi-source download | model, engine, fs |
+| `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the others | all of the above |
 
 `model` touches no disk, network or clock and does not use `std`.
 `just pure` builds it for a target that has no standard library and checks
@@ -22,9 +23,13 @@ crates/
 │   ├── assembly.rs
 │   ├── schedule.rs
 │   ├── location.rs
+│   ├── place.rs
 │   ├── ticket.rs
 │   └── hex.rs
-├── fs/src/            index.rs  disk.rs  io.rs
+├── engine/src/        store.rs  conformance.rs
+├── fs/
+│   ├── src/           index.rs  folder.rs  io.rs
+│   └── tests/folder/  what a store over a folder leaves on disk
 ├── peer/
 │   ├── src/
 │   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
@@ -105,26 +110,61 @@ meaning for or one it has reserved for a kind of place it cannot use yet.
 Printing a location gives text that reads back as the same place. That and
 "reading never panics" are checked on generated input and by a fuzz target.
 
+## Places
+
+A **place** is somewhere data is read from or written to. `model::place` has
+the two traits a backend implements, and nothing else about a place is known
+to the rest of the program.
+
+| Trait | Does |
+| --- | --- |
+| `Source` | Reads a range of bytes of one file. |
+| `Sink` | Makes the place ready and says which chunks it already holds; writes bytes at an offset; commits a file; aborts a file; finishes the tree. |
+
+A file being written is kept apart from the file under its final name until
+it is committed. A failure says which of four things it is (the place is
+unreachable, it does not hold what was asked for, it answered with something
+it must not, or trying again gains nothing), so the engine never has to know
+what a socket or a disk is.
+
+Reading returns a future: bytes are fetched from many sources at once, and a
+fetch that is no longer wanted is dropped. Writing is a plain call that does
+its work before it returns. The engine makes each one on a thread that is
+allowed to wait, and a write that has begun is always finished.
+
+A backend is a thin adapter: it moves bytes. What is the same for every
+place is done once, by `engine::Store`:
+
+- a chunk is hashed and compared with the manifest before the place is given
+  it;
+- the store knows which chunks are held, and reads one back only if it is;
+- when a chunk makes a file whole, the file is committed. That decision is
+  made by `model::assembly`, which is proven: a file is announced only when
+  every chunk of it is in place;
+- checking, writing and committing one chunk run as one step on one thread,
+  to the end, even if whoever asked for it gives up. So a file is never
+  counted as whole and left uncommitted.
+
+`engine::conformance` holds the checks every place must pass, and a place
+held in memory that passes them. Each backend's tests run the checks on its
+own place.
+
 ## Storage
 
 `store::index` walks a path, hashes chunks in parallel and returns an
-artifact. `DiskStore` maps a chunk index to a file and offset and performs
-positional reads and writes, so many chunks can be in flight without sharing
-a file cursor.
+artifact. `Folder` is the place for a local folder: it reads and writes at
+an offset, so many chunks can be in flight without sharing a file cursor.
 
 A file under its final name is always whole and correct. While a file is
-being downloaded its chunks go into a part file beside it, `<name>.mux-part`.
-`DiskStore::write_chunk` checks a chunk against the manifest before writing
-it, and when the last chunk of a file is in place it flushes the part file
-and renames it over the final name. The directories are flushed once, when
-the download completes, so that the renames survive a power cut. So however the
+being downloaded its bytes go into a part file beside it, `<name>.mux-part`.
+When the store commits the file, the folder flushes the part file and
+renames it over the final name. The directories are flushed once, when the
+download completes, so that the renames survive a power cut. So however the
 program stops, there is never a file with holes under a name a user would
 open, and a file that was already there is replaced in one step or left
-alone, never changed in place. The decision "this file is now whole" is made
-by `model::assembly`, which is proven: a file is announced only when every
-chunk of it is in place.
+alone, never changed in place.
 
-Chunks are read from part files as well as whole ones, so a node serves what
+Bytes are read from part files as well as whole ones, so a node serves what
 it holds while it downloads the rest.
 
 Directories are created first, and each must be a real directory: a link
@@ -134,12 +174,13 @@ file gets its recorded time and permissions just before its rename. A
 directory gets them when the download completes, the deepest first, because
 filling a directory changes its time and a read-only one cannot be filled.
 
-Resuming needs no state file. `DiskStore::resume` re-hashes whatever is at
-the destination. A whole file is kept. A part file keeps every chunk that is
-right. A file under its final name that is not whole, because it was damaged
-or is another version, is left as it is until its replacement is ready, and
-the chunks of it that are right are copied into the part file instead of
-being fetched again. Indexing leaves part files out.
+Resuming needs no state file. When a folder is made ready it re-hashes
+whatever is at the destination and reports the chunks that are right. A
+whole file is kept. A part file keeps every chunk that is right. A file
+under its final name that is not whole, because it was damaged or is another
+version, is left as it is until its replacement is ready, and the chunks of
+it that are right are copied into the part file instead of being fetched
+again. Indexing leaves part files out.
 
 ## Network
 

@@ -263,6 +263,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "engine"
+version = "0.2.0"
+dependencies = [
+ "model",
+ "tokio",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -285,6 +293,7 @@ dependencies = [
  "model",
  "rayon",
  "thiserror",
+ "tokio",
  "walkdir",
 ]
 
@@ -561,6 +570,7 @@ name = "peer"
 version = "0.2.0"
 dependencies = [
  "dirs",
+ "engine",
  "fs",
  "loom",
  "model",

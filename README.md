@@ -206,9 +206,10 @@ mux is not yet production software.
 | Path | Holds |
 | --- | --- |
 | `crates/model` | The data model and the logic that is proven: hashes, manifests, chunk layout, the download schedule. No I/O, and no standard library. |
-| `crates/fs` | Local folders: hashing files, and reading and writing their chunks. |
+| `crates/engine` | What is the same for every place data goes: checking chunks, and committing a file when it is whole. |
+| `crates/fs` | Local folders: hashing files, and reading and writing them. |
 | `crates/peer` | Node identity, authenticated QUIC, the wire protocol and the swarm. |
-| `crates/cli` | The `mux` command, and the `mux` library that gathers the three above. |
+| `crates/cli` | The `mux` command, and the `mux` library that gathers the others. |
 | `benches` | Benchmarks. |
 | `fuzz` | Fuzz targets for everything that parses bytes from another machine. |
 | `proofs` | Lean 4 proofs of the logic in `crates/model`. |

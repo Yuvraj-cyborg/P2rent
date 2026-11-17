@@ -89,20 +89,13 @@ async fn serve_request(
         Request::Chunk { content, index } => {
             let share = node.share(content).filter(|share| share.has(index));
             let data = match share {
-                Some(share) => {
-                    let reader = share.clone();
-                    let read =
-                        tokio::task::spawn_blocking(move || reader.store().read_chunk(index))
-                            .await
-                            .map_err(|e| Error::Transport(e.to_string()))?;
-                    match read {
-                        Ok(data) => Some((share, data)),
-                        Err(e) => {
-                            warn!(%content, index, "cannot read chunk from disk: {e}");
-                            None
-                        }
+                Some(share) => match share.store().read_chunk(index).await {
+                    Ok(data) => Some((share, data)),
+                    Err(e) => {
+                        warn!(%content, index, "cannot read chunk: {e}");
+                        None
                     }
-                }
+                },
                 None => None,
             };
             match data {

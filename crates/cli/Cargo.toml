@@ -26,6 +26,7 @@ fast-apple-datapath = ["peer/fast-apple-datapath"]
 
 [dependencies]
 model.workspace = true
+engine.workspace = true
 fs.workspace = true
 peer.workspace = true
 anyhow.workspace = true
