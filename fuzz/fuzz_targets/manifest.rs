@@ -72,6 +72,5 @@ fuzz_target!(|data: &[u8]| {
     // What was accepted decodes again to the same artifact.
     let again = Artifact::decode(artifact.id(), artifact.encoded().to_vec())
         .expect("an artifact's own encoding decodes");
-    assert_eq!(again.manifest(), artifact.manifest());
-    assert_eq!(again.content_id(), artifact.content_id());
+    assert_eq!(again, artifact);
 });

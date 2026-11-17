@@ -15,7 +15,7 @@ pub use layout::{ChunkLocation, Layout};
 pub use manifest::{
     Artifact, Content, DEFAULT_CHUNK_SIZE, Entry, EntryKind, EntryMetadata, FORMAT_VERSION,
     MAX_CHUNK_SIZE, MAX_MANIFEST_BYTES, MAX_NAME_BYTES, MAX_TARGET_BYTES, MIN_CHUNK_SIZE, Manifest,
-    Metadata, PART_SUFFIX, PERMISSION_BITS, Timestamp, is_part_name, is_safe_component,
+    Metadata, PART_SUFFIX, PERMISSION_BITS, Timestamp, Tree, is_part_name, is_safe_component,
 };
 
 /// Converts a chunk index or count into an in-memory index.
