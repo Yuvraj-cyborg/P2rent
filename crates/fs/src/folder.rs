@@ -1,7 +1,7 @@
 use super::io;
 use model::artifact::{Bitfield, EntryKind, Hash, PART_SUFFIX, Tree};
 use model::assembly::Assembly;
-use model::place::{Capabilities, Expected, Failure, Pending, Sink, Source};
+use model::place::{Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
@@ -163,7 +163,7 @@ impl Folder {
     ///
     /// Returns an error if the file is not there or is too short.
     pub fn read_at(&self, file: usize, offset: u64, len: u32) -> Result<Vec<u8>> {
-        let opened = self.open(file)?;
+        let opened = self.open_file(file)?;
         let mut buf = vec![0; len as usize];
         io::read_exact_at(&opened, &mut buf, offset)?;
         Ok(buf)
@@ -486,7 +486,7 @@ impl Folder {
     }
 
     /// Opens whichever file holds `file`'s bytes at the moment.
-    fn open(&self, file: usize) -> Result<File> {
+    fn open_file(&self, file: usize) -> Result<File> {
         if self.is_in_place(file) {
             return File::open(self.final_path(file));
         }
@@ -550,18 +550,61 @@ impl Source for Folder {
         }
     }
 
-    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
+    fn describe(&self) -> Pending<'_, Description> {
+        Box::pin(std::future::ready(Ok(Description::of(&self.0.tree))))
+    }
+
+    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
         let folder = self.clone();
         Box::pin(async move {
-            // Reading a file may wait on the disk.
-            let read = tokio::task::spawn_blocking(move || folder.read_at(file, offset, len));
-            match read.await {
-                Ok(read) => read.map_err(|error| unread(&error)),
-                Err(stopped) => Err(Failure::Fatal(format!(
-                    "reading a local file was cut short: {stopped}"
-                ))),
-            }
+            let file = waiting(move || folder.open_file(file)).await?;
+            let reader: Box<dyn Reader> = Box::new(FileReader {
+                file: Arc::new(file),
+                offset,
+            });
+            Ok(reader)
         })
+    }
+
+    /// One step where opening and then reading would be two.
+    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
+        let folder = self.clone();
+        Box::pin(waiting(move || folder.read_at(file, offset, len)))
+    }
+}
+
+/// A local file that is read in order.
+#[derive(Debug)]
+struct FileReader {
+    file: Arc<File>,
+    offset: u64,
+}
+
+impl Reader for FileReader {
+    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+        let (file, offset) = (self.file.clone(), self.offset);
+        Box::pin(async move {
+            let data = waiting(move || {
+                let mut buf = vec![0; len as usize];
+                io::read_exact_at(&file, &mut buf, offset)?;
+                Ok(buf)
+            })
+            .await?;
+            self.offset += u64::from(len);
+            Ok(data)
+        })
+    }
+}
+
+/// Reads on a thread that may wait on the disk.
+async fn waiting<T: Send + 'static>(
+    read: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Placed<T> {
+    match tokio::task::spawn_blocking(read).await {
+        Ok(read) => read.map_err(|error| unread(&error)),
+        Err(stopped) => Err(Failure::Fatal(format!(
+            "reading a local file was cut short: {stopped}"
+        ))),
     }
 }
 

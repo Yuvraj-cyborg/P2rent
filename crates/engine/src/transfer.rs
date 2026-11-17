@@ -466,8 +466,14 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
 
     let mut workers = JoinSet::new();
     let owner = run.new_owner();
-    let requests = run.options.requests_per_supplier.max(1) as u64;
-    for cursor in starting_points(&run.me, &id, chunks, requests) {
+    let cursors: Vec<u64> = if supply.capabilities().random_access {
+        let requests = run.options.requests_per_supplier.max(1) as u64;
+        starting_points(&run.me, &id, chunks, requests).collect()
+    } else {
+        // One stream is read by one pipeline, from its start.
+        vec![0]
+    };
+    for cursor in cursors {
         workers.spawn(work(
             run.clone(),
             supply.clone(),
