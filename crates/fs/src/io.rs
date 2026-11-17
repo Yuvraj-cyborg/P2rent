@@ -1,7 +1,7 @@
 //! Positional file I/O that does not depend on a shared cursor, so chunks can
 //! be read and written from many threads at once.
 
-use model::artifact::{EntryMetadata, PERMISSION_BITS, Timestamp};
+use model::artifact::{EntryKind, EntryMetadata, PERMISSION_BITS, Timestamp};
 use std::fs::File;
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -89,6 +89,22 @@ pub(crate) fn set_mode(file: &File, mode: u16) -> io::Result<()> {
     file.set_permissions(permissions)
 }
 
+/// Gives the file at `path` the recorded permission bits.
+#[cfg(unix)]
+pub(crate) fn set_mode_at(path: &std::path::Path, mode: u16) -> io::Result<()> {
+    set_mode(&File::open(path)?, mode)
+}
+
+/// Makes the file at `path` read-only if nobody may write it. It is done
+/// by the file's name: Windows lets a file be opened for writing only if
+/// it may be written, which is the very thing to be changed.
+#[cfg(not(unix))]
+pub(crate) fn set_mode_at(path: &std::path::Path, mode: u16) -> io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_readonly(mode & 0o222 == 0);
+    std::fs::set_permissions(path, permissions)
+}
+
 /// When a file or directory was last modified, if the system says.
 pub(crate) fn modified_of(metadata: &std::fs::Metadata) -> Option<Timestamp> {
     let time = metadata.modified().ok()?;
@@ -130,6 +146,33 @@ pub(crate) fn system_time(time: Timestamp) -> Option<SystemTime> {
 }
 
 /// Gives a directory its recorded time and permissions.
+/// What is recorded of an entry, as this system keeps it: everything.
+#[cfg(unix)]
+pub(crate) fn as_kept(_kind: &EntryKind, recorded: EntryMetadata) -> EntryMetadata {
+    recorded
+}
+
+/// What is recorded of an entry, as this system keeps it: of a file's
+/// permissions whether it may be written, and of a directory nothing.
+#[cfg(not(unix))]
+pub(crate) fn as_kept(kind: &EntryKind, recorded: EntryMetadata) -> EntryMetadata {
+    match kind {
+        EntryKind::File { .. } => EntryMetadata {
+            mode: if recorded.mode & 0o222 == 0 {
+                0o444
+            } else {
+                0o644
+            },
+            ..recorded
+        },
+        EntryKind::Directory => EntryMetadata {
+            mode: 0o755,
+            modified: None,
+        },
+        EntryKind::Symlink { .. } => recorded,
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn restore_directory(path: &std::path::Path, metadata: EntryMetadata) -> io::Result<()> {
     let dir = File::open(path)?;

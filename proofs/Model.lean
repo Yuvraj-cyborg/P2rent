@@ -9,4 +9,5 @@ public import Model.Bitfield
 public import Model.Layout
 public import Model.Path
 public import Model.Assembly
+public import Model.Mirror
 public import Model.Schedule

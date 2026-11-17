@@ -2,9 +2,10 @@ use super::io;
 use crate::error::{Error, Result};
 use model::artifact::path::{depth, is_safe_target};
 use model::artifact::{
-    Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, is_part_name,
+    Artifact, Entry, EntryKind, EntryMetadata, Hash, Manifest, PERMISSION_BITS, Tree, is_part_name,
     to_usize,
 };
+use model::mirror::TRASH;
 use rayon::prelude::*;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -69,12 +70,7 @@ impl Source {
 /// Returns an error if the path cannot be read, is neither a file nor a directory, or contains
 /// a name that a manifest cannot hold, such as one that is not UTF-8.
 pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> Result<Indexed> {
-    let root = path.canonicalize()?;
-    let name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| unsupported(&root, "has no usable UTF-8 name"))?
-        .to_owned();
+    let (root, name) = named(path)?;
     let (sources, skipped) = walk(&root)?;
 
     let per_file: Vec<Vec<Hash>> = sources
@@ -99,6 +95,84 @@ pub fn index(path: &Path, chunk_size: u32, on_bytes: &(dyn Fn(u64) + Sync)) -> R
         root,
         skipped,
     })
+}
+
+/// What is at a path, without the digest of any of it.
+#[derive(Debug)]
+pub struct Scanned {
+    /// The files, directories and links that were found.
+    pub tree: Tree,
+    /// Canonical path of the file or directory that was looked at.
+    pub root: PathBuf,
+    /// Entries that were left out, as [`Indexed::skipped`] counts them.
+    pub skipped: usize,
+}
+
+/// Looks at what is at `path` and reads none of it: the files, directories
+/// and links, with their sizes, permissions and times, as [`index`] records
+/// them.
+///
+/// # Errors
+///
+/// As for [`index`].
+pub fn scan(path: &Path, chunk_size: u32) -> Result<Scanned> {
+    let (root, name) = named(path)?;
+    let (sources, skipped) = walk(&root)?;
+    let entries = sources
+        .into_iter()
+        .map(|source| (source.entry, source.metadata))
+        .collect();
+    Ok(Scanned {
+        tree: Tree::new(name, chunk_size, entries)?,
+        root,
+        skipped,
+    })
+}
+
+/// `tree` as a folder on this system keeps it.
+///
+/// A sync compares what a source holds with what is found on disk. What
+/// this system has no way to keep would be found different every time, and
+/// no sync could make the difference go away. So it is put here as it will
+/// be found: on a system that is not Unix, of a file's permissions only
+/// whether it may be written, and of a directory neither its permissions
+/// nor its time. On Unix the tree is as it was.
+///
+/// # Errors
+///
+/// Returns an error only if `tree` is not a tree, which it is.
+pub fn as_kept(tree: &Tree) -> Result<Tree> {
+    let entries = tree.entries().iter().enumerate().map(|(index, entry)| {
+        let recorded = tree
+            .metadata(index)
+            .map(|recorded| io::as_kept(&entry.kind, recorded));
+        (entry.clone(), recorded)
+    });
+    let entries: Option<Vec<_>> = entries
+        .map(|(entry, recorded)| Some((entry, recorded?)))
+        .collect();
+    let entries = entries.ok_or_else(|| {
+        unsupported(
+            Path::new(tree.name()),
+            "has entries with nothing recorded of them",
+        )
+    })?;
+    Ok(Tree::new(
+        tree.name().to_owned(),
+        tree.chunk_size(),
+        entries,
+    )?)
+}
+
+/// The canonical form of `path`, and the name of what is there.
+fn named(path: &Path) -> Result<(PathBuf, String)> {
+    let root = path.canonicalize()?;
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| unsupported(&root, "has no usable UTF-8 name"))?
+        .to_owned();
+    Ok((root, name))
 }
 
 /// Total size in bytes of the regular files under `path`, for progress bars.
@@ -132,6 +206,14 @@ fn walk(root: &Path) -> Result<(Vec<Source>, usize)> {
     while let Some(entry) = entries.next() {
         let entry = entry.map_err(std::io::Error::from)?;
         let file_type = entry.file_type();
+        // What a sync took away from this folder is not part of what the
+        // folder holds.
+        if entry.depth() == 1 && entry.file_name() == TRASH {
+            if file_type.is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
         // A part file is this program's own unfinished work, and no manifest
         // may name one.
         if entry.file_name().to_str().is_some_and(is_part_name) {

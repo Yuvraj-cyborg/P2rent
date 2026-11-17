@@ -111,6 +111,21 @@ have them.
 - **The new name**, as in the table above. A machine that ran p2rent keeps
   its identity: its key is copied to the new configuration folder the first
   time mux runs.
+- **`mux cp` copies a file from the web, or a folder, into a folder.**
+  `mux cp https://example.org/big.iso ./downloads/` reads it over several
+  connections, carries on where an interrupted copy stopped, and stops with
+  an error if the file changes on the server meanwhile. With
+  `--hash sha256:…` the copy is verified, and `--mirror URL` reads from a
+  second server at the same time. `mux cp ./weights /mnt/backup/` copies a
+  folder with its links, permissions and times. `--dry-run` says what a
+  copy would do, `mux probe` says what is at a place, and `--json` writes
+  either for a program to read.
+  [docs/commands.md](docs/commands.md) has the details and the exit codes.
+- **`mux sync` makes a folder match a source,** and reads only what has
+  changed. Nothing is removed without `--delete`, what is replaced or
+  removed goes to a trash folder first, and a sync that would remove more
+  than half of a folder stops and asks. The rule for each path is proven in
+  Lean.
 - **Machines behind routers.** Connections are made by
   [iroh](https://github.com/n0-computer/iroh). Two machines that cannot dial
   each other are connected directly where their routers allow it, and

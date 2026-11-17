@@ -130,7 +130,7 @@ log
 lru
 lru-slab
 mac-addr
-memchr: x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc
+memchr
 mio
 n0-dns-resolver
 n0-error
@@ -204,6 +204,7 @@ serde
 serde_bytes
 serde_core
 serde_derive
+serde_json
 serdect
 sha1_smol
 sha2
@@ -299,3 +300,4 @@ zeroize_derive
 zerotrie
 zerovec
 zerovec-derive
+zmij

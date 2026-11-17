@@ -1,6 +1,6 @@
 use crate::common::Store;
-use ::fs::{index, measure};
-use model::artifact::{EntryKind, MIN_CHUNK_SIZE, PART_SUFFIX};
+use ::fs::{Trash, as_kept, index, measure, remove, scan, touch};
+use model::artifact::{EntryKind, EntryMetadata, MIN_CHUNK_SIZE, PART_SUFFIX, Timestamp, Tree};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +22,183 @@ fn sample_tree(dir: &std::path::Path) -> std::path::PathBuf {
     fs::write(root.join("nested/b.bin"), bytes(CS, 2)).unwrap();
     fs::write(root.join("nested/deep/c.bin"), bytes(5, 3)).unwrap();
     root
+}
+
+/// A scan finds the tree that an index records, and reads no file to do
+/// it.
+#[test]
+fn a_scan_finds_the_tree_an_index_records() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    // A part file is this program's own unfinished work, and is left out.
+    fs::write(root.join("nested/unfinished.mux-part"), b"half").unwrap();
+
+    let indexed = index(&root, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap();
+    assert_eq!(scanned.tree, **indexed.artifact.tree());
+    assert_eq!(scanned.root, indexed.root);
+    assert_eq!((scanned.skipped, indexed.skipped), (1, 1));
+
+    // One file is a tree of one entry.
+    let file = scan(&root.join("a.bin"), MIN_CHUNK_SIZE).unwrap();
+    assert!(file.tree.is_file());
+    assert_eq!(file.tree.name(), "a.bin");
+    assert_eq!(file.tree.total_size(), (CS * 3 + 17) as u64);
+
+    assert!(scan(&root.join("missing"), MIN_CHUNK_SIZE).is_err());
+}
+
+/// A tree is compared with what is on disk as this system keeps it. On
+/// Unix that is the tree as it is. Elsewhere only whether a file may be
+/// written is kept of its permissions, and nothing of a directory's
+/// permissions or time, so a tree from another system is put that way
+/// before it is compared.
+#[test]
+fn a_tree_is_seen_as_this_system_keeps_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap().tree;
+    // What a scan finds is already as this system keeps it.
+    let kept = as_kept(&scanned).unwrap();
+    if cfg!(unix) {
+        assert_eq!(kept, scanned);
+    }
+    assert_eq!(as_kept(&kept).unwrap(), kept);
+    assert_eq!(kept.entries(), scanned.entries());
+
+    // A tree from elsewhere, with permissions this system may not keep.
+    let from_elsewhere: Vec<_> = scanned
+        .entries()
+        .iter()
+        .cloned()
+        .zip(scanned.recorded().iter().map(|recorded| {
+            let mut recorded = *recorded;
+            recorded.mode = 0o600;
+            recorded
+        }))
+        .collect();
+    let from_elsewhere = Tree::new("bundle", MIN_CHUNK_SIZE, from_elsewhere).unwrap();
+    let kept = as_kept(&from_elsewhere).unwrap();
+    let modes: Vec<u16> = kept.recorded().iter().map(|r| r.mode).collect();
+    if cfg!(unix) {
+        assert!(modes.iter().all(|&mode| mode == 0o600), "{modes:?}");
+    } else {
+        // A file that may be written, and a directory.
+        assert!(
+            modes.iter().all(|&mode| mode == 0o644 || mode == 0o755),
+            "{modes:?}"
+        );
+        let directories = kept.entries().iter().zip(kept.recorded());
+        let timed = directories
+            .filter(|(entry, _)| !entry.is_file())
+            .any(|(_, recorded)| recorded.modified.is_some());
+        assert!(!timed, "a directory kept a time");
+    }
+}
+
+/// What a sync takes away is moved into its trash, under the path it had.
+/// A folder goes with what is in it. A file that is to be replaced is
+/// given a second name there and stays where it is.
+#[test]
+fn what_is_taken_away_goes_to_the_trash_under_its_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    let began = Timestamp {
+        seconds: 1_700_000_000,
+        nanos: 5,
+    };
+    let trash = Trash::new(&root, began);
+    let folder = root.join(".mux-trash").join("1700000000.000000005");
+    assert_eq!(trash.folder(), folder);
+    assert!(
+        !root.join(".mux-trash").exists(),
+        "made before it was needed"
+    );
+
+    // A folder, with what is in it.
+    let deep = fs::read(root.join("nested/deep/c.bin")).unwrap();
+    trash.take("nested").unwrap();
+    assert!(!root.join("nested").exists());
+    assert_eq!(fs::read(folder.join("nested/deep/c.bin")).unwrap(), deep);
+    // What went with it is no longer there to take, which is no failure.
+    trash.take("nested/b.bin").unwrap();
+    trash.take("never was").unwrap();
+
+    // A file that is about to be replaced: it stays, and is in the trash.
+    let old = fs::read(root.join("a.bin")).unwrap();
+    trash.keep("a.bin").unwrap();
+    assert_eq!(fs::read(root.join("a.bin")).unwrap(), old);
+    fs::write(root.join("a.bin.new"), b"new").unwrap();
+    fs::rename(root.join("a.bin.new"), root.join("a.bin")).unwrap();
+    assert_eq!(fs::read(root.join("a.bin")).unwrap(), b"new");
+    assert_eq!(fs::read(folder.join("a.bin")).unwrap(), old);
+
+    // A scan does not look in the trash: it is not what the folder holds.
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap();
+    let paths: Vec<&str> = scanned
+        .tree
+        .entries()
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
+    assert_eq!(paths, ["", "a.bin", "empty"]);
+    assert_eq!(scanned.skipped, 0);
+    // Only at the top: a folder of that name further in is a folder.
+    fs::create_dir_all(root.join("sub/.mux-trash")).unwrap();
+    let scanned = scan(&root, MIN_CHUNK_SIZE).unwrap();
+    assert!(
+        scanned
+            .tree
+            .entries()
+            .iter()
+            .any(|e| e.path == "sub/.mux-trash")
+    );
+}
+
+/// For a sync that keeps no trash, and for one that only sets permissions.
+#[test]
+fn a_thing_is_removed_for_good_and_a_file_is_given_its_permissions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = sample_tree(tmp.path());
+    remove(&root.join("nested")).unwrap();
+    remove(&root.join("empty")).unwrap();
+    remove(&root.join("never was")).unwrap();
+    assert!(!root.join("nested").exists() && !root.join("empty").exists());
+    assert!(root.join("a.bin").exists());
+
+    let before = fs::metadata(root.join("a.bin"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    let recorded = EntryMetadata {
+        mode: 0o444,
+        modified: None,
+    };
+    touch(&root.join("a.bin"), recorded).unwrap();
+    let after = fs::metadata(root.join("a.bin")).unwrap();
+    assert!(after.permissions().readonly());
+    assert_eq!(after.modified().unwrap(), before, "its time was changed");
+    // And back: a file that may not be written is one that cannot be
+    // opened for writing, and its permissions can still be set.
+    let writable = EntryMetadata {
+        mode: 0o644,
+        modified: None,
+    };
+    touch(&root.join("a.bin"), writable).unwrap();
+    let after = fs::metadata(root.join("a.bin")).unwrap();
+    assert!(!after.permissions().readonly());
+
+    assert!(touch(&root.join("never was"), recorded).is_err());
+    // A folder is not a file, and a link is not followed.
+    fs::create_dir(root.join("a folder")).unwrap();
+    assert!(touch(&root.join("a folder"), recorded).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("a.bin", root.join("a link")).unwrap();
+        assert!(touch(&root.join("a link"), recorded).is_err());
+        let through = fs::metadata(root.join("a.bin")).unwrap();
+        assert!(!through.permissions().readonly(), "the link was followed");
+    }
 }
 
 #[test]

@@ -7,12 +7,14 @@
 // Every public item is documented.
 #![warn(missing_docs)]
 
+pub mod sync;
+
 pub use ::engine;
 pub use ::fs as store;
 #[cfg(feature = "web")]
 pub use ::web;
 pub use model::location::{Location, Protocol};
-pub use model::{artifact, place};
+pub use model::{artifact, mirror, place};
 pub use peer::{Error, Result, net, swarm};
 
 /// Every kind of place this build can use: the protocols of the backends
