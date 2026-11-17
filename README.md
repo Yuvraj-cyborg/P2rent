@@ -117,7 +117,9 @@ have them.
   an error if the file changes on the server meanwhile. With
   `--hash sha256:…` the copy is verified, and `--mirror URL` reads from a
   second server at the same time. `mux cp ./weights /mnt/backup/` copies a
-  folder with its links, permissions and times.
+  folder with its links, permissions and times. `--dry-run` says what a
+  copy would do, `mux probe` says what is at a place, and `--json` writes
+  either for a program to read.
   [docs/commands.md](docs/commands.md) has the details and the exit codes.
 
 ## Installation

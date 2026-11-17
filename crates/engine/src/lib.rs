@@ -24,7 +24,7 @@ mod store;
 pub mod sync;
 mod transfer;
 
-pub use copy::{Copied, copy};
+pub use copy::{Copied, Plan, copy, plan};
 pub use source::supplier;
 pub use store::{Put, Store};
 pub use transfer::{Error, Options, Summary, transfer};

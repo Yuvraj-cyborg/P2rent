@@ -4,7 +4,9 @@
 mod cp;
 mod exit;
 mod get;
+mod probe;
 mod seed;
+mod tell;
 mod ui;
 
 use anyhow::Context;
@@ -26,6 +28,11 @@ struct Cli {
     #[arg(short, long, action = ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Write what happens for a program to read: one JSON object on each
+    /// line of standard output
+    #[arg(long, global = true)]
+    json: bool,
+
     /// Node key file [default: <config dir>/mux/node.key]
     #[arg(long, global = true, env = "MUX_KEY", value_name = "FILE")]
     key: Option<PathBuf>,
@@ -38,6 +45,8 @@ struct Cli {
 enum Command {
     /// Copy from one place to another
     Cp(cp::Args),
+    /// Say what is at a place, without copying it
+    Probe(probe::Args),
     /// Offer files or directories to other machines
     Seed(seed::Args),
     /// Download an artifact from a swarm
@@ -51,6 +60,7 @@ enum Command {
 pub(crate) fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
+    let json = cli.json;
 
     let outcome = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -61,10 +71,19 @@ pub(crate) fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error:#}");
             let exit = exit::Exit::of(&error);
+            let message = format!("{error:#}");
+            eprintln!("error: {message}");
             if let Some(hint) = exit.hint() {
                 eprintln!("hint: {hint}");
+            }
+            if json {
+                tell::say(&tell::Line::Error {
+                    code: exit as u8,
+                    kind: exit.kind(),
+                    message: &message,
+                    hint: exit.hint(),
+                });
             }
             exit.into()
         }
@@ -73,7 +92,8 @@ pub(crate) fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Cp(args) => cp::run(args).await,
+        Command::Cp(args) => cp::run(args, cli.json).await,
+        Command::Probe(args) => probe::run(&args, cli.json).await,
         Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?).await,
         Command::Get(args) => get::run(args, &identity(cli.key.as_deref())?).await,
         Command::Id => {
