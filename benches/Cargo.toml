@@ -1,6 +1,6 @@
 [package]
 name = "benches"
-description = "Benchmarks for mux: instruction counts for the hot paths, a timed loopback transfer, and a timed web download"
+description = "Benchmarks for mux: instruction counts for the hot paths, a timed loopback transfer, a timed web download, and a comparison of ways to send only what changed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -36,6 +36,12 @@ harness = false
 [[bench]]
 name = "transfer"
 path = "transfer.rs"
+harness = false
+
+# Compares ways of sending only the changed parts of a file.
+[[bench]]
+name = "delta"
+path = "delta.rs"
 harness = false
 
 # Times a download from a web address.
