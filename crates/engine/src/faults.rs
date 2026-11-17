@@ -39,6 +39,8 @@ struct Script {
     unreachable_for: usize,
     /// After this many chunks, what it reads from has changed.
     changes_after: Option<usize>,
+    /// After this many chunks, it says it is of no use at all.
+    useless_after: Option<usize>,
     /// It is one stream: it gives its chunks only in order, one at a time.
     in_order: bool,
     /// Suppliers it tells of.
@@ -172,6 +174,9 @@ impl Supply for Reached {
             }
             if script.changes_after.is_some_and(|limit| sent >= limit) {
                 return Err(Failure::Changed("the file is not what it was".into()));
+            }
+            if script.useless_after.is_some_and(|limit| sent >= limit) {
+                return Err(Failure::Fatal("it wants a login".into()));
             }
             if Script::says(&script.withholds, index) {
                 return Err(Failure::Absent(format!("no chunk {index} after all")));
@@ -585,6 +590,73 @@ fn with_nobody_holding_a_chunk_the_transfer_stalls_and_says_so() {
         ran.store.held().count_ones(),
         sample.artifact.chunk_count() - 1
     );
+}
+
+/// A supplier that was dropped is never tried again. Once every one has
+/// been, nobody is left who could deliver, and the transfer says so at
+/// once, with what the last one was dropped for.
+#[test]
+fn with_every_supplier_dropped_the_transfer_ends_at_once_and_says_why() {
+    let sample = sample();
+    let liar = Script {
+        lies: vec![true; chunks(&sample)],
+        ..Script::honest(&sample)
+    };
+    let useless = Script {
+        useless_after: Some(2),
+        ..Script::honest(&sample)
+    };
+    let both = [
+        Made::new(1, liar.clone(), &sample),
+        Made::new(2, liar.clone(), &sample),
+    ];
+    for (suppliers, why) in [
+        (&[Made::new(1, liar, &sample)][..], "failed verification"),
+        (&both[..], "failed verification"),
+        (&[Made::new(1, useless, &sample)][..], "it wants a login"),
+        (&[][..], "no supplier was given"),
+    ] {
+        let mut setup = Setup::new(&sample);
+        setup.options.requests_per_supplier = 1;
+        let ran = setup.run(suppliers);
+
+        let Err(Error::Unsupplied(reason)) = &ran.outcome else {
+            panic!("{:?}", ran.outcome);
+        };
+        assert!(reason.contains(why), "{reason}");
+        // Not after the ninety seconds a stall is given.
+        assert!(ran.took < Duration::from_secs(1), "it took {:?}", ran.took);
+        assert!(ran.has_no_wrong_file(&sample));
+    }
+}
+
+/// A chunk that has arrived is seen through before the transfer gives up,
+/// though the supplier it came from was dropped in the meantime.
+#[test]
+fn a_chunk_being_stored_is_waited_for_when_the_last_supplier_is_dropped() {
+    let sample = sample();
+    // It holds two chunks, sends both at once, and one of them is a lie.
+    let mut script = Script::honest(&sample);
+    script.holds = vec![false; chunks(&sample)];
+    script.holds[..2].fill(true);
+    script.lies = vec![false, true];
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 2;
+    // Writing takes long enough that the lie is found out first: it is
+    // refused before anything is written.
+    setup.before_write = Box::new(|| {
+        std::thread::sleep(Duration::from_millis(200));
+        Ok(())
+    });
+    let ran = setup.run(&[Made::new(1, script, &sample)]);
+
+    let Err(Error::Unsupplied(reason)) = &ran.outcome else {
+        panic!("{:?}", ran.outcome);
+    };
+    assert!(reason.contains("chunk 1 failed verification"), "{reason}");
+    // The chunk that was right was stored, and counted, before that.
+    assert_eq!(ran.store.held().count_ones(), 1);
+    assert_eq!(ran.count(|e| matches!(e, Event::Stored { .. })), 1);
 }
 
 #[test]
@@ -1220,6 +1292,7 @@ fn script(chunks: usize) -> impl Strategy<Value = Script> {
                 delay: Duration::from_millis(delay),
                 unreachable_for,
                 changes_after: None,
+                useless_after: None,
                 in_order: false,
                 others: Vec::new(),
             },
@@ -1242,6 +1315,7 @@ proptest! {
         let total = sample.artifact.chunk_count();
         prop_assert_eq!(total, 7, "the scripts are written for seven chunks");
         let reliable = scripts.iter().any(|script| script.is_reliable(total));
+        let all_lie = scripts.iter().all(|script| script.lies.contains(&true));
         let suppliers: Vec<Made> = scripts
             .into_iter()
             .zip(1u8..)
@@ -1262,7 +1336,12 @@ proptest! {
             }
             Err(error) => {
                 prop_assert!(!reliable, "a reliable supplier was there, yet: {}", error);
-                prop_assert!(matches!(error, Error::Stalled(_)), "{}", error);
+                match error {
+                    Error::Stalled(_) => {}
+                    // Only a lie gets a supplier dropped here.
+                    Error::Unsupplied(_) => prop_assert!(all_lie, "{}", error),
+                    _ => prop_assert!(false, "{}", error),
+                }
             }
         }
     }
