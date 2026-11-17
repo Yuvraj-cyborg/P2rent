@@ -178,7 +178,27 @@ fn a_thing_is_removed_for_good_and_a_file_is_given_its_permissions() {
     let after = fs::metadata(root.join("a.bin")).unwrap();
     assert!(after.permissions().readonly());
     assert_eq!(after.modified().unwrap(), before, "its time was changed");
+    // And back: a file that may not be written is one that cannot be
+    // opened for writing, and its permissions can still be set.
+    let writable = EntryMetadata {
+        mode: 0o644,
+        modified: None,
+    };
+    touch(&root.join("a.bin"), writable).unwrap();
+    let after = fs::metadata(root.join("a.bin")).unwrap();
+    assert!(!after.permissions().readonly());
+
     assert!(touch(&root.join("never was"), recorded).is_err());
+    // A folder is not a file, and a link is not followed.
+    fs::create_dir(root.join("a folder")).unwrap();
+    assert!(touch(&root.join("a folder"), recorded).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("a.bin", root.join("a link")).unwrap();
+        assert!(touch(&root.join("a link"), recorded).is_err());
+        let through = fs::metadata(root.join("a.bin")).unwrap();
+        assert!(!through.permissions().readonly(), "the link was followed");
+    }
 }
 
 #[test]

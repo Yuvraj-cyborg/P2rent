@@ -112,8 +112,15 @@ pub fn remove(path: &Path) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be opened or changed.
+/// Returns an error if nothing is there, if what is there is not a
+/// regular file, or if it cannot be changed. A link is not followed: what
+/// it points at may lie outside the folder.
 pub fn touch(path: &Path, recorded: EntryMetadata) -> io::Result<()> {
-    let file = std::fs::File::open(path)?;
-    fs_io::set_mode(&file, recorded.mode)
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            ErrorKind::AlreadyExists,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    fs_io::set_mode_at(path, recorded.mode)
 }

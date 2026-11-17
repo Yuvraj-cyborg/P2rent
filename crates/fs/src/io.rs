@@ -89,6 +89,22 @@ pub(crate) fn set_mode(file: &File, mode: u16) -> io::Result<()> {
     file.set_permissions(permissions)
 }
 
+/// Gives the file at `path` the recorded permission bits.
+#[cfg(unix)]
+pub(crate) fn set_mode_at(path: &std::path::Path, mode: u16) -> io::Result<()> {
+    set_mode(&File::open(path)?, mode)
+}
+
+/// Makes the file at `path` read-only if nobody may write it. It is done
+/// by the file's name: Windows lets a file be opened for writing only if
+/// it may be written, which is the very thing to be changed.
+#[cfg(not(unix))]
+pub(crate) fn set_mode_at(path: &std::path::Path, mode: u16) -> io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_readonly(mode & 0o222 == 0);
+    std::fs::set_permissions(path, permissions)
+}
+
 /// When a file or directory was last modified, if the system says.
 pub(crate) fn modified_of(metadata: &std::fs::Metadata) -> Option<Timestamp> {
     let time = metadata.modified().ok()?;
