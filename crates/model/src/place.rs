@@ -12,7 +12,7 @@
 //! A place is opened for one tree: the entries of one artifact. A file is
 //! named by its position among those entries.
 
-use crate::artifact::{Bitfield, Hash};
+use crate::artifact::{Bitfield, Entry, EntryMetadata, FileDigest, Hash, Tree};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -69,16 +69,79 @@ pub struct Capabilities {
     pub random_access: bool,
 }
 
+/// What is known about a file before any of it has been read, when the
+/// digests of its chunks are not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Foreknown {
+    /// What the source gives to tell one version of the file from another:
+    /// bytes that change when the file does. Empty if it gives nothing, and
+    /// then a transfer that is interrupted starts the file again.
+    pub validator: Vec<u8>,
+    /// The digest of the whole file, if the source or the user gave one.
+    /// The file is committed only if its bytes have it.
+    pub digest: Option<FileDigest>,
+}
+
+/// What a source holds, as far as it can say without being read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Description {
+    /// The name of the root.
+    pub name: String,
+    /// Every entry with what is recorded about it, in order, the root
+    /// first.
+    pub entries: Vec<(Entry, EntryMetadata)>,
+    /// What is known beforehand of each entry.
+    pub known: Vec<Foreknown>,
+}
+
+impl Description {
+    /// What a place that holds `tree` says of it, when it knows nothing
+    /// beforehand about any file.
+    pub fn of(tree: &Tree) -> Self {
+        let entries = tree.entries().iter().enumerate();
+        Self {
+            name: tree.name().into(),
+            entries: entries
+                .filter_map(|(entry, described)| Some((described.clone(), tree.metadata(entry)?)))
+                .collect(),
+            known: tree
+                .entries()
+                .iter()
+                .map(|_| Foreknown::default())
+                .collect(),
+        }
+    }
+}
+
 /// A place data can be read from.
 pub trait Source: fmt::Debug + Send + Sync {
     /// What reading from this place allows.
     fn capabilities(&self) -> Capabilities;
 
+    /// Says what is here.
+    fn describe(&self) -> Pending<'_, Description>;
+
+    /// Opens `file` to be read in order, starting at `offset`.
+    ///
+    /// This is how many chunks are fetched: one after another from one
+    /// reader, which for a web server is one request and not one for each
+    /// chunk. A place without [`Capabilities::random_access`] may have to
+    /// read and discard everything before `offset` to get there.
+    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>>;
+
     /// Reads `len` bytes of `file`, starting at `offset`.
     ///
     /// The whole range is returned or the read fails: a place never
     /// answers with fewer bytes than were asked for.
-    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>>;
+    fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
+        Box::pin(async move { self.open(file, offset).await?.read(len).await })
+    }
+}
+
+/// The bytes of one file, read in order from where it was opened.
+pub trait Reader: fmt::Debug + Send {
+    /// Reads the next `len` bytes: all of them, or the read fails.
+    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>>;
 }
 
 /// A place data can be written to.
@@ -201,6 +264,11 @@ pub trait Supply: fmt::Debug + Send + Sync {
     /// Fetches chunk `index`. The failure is [`Failure::Absent`] if the
     /// supplier turns out not to hold it.
     fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>>;
+
+    /// What fetching from this supplier allows. One without
+    /// [`Capabilities::random_access`] is asked for one chunk at a time,
+    /// from the first that is missing onwards.
+    fn capabilities(&self) -> Capabilities;
 }
 
 /// What a supplier says about itself.

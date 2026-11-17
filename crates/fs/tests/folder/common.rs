@@ -49,7 +49,7 @@ impl Store {
     ) -> Result<Self, Failure> {
         let tree = artifact.tree().clone();
         let folder = Folder::inside(tree.clone(), dir);
-        let known = engine::Foreknown {
+        let known = model::place::Foreknown {
             validator: validator.to_vec(),
             digest: None,
         };

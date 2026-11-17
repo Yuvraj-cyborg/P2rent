@@ -9,7 +9,7 @@ use crate::net::{Connection, NodeId, PeerInfo};
 use crate::swarm::Node;
 use engine::sync;
 use model::artifact::Artifact;
-use model::place::{Failure, Pending, Status, Supplier, SupplierId, Supply};
+use model::place::{Capabilities, Failure, Pending, Status, Supplier, SupplierId, Supply};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -115,6 +115,13 @@ impl Supply for Link {
                 .map_err(|e| unreachable(&e))?
                 .ok_or_else(|| Failure::Absent(format!("peer does not hold chunk {index}")))
         })
+    }
+
+    /// A peer is asked for any chunk, and for several at once.
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: true,
+        }
     }
 }
 
