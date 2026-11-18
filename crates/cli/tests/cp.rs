@@ -282,7 +282,7 @@ fn tree(at: &Path) {
         std::os::unix::fs::symlink("b.txt", at.join("sub/link")).unwrap();
     }
     // A time well in the past, to be kept.
-    let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000);
+    let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567_890);
     let old = std::fs::File::options().write(true).open(at.join("a.bin"));
     old.unwrap().set_modified(then).unwrap();
 }

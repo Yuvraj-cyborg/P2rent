@@ -18,16 +18,16 @@ async fn a_downloader_becomes_a_source() {
     let data = pattern(CHUNK * 30, 1);
     fs::write(&source, &data).unwrap();
 
-    let origin = node();
+    let origin = node().await;
     let (artifact, ticket) = seed(&origin, &source);
-    let first = node();
+    let first = node().await;
     get(&first, &ticket, &tmp.path().join("first"))
         .await
         .unwrap();
 
     // With the origin gone, the first downloader is the only source left.
-    origin.shutdown();
-    let second = node();
+    origin.shutdown().await;
+    let second = node().await;
     let relay_ticket = ticket_for(&first, &artifact);
     let report = get(&second, &relay_ticket, &tmp.path().join("second"))
         .await
@@ -47,18 +47,17 @@ async fn status_lists_other_participants() {
     let source = tmp.path().join("model.bin");
     fs::write(&source, pattern(CHUNK * 8, 2)).unwrap();
 
-    let origin = node();
+    let origin = node().await;
     let (artifact, ticket) = seed(&origin, &source);
-    let downloader = node();
+    let downloader = node().await;
     get(&downloader, &ticket, &tmp.path().join("out"))
         .await
         .unwrap();
 
-    let observer = Endpoint::bind(&Identity::generate().unwrap(), common::localhost()).unwrap();
-    let connection = observer
-        .connect(origin.local_addr().unwrap(), origin.node_id())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
+    let connection = observer.connect(&peer_info(&origin)).await.unwrap();
     let status = connection
         .status(artifact.content_id())
         .await
@@ -87,10 +86,10 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     let forged_dir = tmp.path().join("forged");
     fs::create_dir_all(&forged_dir).unwrap();
     fs::write(forged_dir.join("model.bin"), pattern(CHUNK * 20, 99)).unwrap();
-    let liar = node();
+    let liar = node().await;
     liar.seed(artifact.clone(), forged_dir.join("model.bin"));
 
-    let honest = node();
+    let honest = node().await;
     honest.seed(artifact.clone(), root);
     let announcer = tokio::spawn(announce(
         honest.clone(),
@@ -99,11 +98,10 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     ));
 
     // Wait until the liar knows about the honest node.
-    let observer = Endpoint::bind(&Identity::generate().unwrap(), common::localhost()).unwrap();
-    let connection = observer
-        .connect(liar.local_addr().unwrap(), liar.node_id())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
+    let connection = observer.connect(&peer_info(&liar)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let status = connection
@@ -121,7 +119,7 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     .expect("the honest node never registered with the liar");
 
     // The ticket names only the liar.
-    let downloader = node();
+    let downloader = node().await;
     let out = tmp.path().join("out");
     let report = get(&downloader, &ticket_for(&liar, &artifact), &out)
         .await
@@ -143,10 +141,10 @@ async fn forged_data_is_never_accepted() {
     let forged_dir = tmp.path().join("forged");
     fs::create_dir_all(&forged_dir).unwrap();
     fs::write(forged_dir.join("model.bin"), pattern(CHUNK * 6, 98)).unwrap();
-    let liar = node();
+    let liar = node().await;
     liar.seed(artifact.clone(), forged_dir.join("model.bin"));
 
-    let downloader = node();
+    let downloader = node().await;
     let out = tmp.path().join("out");
     let progress = Arc::new(Progress::default());
     let error = download(
@@ -180,7 +178,7 @@ async fn many_downloaders_share_one_origin() {
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 120, 5);
     fs::write(&source, &data).unwrap();
-    let origin = node();
+    let origin = node().await;
     let (_, ticket) = seed(&origin, &source);
 
     let mut downloads = tokio::task::JoinSet::new();
@@ -188,7 +186,7 @@ async fn many_downloaders_share_one_origin() {
         let ticket = ticket.clone();
         let out = tmp.path().join(format!("out-{i}"));
         downloads.spawn(async move {
-            let downloader = node();
+            let downloader = node().await;
             let report = get(&downloader, &ticket, &out).await.unwrap();
             (out, report)
         });
@@ -227,18 +225,17 @@ async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
     tree(&first_root, 1_000_000_000);
     tree(&second_root, 1_500_000_000);
 
-    let (first, second) = (node(), node());
+    let (first, second) = (node().await, node().await);
     let (wanted, ticket) = seed(&first, &first_root);
     let (other, _) = seed(&second, &second_root);
     assert_ne!(wanted.id(), other.id());
     assert_eq!(wanted.content_id(), other.content_id());
 
     // The second node holds the content, but not the first node's manifest.
-    let observer = Endpoint::bind(&Identity::generate().unwrap(), common::localhost()).unwrap();
-    let connection = observer
-        .connect(second.local_addr().unwrap(), second.node_id())
+    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
+    let connection = observer.connect(&peer_info(&second)).await.unwrap();
     assert!(connection.manifest(wanted.id()).await.unwrap().is_none());
     assert!(connection.manifest(other.id()).await.unwrap().is_some());
     assert!(
@@ -257,7 +254,7 @@ async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
     ticket.peers.extend(ticket_for(&second, &other).peers);
 
     let out = tmp.path().join("out");
-    let report = get(&node(), &ticket, &out).await.unwrap();
+    let report = get(&node().await, &ticket, &out).await.unwrap();
     assert_eq!(report.sources, [(second.node_id(), wanted.total_size())]);
     // What arrives is the artifact that was asked for: the first node's
     // name and times, not the second's.

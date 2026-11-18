@@ -34,10 +34,6 @@ pub enum Error {
     #[error("identity: {0}")]
     Identity(String),
 
-    /// TLS could not be configured.
-    #[error(transparent)]
-    Tls(#[from] rustls::Error),
-
     /// A connection or stream failed.
     #[error("transport: {0}")]
     Transport(String),
@@ -45,15 +41,6 @@ pub enum Error {
     /// A peer sent something the protocol does not allow.
     #[error("protocol: {0}")]
     Protocol(String),
-
-    /// The peer that answered is not the node that was dialled.
-    #[error("peer presented node id {actual}, expected {expected}")]
-    IdentityMismatch {
-        /// The node id that was dialled.
-        expected: String,
-        /// The node id the peer proved.
-        actual: String,
-    },
 
     /// No peer supplied a manifest matching the artifact id.
     #[error("no reachable peer could provide the manifest")]
@@ -99,12 +86,6 @@ impl From<fs::Error> for Error {
     }
 }
 
-impl From<rcgen::Error> for Error {
-    fn from(e: rcgen::Error) -> Self {
-        Error::Identity(e.to_string())
-    }
-}
-
 macro_rules! transport_errors {
     ($($source:ty),* $(,)?) => {$(
         impl From<$source> for Error {
@@ -116,10 +97,9 @@ macro_rules! transport_errors {
 }
 
 transport_errors!(
-    quinn::ConnectError,
-    quinn::ConnectionError,
-    quinn::WriteError,
-    quinn::ReadError,
-    quinn::ReadExactError,
-    quinn::ClosedStream,
+    iroh::endpoint::ConnectionError,
+    iroh::endpoint::WriteError,
+    iroh::endpoint::ReadError,
+    iroh::endpoint::ReadExactError,
+    iroh::endpoint::ClosedStream,
 );

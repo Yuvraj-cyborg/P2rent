@@ -2,9 +2,9 @@
 
 use super::node::Node;
 use crate::error::{Error, Result};
+use crate::net::Connection;
 use crate::net::proto::{self, Have, Request, Response, Status};
-use crate::net::{Connection, PeerInfo};
-use quinn::{RecvStream, SendStream};
+use iroh::endpoint::{RecvStream, SendStream};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -34,7 +34,7 @@ pub(crate) async fn run(node: Arc<Node>) {
 }
 
 async fn serve_connection(node: Arc<Node>, connection: Connection) {
-    debug!(peer = %connection.peer().short(), addr = %connection.remote_addr(), "peer connected");
+    debug!(peer = %connection.peer().short(), at = ?connection.peer_info(), "peer connected");
     let turns = Arc::new(Semaphore::new(CHUNKS_AT_ONCE));
     // Lower for each request, so that what was asked for first is sent
     // first.
@@ -89,10 +89,7 @@ async fn serve_request(
 
         Request::Status { content } => match node.share(content) {
             Some(share) => {
-                share.note_participant(PeerInfo {
-                    node: connection.peer(),
-                    addr: connection.remote_addr(),
-                });
+                share.note_participant(connection.peer_info());
                 let have = share.have();
                 let status = Status {
                     have: if have.is_full() {

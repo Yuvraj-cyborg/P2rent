@@ -8,7 +8,7 @@ use std::process::{Command, ExitCode};
 
 /// Largest release binary allowed. Raise it only in a pull request that says
 /// what the extra bytes buy.
-const MAX_BINARY_BYTES: u64 = 7 * 1024 * 1024;
+const MAX_BINARY_BYTES: u64 = 12 * 1024 * 1024;
 
 /// The committed list of third-party crates that are compiled into the
 /// released binaries. See [`deps`].

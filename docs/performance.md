@@ -117,6 +117,7 @@ under about 15% as noise.
 | Machine | Throughput | CPU seconds per GiB | Indexing |
 | --- | ---: | ---: | ---: |
 | Linux, Intel Core i5-10200H (4 cores), data on tmpfs, 17 November 2026 | 441 MiB/s | 6.82 | 11,114 MiB/s |
+| The same machine, with connections made by iroh, 18 November 2026 | 472 MiB/s | 6.52 | 10,592 MiB/s |
 
 The sections that follow come from one laptop (Apple M4) and a Linux
 container running on it.
@@ -263,6 +264,87 @@ figures:
 | One 1 GiB file | 414 MiB/s, 6.83 CPU s/GiB | 386 MiB/s, 6.80 CPU s/GiB |
 | 1 GiB in 2000 files | 431 MiB/s, 6.88 CPU s/GiB | 434 MiB/s, 6.95 CPU s/GiB |
 | One 1 GiB file from two seeders | 654 MiB/s, 6.68 CPU s/GiB | 646 MiB/s, 6.65 CPU s/GiB |
+
+## Connections by iroh
+
+`peer` made its connections with quinn until
+[#19](https://github.com/yuvichh/mux/issues/19) moved it to
+[iroh](https://github.com/n0-computer/iroh), which reaches machines behind
+routers and has a QUIC of its own. The same loopback transfer, before and
+after:
+
+| Machine | quinn | iroh |
+| --- | ---: | ---: |
+| Linux, Intel Core i5-10200H, 1 GiB on tmpfs, median of five | 441 MiB/s, 6.82 CPU s/GiB | 472 MiB/s, 6.52 CPU s/GiB |
+| macOS, Apple M4, 512 MiB, median of five | about 1,350 MiB/s (measured when large datagrams went in) | 328 MiB/s, 9.84 CPU s/GiB |
+
+On Linux nothing was lost. On macOS loopback the rate fell to a quarter,
+and the reason is the size of a datagram. With quinn a datagram grew to
+8952 bytes where the route could carry it, and on macOS, which pays for
+each packet with a system call, that was worth nearly four times the
+throughput. An iroh endpoint accepts datagrams of up to 1472 bytes and has
+no setting for more.
+
+This is the cost on a route with a large MTU, which is loopback and a
+network of jumbo frames. On the usual 1500-byte network a datagram could
+not grow past 1472 bytes before either, and the figure to compare with is
+the 365 MiB/s that macOS reached at that size. With chunks sent one after
+another ([#80](https://github.com/yuvichh/mux/issues/80)) the same macOS
+transfer runs at 361 MiB/s and 7.7 CPU seconds per GiB.
+
+What iroh adds to the binary and to the list of crates that ship is in the
+pull request for #19.
+
+### Over links like real ones
+
+The rows of "Links like real ones" below, with quinn and with iroh, both
+with the change of #80. MiB/s, one run each, 18 November 2026.
+
+| Link, round trip | File | quinn | iroh |
+| --- | ---: | ---: | ---: |
+| 1 Gbit/s, 100 ms | 1 GiB | 91.3 | 90.4 |
+| 1 Gbit/s, 20 ms | 1 GiB | 107.1 | 108.3 |
+| 100 Mbit/s, 50 ms | 128 MiB | 10.7 | 10.6 |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.8 | 8.7 |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.5 | 5.3 |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.056 | 0.056 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.03 | 0.59 |
+
+Nothing is lost on a link without loss. With loss iroh's QUIC did worse in
+each of three runs (0.57 to 0.68, against 0.78 to 1.06 in four runs with
+quinn). Both are far below what the link carries, and what closes that gap
+is the congestion control:
+[#82](https://github.com/yuvichh/mux/issues/82) has the first figures for
+both.
+
+### The other congestion control
+
+`--congestion bbr` is BBR in its third version here, where the library
+used before had the first. The figures under "Packets lost for other
+reasons" below are for that first version, and have not all been made
+again. One run each, when the switch was first tried, MiB/s:
+
+| Link, round trip | CUBIC | BBR 3 |
+| --- | ---: | ---: |
+| 100 Mbit/s, 50 ms, 1% loss | 0.57 | 9.07 |
+| 1 Gbit/s, 100 ms | 90.4 | 84.3 |
+| 100 Mbit/s, 50 ms | 10.6 | 9.7 |
+
+So it is as much faster where packets are lost, and 7 to 9% slower than
+CUBIC on these two clean links, where the first version was level or
+ahead. How it shares a link with another download has not been measured
+for this version: it is meant to be fairer than the first.
+
+### Between two real machines
+
+A laptop on Wi-Fi fetched 20 MiB from a machine on the same home network,
+with a ticket that named the seeder by its key and gave no address. The
+two met by way of a public relay, and iroh found the direct route between
+them by itself within the first second: the log shows the connection move
+from the relay to the seeder's address on the home network. It took 21.6
+seconds, and the checksums were equal. `ssh` moves the same 20 MiB over
+the same link in 21.3 seconds. That link carries 10 Mbit/s, which is what
+the seeder's network card had agreed with its switch.
 
 ## Web downloads
 
@@ -756,6 +838,8 @@ not.
 ## Not yet measured
 
 - Two machines over a real network, at 1, 10 or 25 Gbit/s.
+- How much of a transfer between machines behind routers goes direct, and
+  how much by way of a relay.
 - x86 servers, where BLAKE3 and AES-GCM have different costs.
 - Windows.
 - A real link with a real router, to check the made-up one against.

@@ -78,7 +78,7 @@ speed:
 
 | Flag | |
 | --- | --- |
-| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: about twelve times faster over a link that loses one packet in a hundred, and harder on what else uses the link. It is the sender's choice, so give it to `mux seed`. |
+| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: many times faster over a link that loses one packet in a hundred, and somewhat slower than `cubic` on a link that loses none. It is the sender's choice, so give it to `mux seed`. |
 
 ## `mux probe`
 

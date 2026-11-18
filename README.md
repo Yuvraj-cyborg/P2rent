@@ -126,6 +126,14 @@ have them.
   removed goes to a trash folder first, and a sync that would remove more
   than half of a folder stops and asks. The rule for each path is proven in
   Lean.
+- **Machines behind routers.** Connections are made by
+  [iroh](https://github.com/n0-computer/iroh). Two machines that cannot dial
+  each other are connected directly where their routers allow it, and
+  through a relay where they do not. A relay passes on packets that it
+  cannot read. A ticket names a machine by its key and needs no address.
+  `--relay` uses a relay of your own and `--no-relay` uses none.
+- **It does not talk to 0.2.0.** The way two machines prove who they are
+  changed with the move to iroh.
 
 ## Installation
 
@@ -146,7 +154,7 @@ if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
 
 ### From source
 
-This builds `mux` from the `main` branch. It needs Rust 1.88 or newer.
+This builds `mux` from the `main` branch. It needs Rust 1.91 or newer.
 
 ```console
 $ cargo install --git https://github.com/yuvichh/mux --locked cli
@@ -172,11 +180,13 @@ Commonly used options:
 
 | Option | Applies to | Meaning |
 | --- | --- | --- |
-| `--listen <ADDR>` | both | Address to bind. `seed` defaults to `0.0.0.0:4433`. |
-| `--advertise <HOST[:PORT]>` | `seed` | Address to put in the ticket when the detected one is wrong, such as behind NAT or with a DNS name. |
+| `--listen <ADDR>` | both | Address to bind. By default every address, at a port the system picks. |
+| `--advertise <HOST[:PORT]>` | `seed` | An address to put in the ticket for other machines to dial. |
+| `--relay <URL>` | both | Reach machines behind routers through this relay, in place of the public ones. |
+| `--no-relay` | both | Use no relay and no directory. A machine is then reached at an address or not at all, and the ticket carries this machine's own. |
 | `--chunk-size <SIZE>` | `seed` | 4K to 16M. The default is 1M. |
 | `--seed` | `get` | Keep serving after the download completes. |
-| `--peer <NODE@HOST:PORT>` | `get` | Another peer to try, as well as those in the ticket. |
+| `--peer <NODE[@HOST:PORT]>` | `get` | Another peer to try, as well as those in the ticket. |
 | `--key <FILE>` | all | Node key file. Also `MUX_KEY`. |
 
 Run `mux <command> --help` for the full list.
@@ -196,8 +206,10 @@ Run `mux <command> --help` for the full list.
 
 mux is not yet production software.
 
-- Peers must be able to reach each other directly. There is no NAT traversal
-  and no relay.
+- In 0.2.0, peers must be able to reach each other directly. On `main` they
+  need not, and by default a machine then uses the public relays and the
+  directory run by the makers of iroh: both learn its node id and its
+  network addresses, and neither can read what is transferred.
 - There are no upload rate limits, and no access control beyond holding the
   ticket.
 - If a seeded file changes on disk, its chunks stop verifying and
@@ -224,7 +236,7 @@ mux is not yet production software.
 | `crates/engine` | What is the same for every place data goes: checking chunks, and committing a file when it is whole. |
 | `crates/fs` | Local folders: hashing files, and reading and writing them. |
 | `crates/web` | Web addresses: reading a file in parts, carrying on after a break, and noticing a file that changes. |
-| `crates/peer` | Node identity, authenticated QUIC, the wire protocol and the swarm. |
+| `crates/peer` | Node identity, connections between machines, the wire protocol and the swarm. |
 | `crates/cli` | The `mux` command, and the `mux` library that gathers the others. |
 | `benches` | Benchmarks. |
 | `fuzz` | Fuzz targets for everything that parses bytes from another machine. |

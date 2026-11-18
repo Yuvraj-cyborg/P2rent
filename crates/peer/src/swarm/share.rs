@@ -24,9 +24,10 @@ pub struct Share {
     uploaded: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Participant {
-    addr: std::net::SocketAddr,
+    /// The peer, and where it was when it last asked.
+    peer: PeerInfo,
     seen: Instant,
 }
 
@@ -84,13 +85,7 @@ impl Share {
                 return;
             }
         }
-        participants.insert(
-            peer.node,
-            Participant {
-                addr: peer.addr,
-                seen: now,
-            },
-        );
+        participants.insert(peer.node, Participant { peer, seen: now });
     }
 
     /// Recently seen participants other than `except`, most recent first.
@@ -101,7 +96,7 @@ impl Share {
         let mut recent: Vec<(Instant, PeerInfo)> = participants
             .iter()
             .filter(|(node, _)| **node != except)
-            .map(|(&node, p)| (p.seen, PeerInfo { node, addr: p.addr }))
+            .map(|(_, p)| (p.seen, p.peer.clone()))
             .collect();
         recent.sort_by_key(|entry| std::cmp::Reverse(entry.0));
         recent.truncate(MAX_ADVERTISED_PEERS);

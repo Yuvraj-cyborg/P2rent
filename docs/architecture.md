@@ -8,7 +8,7 @@ this table.
 | `model` | The data model and the logic that is proven: hashes, manifests, chunk layout, bitfields, the schedule of which chunk to fetch next, and how a place is named: locations and tickets | nothing else |
 | `engine` | What is the same for every place and every supplier: fetching chunks from many suppliers at once, checking a chunk before it is stored, and having a file committed when its last chunk is in | model |
 | `fs` | Local folders: hashing files into artifacts; reading and writing byte ranges; part files that are renamed into place when committed | model |
-| `peer` | Node identity, authenticated QUIC, wire messages, and the swarm: what a node serves, how it answers peers, and a peer as a supplier of chunks | model, engine, fs |
+| `peer` | Node identity, connections between nodes (iroh), wire messages, and the swarm: what a node serves, how it answers peers, and a peer as a supplier of chunks | model, engine, fs |
 | `cli` | The `mux` command (argument parsing, progress bars, output) and the `mux` library, which re-exports the others | all of the above |
 
 `model` touches no disk, network or clock and does not use `std`.
@@ -38,7 +38,7 @@ crates/
 │   └── tests/origin/  a web server that misbehaves, and what is made of it
 ├── peer/
 │   ├── src/
-│   │   ├── net/       identity.rs  tls.rs  endpoint.rs  proto.rs
+│   │   ├── net/       identity.rs  endpoint.rs  proto.rs
 │   │   ├── swarm/     node.rs  share.rs  server.rs
 │   │   │   └── download/  mod.rs  supplier.rs
 │   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
@@ -328,20 +328,39 @@ put right after what was done inside it.
 Each node has an Ed25519 key pair stored at `<config dir>/mux/node.key`.
 The public key is the node id.
 
-Connections are QUIC with TLS 1.3. There is no certificate authority: each
-side presents a self-signed certificate that only carries its public key.
-rustls verifies that the handshake was signed by that key, and the node id is
-then read from the parsed certificate. `Endpoint::connect` fails unless the
-peer's id is the one the caller asked for.
+Connections are made by [iroh](https://github.com/n0-computer/iroh): QUIC
+with TLS 1.3, in which each side proves that it holds the key its node id is
+the public half of. There are no certificates and no certificate authority.
+A node is dialled by its id, and `Endpoint::connect` fails unless whoever
+answers is that node.
 
 One UDP socket both dials and accepts, so the address a peer observes for a
 node is also the address at which that node can be reached.
 
+A node behind a router cannot be dialled at an address. `Relays` says how it
+is reached then:
+
+| `Relays` | A node is reached | Others learn |
+| --- | --- | --- |
+| `Public`, the default | through the public relays run by the makers of iroh, and found by its id in their directory | the relays and the directory learn its id and its addresses |
+| `At(url)` | through the relay at that address, which a ticket has to name | that relay learns its id and its addresses |
+| `Off` | at an address, or not at all | nothing |
+
+A relay passes on packets that are encrypted between the two nodes, and
+cannot read them. Wherever a direct route between the two can be opened,
+the connection moves to it, and the relay only carries the first packets.
+A node told to open no sockets (`direct: false`) is reached through a relay
+alone, and no other node learns its address.
+
+The key file holds the private key in PKCS#8. Files written by earlier
+versions, which used another library, are read as they are, and a machine
+keeps its node id.
+
 How fast a connection may send is decided by CUBIC unless a node is made
 with `Congestion::Bbr` (`--congestion bbr`), which is many times faster
-where packets are lost and harder on what else uses the link.
+where packets are lost. With iroh that is BBR in its third version.
 [docs/performance.md](performance.md#packets-lost-for-other-reasons) has
-both sides of that.
+the figures.
 
 ## Swarm
 
@@ -526,6 +545,8 @@ chunk, because that waiter may have been stopped a moment before.
   which stops in the middle of a file, stops sending, sends the wrong part,
   and changes the file as it is read.
 - `tests/connection.rs` checks mutual authentication and id pinning.
+- `tests/relay.rs` runs a relay in the test, and transfers between nodes
+  that have no socket of their own.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
 - `tests/cli.rs` runs the compiled binary as separate processes, and kills

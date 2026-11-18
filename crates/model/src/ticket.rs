@@ -56,12 +56,12 @@ impl FromStr for NodeId {
     }
 }
 
-/// Everything needed to join a swarm: the artifact id and where to find the
-/// first peers.
+/// Everything needed to join a swarm: the artifact id and the first peers
+/// to ask.
 ///
-/// Written as `mux://<artifact>?peer=<node id>@<host:port>&peer=...`. The
-/// artifact id is a content hash, so a ticket also pins exactly what will be
-/// downloaded.
+/// Written as `mux://<artifact>?peer=<node id>&peer=...`. A peer may be
+/// followed by `@` and where to reach it. The artifact id is a content
+/// hash, so a ticket also pins exactly what will be downloaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     /// The artifact to fetch.
@@ -71,40 +71,87 @@ pub struct Ticket {
 }
 
 /// A peer named in a ticket.
+///
+/// Its node id is all that is needed to reach it where nodes can be looked
+/// up by id. A ticket may also say where it is, which is tried first: one
+/// entry for each place, all with the same node id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketPeer {
     /// The node id the peer must prove.
     pub node: NodeId,
+    /// Where to reach it, if the ticket says.
+    pub at: Option<Whereabouts>,
+}
+
+/// Where a ticket says a peer can be reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Whereabouts {
     /// `host:port`. The host may be a DNS name, resolved when dialling.
-    pub addr: String,
+    Address(String),
+    /// The web address of a relay that passes packets on to it, beginning
+    /// `https://` or `http://`.
+    Relay(String),
+}
+
+impl Whereabouts {
+    /// The text as it is written in a ticket.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Address(text) | Self::Relay(text) => text,
+        }
+    }
+}
+
+impl FromStr for Whereabouts {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        if s.contains(['&', '?', '@', '#', ' ']) {
+            return Err(invalid(format!("{s:?} is not somewhere a peer can be")));
+        }
+        let relay = ["https://", "http://"]
+            .iter()
+            .find_map(|scheme| s.strip_prefix(scheme));
+        if let Some(host) = relay {
+            if host.is_empty() || host.starts_with('/') {
+                return Err(invalid(format!("{s:?} names no relay")));
+            }
+            return Ok(Self::Relay(s.to_owned()));
+        }
+        let valid = s
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+        if !valid {
+            return Err(invalid(format!(
+                "{s:?} is neither a host:port address nor the address of a relay"
+            )));
+        }
+        Ok(Self::Address(s.to_owned()))
+    }
 }
 
 impl FromStr for TicketPeer {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        let (node, addr) = s
-            .split_once('@')
-            .ok_or_else(|| invalid("a peer is written <node id>@<host:port>"))?;
+        let (node, at) = match s.split_once('@') {
+            Some((node, at)) => (node, Some(at.parse()?)),
+            None => (s, None),
+        };
         let node = node
             .parse()
             .map_err(|_| invalid("a node id is 64 hex characters"))?;
-        let valid = addr
-            .rsplit_once(':')
-            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
-        if !valid || addr.contains(['&', '?', '@', ' ']) {
-            return Err(invalid(format!("{addr:?} is not a host:port address")));
-        }
-        Ok(Self {
-            node,
-            addr: addr.to_owned(),
-        })
+        Ok(Self { node, at })
     }
 }
 
 impl fmt::Display for TicketPeer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.node, self.addr)
+        write!(f, "{}", self.node)?;
+        match &self.at {
+            Some(at) => write!(f, "@{}", at.as_str()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -167,26 +214,58 @@ mod tests {
 
     #[test]
     fn round_trips() {
+        let at = |node, text: &str| TicketPeer {
+            node,
+            at: Some(Whereabouts::Address(text.into())),
+        };
         let ticket = Ticket {
             artifact: Hash::of(b"artifact"),
             peers: vec![
+                at(node(1), "10.0.0.5:4433"),
+                at(node(2), "[fd00::1]:4433"),
+                at(node(3), "seed.internal:4433"),
                 TicketPeer {
-                    node: node(1),
-                    addr: "10.0.0.5:4433".into(),
+                    node: node(4),
+                    at: Some(Whereabouts::Relay("https://relay.example./".into())),
                 },
                 TicketPeer {
-                    node: node(2),
-                    addr: "[fd00::1]:4433".into(),
-                },
-                TicketPeer {
-                    node: node(3),
-                    addr: "seed.internal:4433".into(),
+                    node: node(5),
+                    at: None,
                 },
             ],
         };
         let text = ticket.to_string();
         assert!(text.starts_with("mux://"));
         assert_eq!(text.parse::<Ticket>().unwrap(), ticket);
+    }
+
+    #[test]
+    fn a_peer_is_its_node_id_and_perhaps_where_it_is() {
+        let id = node(7);
+        let read = |at: &str| format!("{id}{at}").parse::<TicketPeer>().unwrap().at;
+        assert_eq!(read(""), None);
+        assert_eq!(read("@h:1"), Some(Whereabouts::Address("h:1".into())));
+        for relay in [
+            "https://r.example",
+            "http://127.0.0.1:3340",
+            "https://r.example./",
+        ] {
+            assert_eq!(
+                read(&format!("@{relay}")),
+                Some(Whereabouts::Relay(relay.into()))
+            );
+        }
+        assert_eq!(
+            format!("{id}@h:1")
+                .parse::<TicketPeer>()
+                .unwrap()
+                .to_string(),
+            format!("{id}@h:1")
+        );
+        assert_eq!(
+            id.to_string().parse::<TicketPeer>().unwrap().to_string(),
+            id.to_string()
+        );
     }
 
     #[test]
@@ -214,10 +293,17 @@ mod tests {
             format!("{id}"),
             "mux://abc".to_owned(),
             format!("mux://{id}?peer=nope@h:1"),
-            format!("mux://{id}?peer={peer}"),
+            format!("mux://{id}?peer=nope"),
+            format!("mux://{id}?peer={peer}@"),
             format!("mux://{id}?peer={peer}@host"),
             format!("mux://{id}?peer={peer}@:1"),
             format!("mux://{id}?peer={peer}@h:99999"),
+            format!("mux://{id}?peer={peer}@h:1@h:2"),
+            format!("mux://{id}?peer={peer}@h:1#x"),
+            format!("mux://{id}?peer={peer}@h :1"),
+            format!("mux://{id}?peer={peer}@https://"),
+            format!("mux://{id}?peer={peer}@https:///path"),
+            format!("mux://{id}?peer={peer}@ftp://relay.example"),
         ] {
             assert!(text.parse::<Ticket>().is_err(), "{text:?} was accepted");
         }

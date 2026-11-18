@@ -3,7 +3,7 @@
 
 use ::fs as store;
 use model::artifact::{Artifact, MIN_CHUNK_SIZE};
-use peer::net::{Identity, PeerInfo};
+use peer::net::{Identity, Options, PeerInfo, Relays};
 use peer::swarm::{DownloadOptions, Node, Progress, Report, Ticket};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -17,16 +17,27 @@ pub(crate) fn localhost() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
 }
 
+/// A node reached at one local address and through no relay.
+pub(crate) fn direct() -> Options {
+    Options {
+        listen: Some(localhost()),
+        relays: Relays::Off,
+        ..Options::default()
+    }
+}
+
+/// The address a node made with [`direct`] listens on.
+pub(crate) fn addr_of(node: &Node) -> SocketAddr {
+    node.local_addrs()[0]
+}
+
 /// A node with a fresh identity on an ephemeral local port.
-pub(crate) fn node() -> Arc<Node> {
-    Node::bind(&Identity::generate().unwrap(), localhost()).unwrap()
+pub(crate) async fn node() -> Arc<Node> {
+    Node::bind(&Identity::generate(), &direct()).await.unwrap()
 }
 
 pub(crate) fn peer_info(node: &Node) -> PeerInfo {
-    PeerInfo {
-        node: node.node_id(),
-        addr: node.local_addr().unwrap(),
-    }
+    PeerInfo::at(node.node_id(), addr_of(node))
 }
 
 /// Deterministic, non-repeating test data.
@@ -56,7 +67,7 @@ pub(crate) fn seed(node: &Node, path: &Path) -> (Arc<Artifact>, Ticket) {
 }
 
 pub(crate) fn ticket_for(node: &Node, artifact: &Artifact) -> Ticket {
-    node.ticket(artifact.id(), &[node.local_addr().unwrap().to_string()])
+    node.ticket(artifact.id(), &[addr_of(node).to_string()])
 }
 
 pub(crate) fn options() -> DownloadOptions {
