@@ -119,6 +119,7 @@ transport_errors!(
     quinn::ConnectError,
     quinn::ConnectionError,
     quinn::WriteError,
+    quinn::ReadError,
     quinn::ReadExactError,
     quinn::ClosedStream,
 );
