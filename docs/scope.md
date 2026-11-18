@@ -12,7 +12,7 @@ place has its own tool, each with its own rules for resuming, checking and
 speed.
 
 This document describes where the project is going. The [README](../README.md)
-describes what the released version does.
+describes what it does today.
 
 ## Commands
 
@@ -56,8 +56,10 @@ These hold for every place, which is the reason to use one tool.
    trash folder first, a sync that would delete a large share of a folder
    stops and asks, and a missing record is never treated as a deletion.
 
-Guarantees 1, 3 and 4 hold today between machines. The rest arrive with the
-milestones below.
+Ticket transfers reuse verified chunks from an older file, even when an
+insertion has shifted their offsets. One-way sync selects changed files
+by size and modification time. HTTP resume depends on the server's range
+and version support. See the [command reference](commands.md).
 
 ## What it is not
 

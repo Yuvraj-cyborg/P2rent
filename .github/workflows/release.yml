@@ -3,11 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "docs/releases/**"
   # A manual run builds and checks every binary without publishing anything.
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,20 +30,25 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: mux-x86_64-linux
+            executable: mux-Linux-x86_64
             glibc: "2.17"
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             artifact: mux-aarch64-linux
+            executable: mux-Linux-aarch64
             glibc: "2.17"
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: mux-x86_64-darwin
+            executable: mux-Darwin-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: mux-aarch64-darwin
+            executable: mux-Darwin-arm64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: mux-x86_64-windows
+            executable: mux.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -83,9 +92,9 @@ jobs:
         run: |
           docker run --rm -v "$PWD/target/${{ matrix.target }}/release:/w:ro" centos:7 sh -euc '
             head -c 50000000 /dev/urandom > /tmp/data
-            /w/mux --key /tmp/a.key seed /tmp/data --listen 127.0.0.1:4433 > /tmp/ticket &
+            /w/mux --key /tmp/a.key seed /tmp/data --no-relay --listen 127.0.0.1:4433 > /tmp/ticket &
             for _ in $(seq 100); do [ -s /tmp/ticket ] && break; sleep 0.2; done
-            /w/mux --key /tmp/b.key get "$(cat /tmp/ticket)" --out /tmp/out
+            /w/mux --key /tmp/b.key get "$(cat /tmp/ticket)" --no-relay --out /tmp/out
             [ "$(sha256sum < /tmp/data)" = "$(sha256sum < /tmp/out/data)" ]
             echo "transfer ok on $(ldd --version | head -n 1)"
           '
@@ -93,32 +102,52 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          if [ -f mux.exe ]; then binary=mux.exe; else binary=mux; fi
-          tar czf "../../../${{ matrix.artifact }}.tar.gz" "$binary" -C ../../.. LICENSE README.md
+          mkdir -p dist
+          bin_dir="target/${{ matrix.target }}/release"
+          if [ -f "$bin_dir/mux.exe" ]; then binary=mux.exe; else binary=mux; fi
+          cp "$bin_dir/$binary" "dist/${{ matrix.executable }}"
+          tar czf "dist/${{ matrix.artifact }}.tar.gz" -C "$bin_dir" "$binary" -C ../../.. LICENSE README.md
+          tar xOzf "dist/${{ matrix.artifact }}.tar.gz" "$binary" | cmp - "dist/${{ matrix.executable }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.tar.gz
+          path: dist/
+          if-no-files-found: error
 
   publish:
     name: Publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate checksums
-        run: cd artifacts && sha256sum -- *.tar.gz > checksums-sha256.txt
+      - name: Check the tag and checksum the downloads
+        run: |
+          version=$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)
+          test "$GITHUB_REF_NAME" = "v$version"
+          test -s "docs/releases/$GITHUB_REF_NAME.md"
+          cd artifacts
+          sha256sum -- mux* > checksums-sha256.txt
+          sha256sum --check checksums-sha256.txt
 
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: |
-            artifacts/*.tar.gz
-            artifacts/checksums-sha256.txt
+          name: mux ${{ github.ref_name }}
+          body_path: docs/releases/${{ github.ref_name }}.md
+          draft: true
+          fail_on_unmatched_files: true
+          files: artifacts/*
+
+      - name: Publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

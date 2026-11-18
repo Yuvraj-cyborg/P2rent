@@ -612,7 +612,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "loom",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "model",
  "rayon",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "postcard",
@@ -2075,7 +2075,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dirs",
  "engine",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",

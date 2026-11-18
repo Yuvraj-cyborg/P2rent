@@ -236,7 +236,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "benches"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "engine",
@@ -464,7 +464,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -918,7 +918,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "loom",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "engine",
  "model",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "postcard",
@@ -2544,7 +2544,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "peer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dirs",
  "engine",
@@ -4160,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
