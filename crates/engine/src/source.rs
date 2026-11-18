@@ -104,6 +104,10 @@ impl Supply for Opened {
         })
     }
 
+    fn leave(&self, index: u64) {
+        drop(self.waiting_at(index));
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.source.capabilities()
     }
