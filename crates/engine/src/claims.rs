@@ -476,6 +476,50 @@ mod tests {
         assert_eq!(seen.last(), Some(&(14, 0)));
     }
 
+    /// Two streams take their first runs. The second fetches all of its
+    /// own, at 100 ms a chunk, while the first has taken one chunk. Returns
+    /// how many chunks the second then takes, when the first is known to
+    /// take `first_each` for a chunk.
+    fn second_run(chunks: u64, first_each: u64) -> usize {
+        let claims = Claims::new(&Bitfield::new(chunks), || {});
+        let held = Bitfield::full(chunks);
+        let mut cursor = 0;
+        let mut first = Claims::reserve(&claims, 1, &held, &mut cursor, run(2), 0).unwrap();
+        let mut second = Claims::reserve(&claims, 1, &held, &mut cursor, run(2), 0).unwrap();
+        let Next::Chunk(_fetching, _) = first.next() else {
+            panic!("the first run has chunks");
+        };
+        first.learn(first_each, 0);
+        while let Next::Chunk(claim, _) = second.next() {
+            claims.complete(claim);
+        }
+        drop(second);
+        let size = Size::Run {
+            streams: 2,
+            micros_each: 100 * MS,
+        };
+        let mut again = Claims::reserve(&claims, 1, &held, &mut cursor, size, 0).unwrap();
+        taken(&mut again).0.len()
+    }
+
+    /// A later run is the stream's share by speed of the work that is
+    /// left: what is free, what the others have still to ask for, and a
+    /// chunk for each of them that is on its way.
+    #[test]
+    fn a_later_run_is_a_share_by_speed_of_the_work_that_is_left() {
+        // Forty chunks: first runs of ten and seven, so 23 are free. The
+        // first has nine still to ask for and one on its way: 33 chunks
+        // of work for two streams. Nothing is known of the first, so it is
+        // taken to be as fast, and half of 33 is 17 when rounded up.
+        assert_eq!(second_run(40, 0), 17);
+        // A hundred chunks: first runs of 25 and 18, so 57 are free and
+        // there are 82 chunks of work. A first stream that is twice as
+        // fast leaves the second a third of them.
+        assert_eq!(second_run(100, 50 * MS), 28);
+        // One that is ten times slower leaves it all that is free.
+        assert_eq!(second_run(100, 1_000 * MS), 57);
+    }
+
     #[test]
     fn a_stream_by_itself_reserves_everything_in_a_row() {
         let mut have = Bitfield::new(10);
