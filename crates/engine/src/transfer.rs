@@ -113,8 +113,9 @@ pub enum Error {
 ///
 /// Returns [`Error::Stalled`] if no chunk arrives within the stall timeout,
 /// [`Error::Unsupplied`] as soon as every supplier has been dropped,
-/// [`Error::Changed`] if a supplier finds that what it reads has changed,
-/// and [`Error::Place`] if the store cannot keep what arrived.
+/// [`Error::Changed`] if a supplier finds that what it reads has changed
+/// and the chunks have no digests to tell the versions apart by, and
+/// [`Error::Place`] if the store cannot keep what arrived.
 pub async fn transfer(
     store: &Arc<Store>,
     me: SupplierId,
@@ -164,6 +165,15 @@ pub async fn transfer(
                 let Some(id) = running.remove(&task) else { continue };
                 let Some(slot) = slots.get_mut(&id) else { continue };
                 slot.active = false;
+                let ended = match ended {
+                    // Where every chunk was compared with a digest known
+                    // beforehand, none of what is stored is of the other
+                    // version: only this supplier is of no more use.
+                    Ended::Fatal(Failure::Changed(what)) if run.store.knows_every_digest() => {
+                        Ended::Dropped(what)
+                    }
+                    ended => ended,
+                };
                 match ended {
                     Ended::Finished => {}
                     Ended::Idle => slot.retry_at = Instant::now() + IDLE_WAIT,

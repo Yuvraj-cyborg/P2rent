@@ -1201,6 +1201,45 @@ fn a_source_that_changes_ends_the_transfer_and_leaves_nothing_half_written() {
     }
 }
 
+/// Where every chunk has its digest, a source that changes has spoiled
+/// nothing: it is dropped as one that sends wrong bytes is, what it sent
+/// before is kept, and another supplier finishes.
+#[test]
+fn a_source_that_changes_is_only_dropped_where_every_chunk_has_its_digest() {
+    let sample = sample();
+    let changing = Script {
+        changes_after: Some(2),
+        ..Script::honest(&sample)
+    };
+    let suppliers = [
+        Made::new(1, changing.clone(), &sample),
+        Made::new(2, Script::honest(&sample), &sample),
+    ];
+    let ran = Setup::new(&sample).run(&suppliers);
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let summary = ran.outcome.as_ref().unwrap();
+    assert_eq!(summary.usable, [[2; 32]]);
+
+    // By itself it cannot finish, and what it sent is still there for a
+    // transfer that carries on.
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 1;
+    let alone = setup.run(&[Made::new(1, changing, &sample)]);
+    let Err(Error::Unsupplied(why)) = &alone.outcome else {
+        panic!("{:?}", alone.outcome);
+    };
+    assert_eq!(why, "the file is not what it was");
+    assert!(alone.has_no_wrong_file(&sample));
+    let carried_on = Setup::new(&sample).into(&alone.place).run(&[Made::new(
+        2,
+        Script::honest(&sample),
+        &sample,
+    )]);
+    assert!(carried_on.has_every_file(&sample));
+    let kept = carried_on.count(|event| matches!(event, Event::Stored { .. }));
+    assert_eq!(kept, chunks(&sample) - 2);
+}
+
 #[tokio::test]
 async fn with_no_digest_bytes_of_the_wrong_length_are_still_refused() {
     let sample = sample();
