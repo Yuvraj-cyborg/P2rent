@@ -1279,6 +1279,84 @@ fn a_source_that_changes_is_only_dropped_where_every_chunk_has_its_digest() {
     assert_eq!(kept, chunks(&sample) - 2);
 }
 
+/// A supplier that is slow and one that is quick, each asked with several
+/// requests, as a web server far away and one near by. The quick one has
+/// everything that is free in no time. It then takes over what the slow
+/// one has still to ask for as soon as it is known how slow that is, and
+/// the transfer waits only for the chunks the slow one is reading.
+#[test]
+fn a_quick_supplier_takes_over_from_a_slow_one_as_soon_as_its_speed_is_known() {
+    let sample = long(64);
+    let slow = Script {
+        delay: Duration::from_millis(300),
+        ..Script::honest(&sample)
+    };
+    let quick = Script {
+        delay: Duration::from_millis(3),
+        ..Script::honest(&sample)
+    };
+    let suppliers = [Made::new(1, slow, &sample), Made::new(2, quick, &sample)];
+    let ran = Setup::new(&sample).run(&suppliers);
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+
+    // The slow one gave what its four requests were reading when their
+    // speed was learned, and what they went on to read meanwhile: eight
+    // chunks, of 64.
+    let from_the_slow =
+        ran.count(|event| matches!(event, Event::Stored { supplier, .. } if *supplier == [1; 32]));
+    assert!(
+        from_the_slow <= 8,
+        "{from_the_slow} chunks from the slow one"
+    );
+    // Its first chunks come at 300 ms. Left to notice in their own time,
+    // the quick one's requests would look again after a second.
+    assert!(
+        ran.took < Duration::from_millis(700),
+        "it took {:?}",
+        ran.took
+    );
+}
+
+/// A supplier whose chunks are long in coming, as a web server that sends
+/// a megabyte in eight seconds, beside one that is quick. What the slow
+/// one is reading is fetched from the quick one as well, as soon as how
+/// much of it has come shows how long the rest will take. The transfer
+/// does not end by waiting for the slow one, and no chunk is told of or
+/// counted twice.
+#[test]
+fn a_chunk_that_is_long_in_coming_is_fetched_from_a_quicker_supplier_too() {
+    let sample = long(64);
+    let slow = Script {
+        delay: Duration::from_secs(8),
+        steadily: true,
+        ..Script::honest(&sample)
+    };
+    let quick = Script {
+        delay: Duration::from_millis(3),
+        ..Script::honest(&sample)
+    };
+    let suppliers = [Made::new(1, slow, &sample), Made::new(2, quick, &sample)];
+    let ran = Setup::new(&sample).run(&suppliers);
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+
+    // A request is looked at after a second. A tenth and more of each
+    // chunk the slow one is reading has come by then, which says the rest
+    // needs seven seconds. The quick one has them in a hundredth of one.
+    assert!(
+        ran.took < Duration::from_millis(1_500),
+        "it took {:?}",
+        ran.took
+    );
+    let stored = ran.count(|event| matches!(event, Event::Stored { .. }));
+    assert_eq!(stored, chunks(&sample));
+    let from_the_slow =
+        ran.count(|event| matches!(event, Event::Stored { supplier, .. } if *supplier == [1; 32]));
+    assert_eq!(from_the_slow, 0);
+    let summary = ran.outcome.as_ref().unwrap();
+    let all: u64 = summary.sources.iter().map(|(_, bytes)| bytes).sum();
+    assert_eq!(all, sample.artifact.total_size());
+}
+
 #[tokio::test]
 async fn with_no_digest_bytes_of_the_wrong_length_are_still_refused() {
     let sample = sample();

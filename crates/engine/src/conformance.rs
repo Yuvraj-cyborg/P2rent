@@ -989,7 +989,7 @@ mod tests {
             assert_eq!(put(&store, &sample, index).await, expected);
         }
         // Sent again, it is a chunk the store has, and completes nothing.
-        assert_eq!(put(&store, &sample, chunks.start).await, Put::Stored);
+        assert_eq!(put(&store, &sample, chunks.start).await, Put::Held);
         assert_eq!(
             place.committed(FIRST_FILE).as_ref(),
             Some(&sample.files[FIRST_FILE])

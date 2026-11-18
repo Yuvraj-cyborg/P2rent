@@ -4,6 +4,7 @@ use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Timestamp,
 };
 use model::hex;
+use model::run;
 use model::schedule::{ChunkState, Outcome, Owner, Schedule};
 use proptest::collection::{btree_set, vec};
 use proptest::prelude::*;
@@ -367,6 +368,48 @@ proptest! {
 }
 
 /// The wire encoding of a `(u64, bytes)` pair, which is what a bitfield is.
+/// A length of time in microseconds: of any size, or of one a transfer
+/// meets, so that both the edges and the middle are tried.
+fn micros() -> impl Strategy<Value = u64> {
+    prop_oneof![any::<u64>(), 0u64..100_000_000, 0u64..2_000]
+}
+
+proptest! {
+    /// The faster a stream is, the less it has to gain to take over from
+    /// another, and never more than a connection is worth. The bounded
+    /// proof of this in `model::run` covers times of up to 65 thousandths
+    /// of a second: this tries times of every size.
+    #[test]
+    fn a_faster_stream_never_has_to_gain_more(
+        each in micros(),
+        one in micros(),
+        other in micros(),
+    ) {
+        let (faster, slower) = (one.min(other), one.max(other));
+        prop_assert!(run::worth(each, faster) <= run::worth(each, slower));
+        prop_assert!(run::worth(each, slower) <= run::WORTH_MICROS);
+        if faster >= each {
+            prop_assert_eq!(run::worth(each, faster), run::WORTH_MICROS);
+        }
+    }
+
+    /// What is taken over is within what is left, and a chunk is fetched
+    /// a second time only by a stream that would have it sooner.
+    #[test]
+    fn what_is_taken_over_is_there_to_take(
+        left in any::<u64>(),
+        each in micros(),
+        mine in micros(),
+        waited in micros(),
+    ) {
+        prop_assert!(run::spare(left, each, mine) <= left);
+        if run::relieve(each, waited, mine) {
+            let remaining = if waited < each { each - waited } else { waited };
+            prop_assert!(mine > 0 && mine < remaining);
+        }
+    }
+}
+
 fn postcard_pair(len: u64, bytes: &[u8]) -> Vec<u8> {
     postcard::to_allocvec(&(len, bytes)).unwrap()
 }

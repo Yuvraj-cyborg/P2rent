@@ -413,17 +413,22 @@ impl Run {
         Claims::reserve(&self.claims, owner, held, cursor, size, self.now())
     }
 
-    /// Records a chunk that the store has verified and written.
+    /// Records a chunk that the store has verified and holds. One that
+    /// was there already, because another supplier was asked for it as
+    /// well and was first, is nobody's a second time: it is told of and
+    /// counted once, for the supplier whose copy was written.
     fn complete(&self, claim: Claim, from: SupplierId, bytes: u64, put: Put) {
-        (self.observer)(Event::Stored {
-            supplier: from,
-            bytes,
-        });
-        if let Put::Completed(file) = put {
-            (self.observer)(Event::Committed { file });
+        if put != Put::Held {
+            (self.observer)(Event::Stored {
+                supplier: from,
+                bytes,
+            });
+            if let Put::Completed(file) = put {
+                (self.observer)(Event::Committed { file });
+            }
+            *sync::lock(&self.stored_from).entry(from).or_default() += bytes;
+            self.progressed();
         }
-        *sync::lock(&self.stored_from).entry(from).or_default() += bytes;
-        self.progressed();
         self.claims.complete(claim);
     }
 
@@ -709,6 +714,11 @@ impl Paced {
         }
     }
 
+    /// How many pipelines there are.
+    fn running(&self) -> u64 {
+        sync::lock(&self.counts).running
+    }
+
     /// How many pipelines to start now. They are counted as started.
     fn to_start(&self) -> u64 {
         let mut counts = sync::lock(&self.counts);
@@ -811,20 +821,29 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
             let mut cursor = sync::lock(&cursor);
             run.reserve(owner, &sync::read(&view).held, &mut cursor, size)
         };
-        let Some(mut reserved) = reserved else {
+        let reserved = if reserved.is_some() {
+            reserved
+        } else {
             // Nothing is free that the supplier holds. Another pipeline
             // may have more still to ask for than it will soon get to:
             // then what this one could fetch of it in that time is put
             // back, to be had from here.
-            let spared = {
-                let held = &sync::read(&view).held;
-                run.claims.spare(held, run.now(), micros_each)
-            };
-            if spared {
+            let held = &sync::read(&view).held;
+            // A supplier that takes many requests at once brings a chunk
+            // as often as one of them is answered: that is how fast it is,
+            // and not how long each answer is on its way.
+            let together = paced.as_ref().map_or(1, |paced| paced.running());
+            let mine = micros_each / together.max(1);
+            if run.claims.spare(held, run.now(), mine) {
                 continue;
             }
-            // Or the supplier may gain chunks, or another may release one
-            // it holds.
+            // Or the chunk another is reading may be so long in coming
+            // that it is sooner had from here as well.
+            Claims::relieve(&run.claims, owner, held, run.now(), mine)
+        };
+        let Some(mut reserved) = reserved else {
+            // The supplier may gain chunks, or another may release one it
+            // holds.
             tokio::select! {
                 () = run.wake.notified() => {}
                 () = tokio::time::sleep(IDLE_POLL) => {}
@@ -847,7 +866,7 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
             let index = claim.index;
 
             let asked = Instant::now();
-            let data = match fetch(&run, &*supply, index, following).await {
+            let data = match fetch(&run, &*supply, &reserved, index, following).await {
                 Some(Ok(data)) => data,
                 Some(Err(Failure::Absent(_))) => {
                     sync::write(&view).refuse(index);
@@ -925,13 +944,14 @@ fn micros(time: Duration) -> u64 {
     u64::try_from(time.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Fetches chunk `index`, after which `following` more are to be asked
-/// for, for as long as it keeps coming. `None` if next to nothing of it
-/// arrived for [`CHUNK_TIMEOUT`]: a chunk that is slow is waited for, and
-/// one that is not coming is not.
+/// Fetches chunk `index` of the run `reserved`, after which `following`
+/// more are to be asked for, for as long as it keeps coming. `None` if
+/// next to nothing of it arrived for [`CHUNK_TIMEOUT`]: a chunk that is
+/// slow is waited for, and one that is not coming is not.
 async fn fetch(
     run: &Run,
     supply: &dyn Supply,
+    reserved: &Reserved,
     index: u64,
     following: u64,
 ) -> Option<Result<Vec<u8>, Failure>> {
@@ -939,13 +959,24 @@ async fn fetch(
     let mut chunk = supply.chunk(index, following, &arrived);
     let mut watch = tokio::time::interval_at(Instant::now() + WATCH, WATCH);
     watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let whole = run
+        .store
+        .tree()
+        .locate(index)
+        .map_or(0, |at| u64::from(at.len));
     // What had arrived when the request last made progress, and when.
-    let (mut marked, mut since) = (0, Instant::now());
+    let (began, mut marked, mut since) = (Instant::now(), 0, Instant::now());
     loop {
         tokio::select! {
             fetched = &mut chunk => return Some(fetched),
             _ = watch.tick() => {
                 let now = arrived.so_far();
+                // How long the whole chunk looks like taking, by how much
+                // of it is here: so that a slow supplier is known for
+                // one before its first chunk has come.
+                if let Some(each) = (micros(began.elapsed()).saturating_mul(whole)).checked_div(now) {
+                    reserved.reckon(each);
+                }
                 if now - marked >= PROGRESS {
                     (marked, since) = (now, Instant::now());
                     run.progressed();
