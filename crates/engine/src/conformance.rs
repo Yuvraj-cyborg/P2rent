@@ -13,7 +13,7 @@ use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Tree,
 };
 use model::place::{
-    Arrived, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
+    Arrived, Begun, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -111,8 +111,9 @@ impl Memory {
             .collect()
     }
 
-    fn open(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Bitfield {
+    fn open(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Begun {
         let mut held = Bitfield::new(self.tree.chunk_count());
+        let mut named = Vec::new();
         for (file, entry) in self.tree.entries().iter().enumerate() {
             let EntryKind::File { size } = entry.kind else {
                 continue;
@@ -122,13 +123,19 @@ impl Memory {
             let chunks = self.tree.file_chunks(file);
             self.with(|files| {
                 let slot = &mut files[file];
-                let old = slot.committed.take().unwrap_or_default();
+                let committed = slot.committed.take();
+                let new = committed.is_none();
+                let old = committed.unwrap_or_default();
                 let reusable = self.right(file, &old, expected);
                 let whole = old.len() == size && reusable.len() as u64 == chunks.end - chunks.start;
                 let kept = if whole {
-                    // Whole and right, which a file with no bytes always is.
+                    // Whole and right, which a file with no bytes always is:
+                    // it is there from now on.
                     slot.pending = None;
                     slot.committed = Some(old);
+                    if new {
+                        named.push(file);
+                    }
                     reusable
                 } else {
                     // Keep what is right in either version, in the new one.
@@ -151,7 +158,7 @@ impl Memory {
                 }
             });
         }
-        held
+        Begun { held, named }
     }
 }
 
@@ -246,7 +253,7 @@ impl Sink for Memory {
         &self,
         expected: &Expected<'_>,
         examined: &(dyn Fn(u64) + Sync),
-    ) -> Result<Bitfield, Failure> {
+    ) -> Result<Begun, Failure> {
         Ok(self.open(expected, examined))
     }
 
@@ -479,10 +486,28 @@ where
     P: Source + Sink + 'static,
     F: Fn(&Arc<Tree>, &str) -> Arc<P>,
 {
+    /// Also: a file with no bytes needs nothing fetched, so it is given
+    /// its name as the place is made ready, and the place says so that
+    /// once.
     async fn a_new_place_holds_nothing(&self) -> Result<(), Wrong> {
         let store = self.resume("new").await?;
         ensure(store.held().count_ones() == 0, "a new place holds chunks")?;
-        ensure(!store.is_complete(), "a new place is complete")
+        ensure(!store.is_complete(), "a new place is complete")?;
+
+        let no_bytes = |(file, bytes): (usize, &Vec<u8>)| {
+            let entry = &self.sample.artifact.entries()[file];
+            (entry.is_file() && bytes.is_empty()).then_some(file)
+        };
+        let empty: Vec<usize> = (0..).zip(&self.sample.files).filter_map(no_bytes).collect();
+        ensure(
+            store.named_at_the_start() == empty,
+            "a new place did not name the files that have no bytes, and only those",
+        )?;
+        let again = self.resume("new").await?;
+        ensure(
+            again.named_at_the_start().is_empty(),
+            "a place named a file that had its name already",
+        )
     }
 
     async fn chunks_arrive_intact_in_any_order(&self) -> Result<(), Wrong> {
@@ -526,6 +551,10 @@ where
 
         let again = self.resume("together").await?;
         ensure(again.is_complete(), "a finished tree is not found again")?;
+        ensure(
+            again.named_at_the_start().is_empty(),
+            "a finished tree was named again",
+        )?;
         for index in 0..self.sample.chunks() {
             self.same(&again, index).await?;
         }
@@ -700,8 +729,8 @@ where
     /// Follows the check that finished the place named "together".
     fn with_no_digest_nothing_is_held(&self) -> Result<(), Wrong> {
         let place = (self.open)(self.sample.artifact.tree(), "together");
-        let held = place.begin(&|_| None, &|_| {});
-        let held = held.map_err(|e| wrong("opening a whole tree", &e))?;
+        let begun = place.begin(&|_| None, &|_| {});
+        let held = begun.map_err(|e| wrong("opening a whole tree", &e))?.held;
         ensure(
             held.count_ones() == 0,
             "chunks are held that nothing vouches for",
@@ -711,8 +740,8 @@ where
         let (digests, first) = (&self.sample.artifact, self.committed_chunks());
         let chunks = digests.file_chunks(FIRST_FILE);
         let only_first = |index| chunks.contains(&index).then(|| digests.chunk_hash(index))?;
-        let held = place.begin(&only_first, &|_| {});
-        let held = held.map_err(|e| wrong("opening a whole tree", &e))?;
+        let begun = place.begin(&only_first, &|_| {});
+        let held = begun.map_err(|e| wrong("opening a whole tree", &e))?.held;
         let expected = chunks.end - chunks.start;
         ensure(
             held.count_ones() == expected,
@@ -895,7 +924,23 @@ mod tests {
     /// was given does not pass.
     #[tokio::test]
     async fn a_place_that_forgets_does_not_pass() {
+        // One that forgets everything is caught at the first thing it had:
+        // the file with no bytes, which it names a second time.
         let checked = check(|tree, _| Arc::new(Memory::new(tree.clone())));
+        assert_eq!(
+            checked.await,
+            Err("a place named a file that had its name already".to_owned())
+        );
+
+        // One that remembers that much, and loses what it is sent later.
+        let first: Mutex<Option<Memory>> = Mutex::default();
+        let checked = check(|tree, name| {
+            let new = Memory::new(tree.clone());
+            if name != "new" {
+                return Arc::new(new);
+            }
+            Arc::new(first.lock().unwrap().get_or_insert(new).clone())
+        });
         assert_eq!(
             checked.await,
             Err("a finished tree is not found again".to_owned())

@@ -226,6 +226,12 @@ version, is left as it is until its replacement is ready, and the chunks of
 it that are right are copied into the part file instead of being fetched
 again. Indexing leaves part files out.
 
+A file that needs nothing fetched is given its name as the folder is made
+ready: one with no bytes, or a part file that was whole already. The place
+says which files those were (`Begun::named`), and the transfer reports each
+as committed before anything else, so whoever watches a copy hears of every
+file once.
+
 ## Web
 
 `web::Origin` is a file at a web address, as a `Source`. `engine::copy`

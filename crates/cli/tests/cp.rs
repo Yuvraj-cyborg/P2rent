@@ -11,11 +11,13 @@ mod server;
 // How the tests of `peer` compare two trees on disk.
 #[path = "../../peer/tests/common/mod.rs"]
 mod common;
+mod kills;
 
 use common::assert_same_tree;
+use kills::Moments;
 use mux::artifact::Hash;
 use server::{Behaviour, Fault, Server};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mux");
@@ -317,6 +319,44 @@ async fn a_folder_is_copied_with_everything_in_it() {
     assert_same_tree(&a, &files.join("a.bin"));
     assert_same_tree(&sub, &files.join("sub"));
     assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
+}
+
+/// A program is told of each file once as it gets its name: of one with no
+/// bytes too, which needs nothing fetched. Copied again, nothing gets a
+/// name, and nothing is told.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_file_of_a_folder_is_told_to_a_program_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let out = tmp.path().join("out");
+    let into = format!("{}/", text(&out));
+    let told = |output: &Output| {
+        let lines = String::from_utf8_lossy(&output.stdout).into_owned();
+        let lines = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap());
+        let lines: Vec<serde_json::Value> = lines.collect();
+        let mut files: Vec<PathBuf> = lines
+            .iter()
+            .filter(|line| line["event"] == "file")
+            .map(|line| PathBuf::from(line["path"].as_str().unwrap()))
+            .collect();
+        files.sort();
+        (lines[0]["files"].as_u64().unwrap(), files)
+    };
+
+    let output = mux(["cp", "--json", text(&source), &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let copy = out.join("tree");
+    let (planned, files) = told(&output);
+    let all = ["a.bin", "empty", "sub/b.txt", "sub/deep/c"].map(|file| copy.join(file));
+    assert_eq!(files, all);
+    assert_eq!(planned, 4);
+
+    let output = mux(["cp", "--json", text(&source), &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(told(&output), (4, Vec::new()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -977,29 +1017,6 @@ fn bytes(len: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-/// Numbers that follow no pattern, the same ones for the same seed.
-struct Dice(u64);
-
-impl Dice {
-    /// Seeded from the clock, so that every run tries other moments. The
-    /// seed is returned to be named when a run fails.
-    fn new() -> (Self, u64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        let seed = (now.as_secs() ^ (u64::from(now.subsec_nanos()) << 32)) | 1;
-        (Self(seed), seed)
-    }
-
-    /// A length of time somewhere between none and `limit`.
-    fn up_to(&mut self, limit: std::time::Duration) -> std::time::Duration {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        limit.mul_f64((self.0 >> 11) as f64 / (1u64 << 53) as f64)
-    }
-}
-
 /// Every file under `root` that has its final name, with what it holds:
 /// not what a sync put in its trash, and not a file that is still being
 /// written.
@@ -1023,14 +1040,9 @@ async fn killed<const N: usize>(args: [&str; N], after: std::time::Duration) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let stopped = move || {
-        let mut child = command.spawn().unwrap();
-        std::thread::sleep(after);
-        // It may have finished by itself, and then there is nothing to kill.
-        let _ = child.kill();
-        child.wait().unwrap();
-    };
-    tokio::task::spawn_blocking(stopped).await.unwrap();
+    tokio::task::spawn_blocking(move || kills::kill(&mut command, after))
+        .await
+        .unwrap();
 }
 
 /// An older tree at `old` and a newer one at `new`: a file that stays, one
@@ -1106,35 +1118,33 @@ async fn a_sync_of_a_folder_killed_at_any_moment_leaves_whole_files_and_can_be_f
         );
     }
 
-    let (mut dice, seed) = Dice::new();
-    let mut cut_short = 0;
-    for round in 0..ROUNDS {
+    let mut moments = Moments::new(ROUNDS, whole);
+    while let Some(round) = moments.round() {
         let out = holding_the_old(&format!("out-{round}")).await;
         let args = to_the_new(&out);
         let args = args.each_ref().map(String::as_str);
         // Twice, so that a sync that carries on is cut short too.
         for kill in 0..2 {
-            killed(args, dice.up_to(whole)).await;
+            let after = moments.next();
+            killed(args, after).await;
             let found = final_names(&out);
-            let when = format!("seed {seed}, round {round}, kill {kill}");
+            let when = format!("round {round}, killed after {after:?}");
             assert_whole_files(&found, &was, &wanted, &when);
-            cut_short += usize::from(found != wanted);
+            if kill == 0 {
+                moments.first_kill(found != wanted);
+            }
         }
         let finished = mux(args).await;
         assert!(
             finished.status.success(),
-            "seed {seed}, round {round}: {}",
+            "round {round}: {}",
             said(&finished)
         );
         assert!(
             final_names(&out) == wanted,
-            "seed {seed}, round {round}: the sync that finished left something else"
+            "round {round}: the sync that finished left something else"
         );
     }
-    assert!(
-        cut_short > 0,
-        "seed {seed}: no sync was cut short, so nothing was tested"
-    );
 }
 
 /// The same for a file on the web: the copy is the older version or the
@@ -1177,34 +1187,32 @@ async fn a_sync_from_the_web_killed_at_any_moment_leaves_a_whole_file_and_can_be
         );
     }
 
-    let (mut dice, seed) = Dice::new();
-    let mut cut_short = 0;
-    for round in 0..ROUNDS {
+    let mut moments = Moments::new(ROUNDS, whole);
+    while let Some(round) = moments.round() {
         let copy = holding_the_first(&format!("copy-{round}.bin")).await;
         for kill in 0..2 {
-            killed(["sync", &url, text(&copy)], dice.up_to(whole)).await;
+            let after = moments.next();
+            killed(["sync", &url, text(&copy)], after).await;
             let found = std::fs::read(&copy).unwrap();
             assert!(
                 found == first || found == second,
-                "seed {seed}, round {round}, kill {kill}: the copy is neither version whole"
+                "round {round}, killed after {after:?}: the copy is neither version whole"
             );
-            cut_short += usize::from(found != second);
+            if kill == 0 {
+                moments.first_kill(found != second);
+            }
         }
         let finished = mux(["sync", &url, text(&copy)]).await;
         assert!(
             finished.status.success(),
-            "seed {seed}, round {round}: {}",
+            "round {round}: {}",
             said(&finished)
         );
         assert!(
             std::fs::read(&copy).unwrap() == second,
-            "seed {seed}, round {round}: the sync that finished left something else"
+            "round {round}: the sync that finished left something else"
         );
     }
-    assert!(
-        cut_short > 0,
-        "seed {seed}: no sync was cut short, so nothing was tested"
-    );
 }
 
 /// A source that stops being readable halfway through a sync: the sync
