@@ -114,7 +114,9 @@ kept as a test.
 Decision logic lives in `model`, in modules that hold nothing else and
 are written plainly: loops and indexing, no iterators, closures or strings.
 That is what lets them be translated to Lean and proven.
-[proofs/README.md](proofs/README.md) says how, and what the proofs rest on.
+[proofs/README.md](proofs/README.md) says how, what the proofs rest on, and
+how the statements themselves are checked: a proof is only as good as what
+it states.
 `just proofs` needs Lean and Aeneas, which take several gigabytes, so it is
 not part of `just all`: run it whenever one of those modules changes.
 
