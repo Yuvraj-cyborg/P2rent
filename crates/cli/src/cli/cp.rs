@@ -3,10 +3,10 @@
 //! This file only reads the command line and shows what happens. What is
 //! copied, how, and how far it is checked are the library's to decide.
 
-use super::exit::Misuse;
+use super::exit::misuse;
 use super::tell::{self, Line};
 use super::{Reach, seed, ui};
-use anyhow::{Context, bail};
+use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest, Tree};
 use mux::place::{Event, Observer, Source, Verification};
 use mux::store::Folder;
@@ -57,7 +57,7 @@ impl Args {
     fn places(&self) -> anyhow::Result<(&String, &[String])> {
         match self.places.split_last() {
             Some((to, from)) if !from.is_empty() => Ok((to, from)),
-            _ => Err(Misuse("say what to copy, and then where to put it".to_owned()).into()),
+            _ => misuse("say what to copy, and then where to put it"),
         }
     }
 }
@@ -65,10 +65,10 @@ impl Args {
 pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::Result<()> {
     let (to, from) = args.places()?;
     if from.len() > 1 && (args.hash.is_some() || !args.mirror.is_empty()) {
-        bail!(
+        return misuse(format!(
             "--hash and --mirror say something of one source, and there are {}",
             from.len()
-        );
+        ));
     }
     let to = mux::locate(to)?;
     if to == Location::Serve {
@@ -81,10 +81,10 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
     for source in from {
         let source = mux::locate(source)?;
         let Location::Local(to) = &to else {
-            bail!(
+            return misuse(format!(
                 "`cp` cannot copy from {source} to {to}. It copies into a folder, or to \
                  `peer:`, which offers a file or a folder to other machines."
-            );
+            ));
         };
         let from = source.to_string();
         let copy = Copy {
@@ -94,13 +94,18 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
             json,
         };
         let copied = match &source {
-            Location::Ticket(ticket) => {
-                let node = match &node {
-                    Some(node) => node.clone(),
-                    None => node.insert(super::node(key, &args.reach).await?).clone(),
-                };
-                copy.fetch(ticket, &node).await
-            }
+            // Asked before a node is made: a command that is refused opens
+            // no socket and gives this machine no key.
+            Location::Ticket(ticket) => match copy.folder_for_a_ticket() {
+                Ok(folder) => {
+                    let node = match &node {
+                        Some(node) => node.clone(),
+                        None => node.insert(super::node(key, &args.reach).await?).clone(),
+                    };
+                    copy.fetch(ticket, &node, &folder).await
+                }
+                Err(refused) => Err(refused),
+            },
             _ => copy.run(&source).await,
         };
         outcome = copied.with_context(|| format!("cannot copy from {source}"));
@@ -118,25 +123,30 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
 /// seed` does, until it is stopped.
 async fn offer(args: Args, json: bool, key: Option<&Path>) -> anyhow::Result<()> {
     if args.dry_run {
-        bail!("--dry-run has nothing to say of `peer:`: offering changes nothing on this machine");
+        return misuse(
+            "--dry-run has nothing to say of `peer:`: offering changes nothing on this machine",
+        );
     }
     if args.hash.is_some() || !args.mirror.is_empty() {
-        bail!("--hash and --mirror are for a source on the web, and `peer:` is offered files");
+        return misuse(
+            "--hash and --mirror are for a source on the web, and `peer:` is offered files",
+        );
     }
     let (_, from) = args.places()?;
     let mut paths = Vec::with_capacity(from.len());
     for source in from {
         match mux::locate(source)? {
             Location::Local(path) => paths.push(PathBuf::from(path)),
-            other => bail!(
-                "{other} cannot be offered to other machines with `cp`: a file or a folder \
-                 on this machine can. To pass on what a ticket names while fetching it, \
-                 there is `mux get --seed`."
-            ),
+            other => {
+                return misuse(format!(
+                    "{other} cannot be offered to other machines with `cp`: a file or a \
+                     folder on this machine can. To pass on what a ticket names while \
+                     fetching it, there is `mux get --seed`."
+                ));
+            }
         }
     }
-    let identity = super::identity(key)?;
-    seed::run(seed::Args::of(paths, args.reach), &identity, json).await
+    seed::run(seed::Args::of(paths, args.reach), key, json).await
 }
 
 /// What `location` holds, as sources to copy from. `to` is where the copy
@@ -150,14 +160,16 @@ pub(super) async fn sources(
     match location {
         #[cfg(feature = "web")]
         Location::Web(url) => on_the_web(url, hash, mirrors).await,
-        Location::Local(path) if hash.is_some() || !mirrors.is_empty() => {
-            bail!("--hash and --mirror are for a source on the web, and {path} is not")
-        }
+        Location::Local(path) if hash.is_some() || !mirrors.is_empty() => misuse(format!(
+            "--hash and --mirror are for a source on the web, and {path} is not"
+        )),
         Location::Local(path) => in_a_folder(path, to).await,
         Location::Ticket(_) => {
-            bail!("a ticket cannot be read here yet. `mux cp TICKET FOLDER` copies what it names.")
+            misuse("a ticket cannot be read here yet. `mux cp TICKET FOLDER` copies what it names.")
         }
-        other => bail!("{other} is a place to copy to, and cannot be copied from"),
+        other => misuse(format!(
+            "{other} is a place to copy to, and cannot be copied from"
+        )),
     }
 }
 
@@ -193,7 +205,9 @@ async fn in_a_folder(path: &str, to: Option<&str>) -> anyhow::Result<Vec<Arc<dyn
     let into = to.map(|to| destination(to).0);
     let inside = into.and_then(|into| into.canonicalize().ok());
     if inside.is_some_and(|into| into.starts_with(&scanned.root)) {
-        bail!("the destination is inside {path}: a folder cannot be copied into itself");
+        return misuse(format!(
+            "the destination is inside {path}: a folder cannot be copied into itself"
+        ));
     }
     if scanned.skipped > 0 {
         eprintln!(
@@ -233,24 +247,29 @@ impl Copy<'_> {
         }
     }
 
-    /// Copies what a ticket names from the machines that hold it. Every
-    /// chunk is checked against the ticket's manifest, so the copy is
-    /// verified.
-    async fn fetch(&self, ticket: &Ticket, node: &Arc<Node>) -> anyhow::Result<()> {
-        let args = self.args;
-        if args.hash.is_some() || !args.mirror.is_empty() {
-            bail!(
+    /// The folder to put what a ticket names in, if the command line allows
+    /// the copy.
+    fn folder_for_a_ticket(&self) -> anyhow::Result<PathBuf> {
+        if self.args.hash.is_some() || !self.args.mirror.is_empty() {
+            return misuse(
                 "--hash and --mirror are for a source on the web: a ticket says what its \
-                 content has to be"
+                 content has to be",
             );
         }
-        let (folder, name) = destination(self.to);
-        if let Some(name) = name {
-            bail!(
+        match destination(self.to) {
+            (folder, None) => Ok(folder),
+            (_, Some(name)) => misuse(format!(
                 "what a ticket names keeps its own name, and cannot be copied as {name:?}. \
                  Name the folder to put it in, with a `/` at its end if it is not there yet."
-            );
+            )),
         }
+    }
+
+    /// Copies what a ticket names from the machines that hold it into
+    /// `folder`. Every chunk is checked against the ticket's manifest, so
+    /// the copy is verified.
+    async fn fetch(&self, ticket: &Ticket, node: &Arc<Node>, folder: &Path) -> anyhow::Result<()> {
+        let args = self.args;
         let finding = (!self.json).then(|| ui::spinner("finding the machines that hold it"));
         let found = mux::swarm::find(node, ticket).await;
         if let Some(finding) = finding {
@@ -271,11 +290,10 @@ impl Copy<'_> {
             stall_timeout: Duration::from_secs(args.stall_timeout),
             ..DownloadOptions::default()
         };
-        let showing = Shown::new(self.json, self.from, self.to, &folder);
+        let showing = Shown::new(self.json, self.from, self.to, folder);
         showing.copying(artifact.tree());
         let progress = Arc::new(mux::swarm::Progress::default());
-        let fetching =
-            mux::swarm::fetch(node, found, &folder, limits, progress, showing.observer());
+        let fetching = mux::swarm::fetch(node, found, folder, limits, progress, showing.observer());
         let fetched = fetching.await;
         showing.done();
         let report = fetched?;
