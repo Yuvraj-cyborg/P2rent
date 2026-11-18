@@ -474,8 +474,8 @@ fn a_copy_from_a_ticket_is_told_to_a_program_line_by_line() {
         .collect();
 
     // It begins by saying what there is to copy, and ends with what was
-    // done. In between, each file that had bytes to fetch is named once,
-    // as it becomes whole.
+    // done. In between, each file is named once as it gets its name: the
+    // one with no bytes too, which needs nothing fetched.
     let (first, last) = (&lines[0], &lines[lines.len() - 1]);
     assert_eq!(first["event"], "start");
     assert_eq!(
@@ -495,11 +495,12 @@ fn a_copy_from_a_ticket_is_told_to_a_program_line_by_line() {
         .filter(|line| line["event"] == "file")
         .map(|line| line["path"].as_str().unwrap())
         .collect();
-    for file in ["a.bin", "nested/b.bin"] {
+    for file in ["a.bin", "empty", "nested/b.bin"] {
         let path = out.join("tree").join(file);
         let times = named.iter().filter(|&&named| Path::new(named) == path);
         assert_eq!(times.count(), 1, "{file} in {named:?}");
     }
+    assert_eq!(named.len(), 3, "{named:?}");
     assert!(events.contains(&"progress"), "{events:?}");
     assert!(lines.iter().all(|line| line["v"] == 1));
 }

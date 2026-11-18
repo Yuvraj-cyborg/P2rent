@@ -130,7 +130,8 @@ fn on_disk(chunks: u64, written: bool) -> OnDisk {
     let folder = Folder::inside(artifact.tree().clone(), dir.path());
     let held = folder
         .begin(&|index| artifact.chunk_hash(index), &|_| {})
-        .expect("cannot create the file");
+        .expect("cannot create the file")
+        .held;
     let mut disk = OnDisk {
         assembly: Assembly::new(artifact.layout().clone(), held),
         artifact,

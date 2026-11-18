@@ -68,6 +68,11 @@ impl Store {
         self.folder.root()
     }
 
+    /// The files that got their names as the folder was opened.
+    pub(crate) fn named(&self) -> Vec<usize> {
+        self.store.named_at_the_start()
+    }
+
     pub(crate) fn skipped_links(&self) -> usize {
         self.folder.skipped_links()
     }
