@@ -78,7 +78,7 @@ was written, its size in bytes, and how far it was checked.
 ```console
 $ mux cp ./weights peer:
 seeding  weights  (400.68 MiB, 402 chunks)
-mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./
 ```
 
 `mux cp <PATH>... peer:` offers files or folders on this machine to others.
@@ -87,7 +87,7 @@ until it is stopped with Ctrl-C. Only what is on this machine can be
 offered.
 
 ```console
-$ mux cp 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7' ./models/
+$ mux cp 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./' ./models/
 ./models/weights	420143104	verified
 ```
 
@@ -116,7 +116,7 @@ again. The first copies it with `--seed`:
 ```console
 $ mux cp https://example.org/big.iso ./downloads/ --seed
 ./downloads/big.iso	1288490188	consistent
-mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7&url=https://example.org/big.iso
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./&url=https://example.org/big.iso
 ```
 
 After the line that says what was written comes a ticket, and the command
@@ -146,7 +146,11 @@ $ mux cp 'mux://450b9c6b…?peer=35964d95…&url=https://example.org/big.iso' ./
 would.
 
 A ticket is all another machine needs, and whoever has it can fetch the
-data. These flags say how the two machines reach each other. They are the
+data. It names the content by its hash and each machine by its key, with
+where that machine can be reached: a relay, as in the examples here, or an
+address. The ids are shortened in this page: each is 64 characters.
+
+These flags say how the two machines reach each other. They are the
 same for `cp`, `probe`, `seed` and `get`:
 
 | Flag | |
@@ -196,7 +200,7 @@ server sends, which is then listed. `parts` says whether the place can be
 read at several points at once, or only in order from its start.
 
 ```console
-$ mux probe 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7'
+$ mux probe 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./'
 name     weights
 kind     folder
 size     420143104 bytes (400.68 MiB)

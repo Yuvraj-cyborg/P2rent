@@ -185,28 +185,38 @@ impl Saved {
     }
 }
 
+/// Who gave the bytes of a copy, in words: so many machines, the web, or
+/// both.
+fn givers(machines: usize, web: usize) -> String {
+    match (machines, web) {
+        (machines, 0) => ui::plural(machines, "machine"),
+        (0, _) => "the web".to_owned(),
+        (machines, _) => format!("{} and the web", ui::plural(machines, "machine")),
+    }
+}
+
 /// Says to a person where what a ticket names came from: the machines,
 /// and those of the ticket's web addresses that gave something.
 fn say_fetched(report: &Report, origins: &[Origin]) {
     if report.fetched_bytes > 0 {
-        let machines = ui::plural(report.sources.len(), "machine");
-        let from = if report.others.is_empty() {
-            machines
-        } else {
-            format!("{machines} and the web")
-        };
+        // Only those that gave something: a machine that was asked and
+        // was beaten to every chunk gave nothing.
+        let machines = report.sources.iter().filter(|(_, bytes)| *bytes > 0);
+        let web = report.others.iter().filter(|(_, bytes)| *bytes > 0);
+        let (machines, web): (Vec<_>, Vec<_>) = (machines.collect(), web.collect());
         eprintln!(
-            "fetched  {} in {:.1}s ({}) from {from}",
+            "fetched  {} in {:.1}s ({}) from {}",
             ui::bytes(report.fetched_bytes),
             report.elapsed.as_secs_f64(),
             ui::rate(report.fetched_bytes, report.elapsed),
+            givers(machines.len(), web.len()),
         );
         // With one place, the line above has said it.
-        let several = report.sources.len() + report.others.len() > 1;
-        for (node, bytes) in report.sources.iter().filter(|_| several) {
+        let several = machines.len() + web.len() > 1;
+        for (node, bytes) in machines.into_iter().filter(|_| several) {
             eprintln!("         {}  {}", node.short(), ui::bytes(*bytes));
         }
-        for (id, bytes) in report.others.iter().filter(|_| several) {
+        for (id, bytes) in web.into_iter().filter(|_| several) {
             let address = origins.iter().find(|origin| origin.id == *id);
             let address = address.map_or("elsewhere", |origin| origin.address.as_str());
             eprintln!("         {address}  {}", ui::bytes(*bytes));
@@ -732,6 +742,16 @@ impl Lines {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_summary_names_who_gave_something_and_nobody_else() {
+        assert_eq!(givers(1, 0), "1 machine");
+        assert_eq!(givers(3, 0), "3 machines");
+        assert_eq!(givers(2, 1), "2 machines and the web");
+        // A machine that was beaten to every chunk is not named.
+        assert_eq!(givers(0, 1), "the web");
+        assert_eq!(givers(0, 2), "the web");
+    }
 
     #[test]
     fn a_copy_goes_into_a_folder_or_takes_the_name_it_is_given() {

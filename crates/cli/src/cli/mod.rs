@@ -108,14 +108,16 @@ impl Reach {
 #[derive(Subcommand)]
 enum Command {
     /// Copy from one place to another
+    #[command(override_usage = "mux cp [OPTIONS] <SOURCE>... <DESTINATION>")]
     Cp(cp::Args),
     /// Say what is at a place, without copying it
     Probe(probe::Args),
     /// Make a folder hold what a place holds
     Sync(sync::Args),
-    /// Offer files or directories to other machines
+    /// Offer files or folders to other machines: `cp PATH... peer:` under
+    /// its first name
     Seed(seed::Args),
-    /// Download an artifact from a swarm
+    /// Fetch what a ticket names: `cp TICKET DIR/` under its first name
     Get(get::Args),
     /// Print this machine's node id
     Id,
