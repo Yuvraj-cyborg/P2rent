@@ -71,7 +71,6 @@ equivalent
 errno: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
 fastrand
 fixedbitset
-fnv
 foldhash
 form_urlencoded
 futures: x86_64-pc-windows-msvc
@@ -88,7 +87,6 @@ futures-util
 generic-array
 getrandom
 ghash
-h2
 hashbrown
 heck
 http

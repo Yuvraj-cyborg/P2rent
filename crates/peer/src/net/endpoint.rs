@@ -9,7 +9,9 @@ use model::artifact::{Hash, MAX_MANIFEST_BYTES};
 use model::pace;
 use model::place::Arrived;
 use model::ticket::NodeId;
+use noq_proto::congestion::Bbr3Config;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
@@ -47,6 +49,22 @@ pub enum Relays {
     Off,
 }
 
+/// How a connection decides how fast it may send.
+///
+/// It is the choice of whoever sends: the machine that holds the data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Congestion {
+    /// Takes every lost packet for a sign of a full link and halves its
+    /// rate. On a link that loses packets for other reasons, such as
+    /// Wi-Fi or a long route, it stays far below what the link carries.
+    #[default]
+    Cubic,
+    /// Measures what the link carries and holds that rate, whatever is
+    /// lost: BBR, in its third version. Many times faster where packets
+    /// are lost.
+    Bbr,
+}
+
 /// How an endpoint is set up.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -58,6 +76,8 @@ pub struct Options {
     /// Whether to open sockets at all. Without them, packets go only by
     /// way of a relay, and no other node learns this one's address.
     pub direct: bool,
+    /// How the node's connections decide how fast they may send.
+    pub congestion: Congestion,
 }
 
 impl Default for Options {
@@ -66,6 +86,7 @@ impl Default for Options {
             listen: None,
             relays: Relays::default(),
             direct: true,
+            congestion: Congestion::default(),
         }
     }
 }
@@ -104,8 +125,15 @@ impl Endpoint {
             .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
             .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
             .send_window(u64::from(CONNECTION_WINDOW))
-            .mtu_discovery_config(Some(mtu_discovery))
-            .build();
+            .mtu_discovery_config(Some(mtu_discovery));
+        let transport = match options.congestion {
+            // What the library does unless told otherwise.
+            Congestion::Cubic => transport,
+            Congestion::Bbr => {
+                transport.congestion_controller_factory(Arc::new(Bbr3Config::default()))
+            }
+        };
+        let transport = transport.build();
 
         let mut builder = match &options.relays {
             Relays::Public => iroh::Endpoint::builder(presets::N0),

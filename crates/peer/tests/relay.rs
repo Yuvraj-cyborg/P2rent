@@ -18,6 +18,7 @@ async fn behind(relay: &str) -> Arc<Node> {
         listen: None,
         relays: Relays::At(relay.to_owned()),
         direct: false,
+        ..Options::default()
     };
     let node = Node::bind(&Identity::generate(), &options).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), node.online())

@@ -62,7 +62,7 @@ fn main() {
     let localhost = Options {
         listen: Some("127.0.0.1:0".parse().unwrap()),
         relays: Relays::Off,
-        direct: true,
+        ..Options::default()
     };
     let mut ticket = Ticket {
         artifact: artifact.id(),

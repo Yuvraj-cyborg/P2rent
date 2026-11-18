@@ -573,7 +573,9 @@ impl Source for Folder {
         Box::pin(std::future::ready(Ok(Description::of(&self.0.tree))))
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+    /// A local file is read as far as it is asked for, whatever it was
+    /// opened for.
+    fn open(&self, file: usize, offset: u64, _len: u64) -> Pending<'_, Box<dyn Reader>> {
         let folder = self.clone();
         Box::pin(async move {
             let file = waiting(move || folder.open_file(file)).await?;

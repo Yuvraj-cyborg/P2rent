@@ -219,9 +219,36 @@ async fn a_run_of_chunks_is_one_request() {
         .unwrap();
 
     assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
+    // The second request is for the file from its first byte to its last,
+    // and goes over the connection the first one made.
+    let whole = format!("bytes=0-{}", file.len() - 1);
     let asked = server.asked();
     let asked: Vec<_> = asked.iter().map(|range| range.as_deref()).collect();
-    assert_eq!(asked, [Some("bytes=0-0"), Some("bytes=0-")]);
+    assert_eq!(asked, [Some("bytes=0-0"), Some(whole.as_str())]);
+    assert_eq!(server.connections(), 1);
+    // The one byte that was asked for first, and then the file.
+    assert_eq!(server.sent(), file.len() + 1);
+}
+
+/// Four streams read the file a run at a time. Each request ends where
+/// its run does, so a connection is used again for the next, and there
+/// are fewer connections than requests.
+#[tokio::test]
+async fn streams_use_their_connections_again() {
+    let file = file();
+    let server = Server::start(serving(file.clone())).await;
+    let tmp = tempfile::tempdir().unwrap();
+    fetch(&server, "/sample.bin", tmp.path(), Options::default())
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
+    let (asked, connections) = (server.asked(), server.connections());
+    assert!(asked.len() > 4, "{asked:?}");
+    assert!(connections < asked.len(), "{connections} for {asked:?}");
+    // No request is for the rest of the file from somewhere.
+    let open_ended = asked.iter().flatten().filter(|range| range.ends_with('-'));
+    assert_eq!(open_ended.count(), 0, "{asked:?}");
 }
 
 #[tokio::test]
@@ -506,14 +533,14 @@ async fn answers_are_not_joined_when_nothing_tells_they_are_one_file() {
     let origin = Origin::find(&server.url("/sample.bin"), &impatient())
         .await
         .unwrap();
-    let refused = origin.open(0, 5).await.unwrap_err();
+    let refused = origin.open(0, 5, 1).await.unwrap_err();
     assert_eq!(kind(&refused), "fatal", "{refused}");
     assert!(
         refused.to_string().contains("cannot be carried on with"),
         "{refused}"
     );
     // From its start the file can be read, as many times as is wanted.
-    let mut reader = origin.open(0, 0).await.unwrap();
+    let mut reader = origin.open(0, 0, 5).await.unwrap();
     let read = reader.read(5, &Arrived::default()).await;
     assert_eq!(read.unwrap(), file[..5]);
 
@@ -690,7 +717,7 @@ async fn an_answer_that_is_not_what_was_found_is_not_read() {
             .await
             .unwrap();
         server.change(then);
-        let refused = origin.open(0, 0).await.unwrap_err();
+        let refused = origin.open(0, 0, 1).await.unwrap_err();
         assert_eq!(kind(&refused), expected, "{answer}: {refused}");
     }
 }
@@ -704,14 +731,24 @@ async fn only_the_one_file_is_there_and_only_its_bytes() {
         .unwrap();
     let size = file.len() as u64;
 
-    for (entry, offset) in [(1, 0), (0, size), (0, size + 1)] {
-        let refused = origin.open(entry, offset).await.unwrap_err();
+    // Another file, bytes past the end, more bytes than there are, and no
+    // bytes at all.
+    for (entry, offset, len) in [
+        (1, 0, 1),
+        (0, size, 1),
+        (0, size + 1, 1),
+        (0, 0, size + 1),
+        (0, size - 1, 2),
+        (0, 1, u64::MAX),
+        (0, 0, 0),
+    ] {
+        let refused = origin.open(entry, offset, len).await.unwrap_err();
         assert_eq!(kind(&refused), "absent", "{entry} at {offset}: {refused}");
     }
     // The server was not asked for what could not be there.
     assert_eq!(server.asked().len(), 1);
 
-    let mut last = origin.open(0, size - 1).await.unwrap();
+    let mut last = origin.open(0, size - 1, 1).await.unwrap();
     let read = last.read(1, &Arrived::default()).await;
     assert_eq!(read.unwrap(), file[file.len() - 1..]);
 }

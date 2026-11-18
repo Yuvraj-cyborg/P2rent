@@ -82,8 +82,14 @@ impl Origin {
         let url = Url::parse(url)
             .map_err(|e| Failure::Fatal(format!("{url:?} is not a web address: {e}")))?;
         let client = client(options)?;
-        let response = get(&client, &url, Some((0, Some(0))), None).await?;
+        let response = get(&client, &url, Some((0, 0)), None).await?;
         let found = Found::from(&response, &url)?;
+        // The one byte that was asked for is read, so that the connection
+        // it came on can carry the next request. An answer that is the
+        // whole file is left unread, which closes its connection.
+        if response.content_length().is_some_and(|length| length <= 1) {
+            let _ = response.bytes().await;
+        }
         Ok(Self(Arc::new(Inner {
             client,
             url,
@@ -188,15 +194,16 @@ impl Source for Origin {
         })))
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+    fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
         Box::pin(async move {
             let (inner, found) = (&self.0, &self.0.found);
-            if file != 0 || offset >= found.size {
+            let last = offset.checked_add(len.saturating_sub(1));
+            let Some(last) = last.filter(|&last| file == 0 && len > 0 && last < found.size) else {
                 return Err(Failure::Absent(format!(
                     "{} is one file of {} bytes",
                     inner.url, found.size
                 )));
-            }
+            };
             if offset > 0 && !self.can_be_joined() {
                 return Err(Failure::Fatal(format!(
                     "{} cannot be carried on with: the server gives nothing to tell whether \
@@ -204,15 +211,17 @@ impl Source for Origin {
                     inner.url
                 )));
             }
+            // The bytes that are wanted and no more: the answer then ends
+            // by itself, and its connection can carry the next request.
             let partial = self.is_random_access();
-            let range = partial.then_some((offset, None));
+            let range = partial.then_some((offset, last));
             let condition = found.validator.as_ref().filter(|_| partial);
             let response = get(&inner.client, &inner.url, range, condition).await?;
             let mut body = Body {
                 response,
                 arrived: Bytes::new(),
             };
-            self.check(&body.response, partial, offset)?;
+            self.check(&body.response, range)?;
             if !partial {
                 // The server sends the whole file or nothing: read past
                 // what is not wanted.
@@ -226,8 +235,11 @@ impl Source for Origin {
 
 impl Origin {
     /// Holds an answer to what was found when the file was first asked
-    /// for: the same version, and the part that was asked for.
-    fn check(&self, response: &Response, partial: bool, offset: u64) -> Result<(), Failure> {
+    /// for: the same version, and the part that was asked for, which is
+    /// the bytes from the first of `asked` to the second, or the whole
+    /// file.
+    fn check(&self, response: &Response, asked: Option<(u64, u64)>) -> Result<(), Failure> {
+        let partial = asked.is_some();
         let (inner, found) = (&self.0, &self.0.found);
         let (headers, status) = (response.headers(), response.status());
         let changed = || {
@@ -263,9 +275,11 @@ impl Origin {
                 if !same_version || range.total.is_some_and(|total| total != found.size) {
                     return Err(changed());
                 }
-                if range.first != offset || range.last + 1 != found.size {
+                if Some((range.first, range.last)) != asked {
+                    let (first, last) = asked.unwrap_or_default();
                     return Err(Failure::Corrupt(format!(
-                        "{} was asked for the bytes from {offset} and sent those from {} to {}",
+                        "{} was asked for the bytes from {first} to {last} and sent those from \
+                         {} to {}",
                         inner.url, range.first, range.last
                     )));
                 }
@@ -356,19 +370,19 @@ fn client(options: &Options) -> Result<Client, Failure> {
         .map_err(|e| Failure::Fatal(format!("cannot set up a web client: {e}")))
 }
 
-/// Asks for the file, or for the part of it from `range`, on condition
-/// that it is still the version `validator` stands for.
+/// Asks for the file, or for the bytes of it from the first of `range` to
+/// the second, on condition that it is still the version `validator`
+/// stands for.
 async fn get(
     client: &Client,
     url: &Url,
-    range: Option<(u64, Option<u64>)>,
+    range: Option<(u64, u64)>,
     validator: Option<&Validator>,
 ) -> Result<Response, Failure> {
     // Bytes are counted as they are stored, so they must arrive as they
     // are stored and not compressed on the way.
     let mut request = client.get(url.clone()).header(ACCEPT_ENCODING, "identity");
     if let Some((first, last)) = range {
-        let last = last.map(|last| last.to_string()).unwrap_or_default();
         request = request.header(RANGE, format!("bytes={first}-{last}"));
     }
     if let Some(validator) = validator {

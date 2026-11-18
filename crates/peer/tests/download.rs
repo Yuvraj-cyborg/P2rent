@@ -6,8 +6,8 @@ use common::{CHUNK, addr_of, assert_same_tree, direct, get, node, pattern, peer_
 use model::artifact::Hash;
 use model::place::Arrived;
 use peer::Error;
-use peer::net::{Endpoint, Identity};
-use peer::swarm::Ticket;
+use peer::net::{Endpoint, Identity, Options};
+use peer::swarm::{Node, Ticket};
 use std::fs;
 
 #[tokio::test]
@@ -36,6 +36,36 @@ async fn downloads_a_file() {
             .uploaded_bytes(),
         data.len() as u64
     );
+}
+
+/// A transfer comes through whole with the other way of deciding how fast
+/// to send, on either end or on both.
+#[tokio::test]
+async fn downloads_with_either_congestion_control() {
+    use peer::net::Congestion::{Bbr, Cubic};
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("model.bin");
+    let data = pattern(CHUNK * 75 + 123, 4);
+    fs::write(&source, &data).unwrap();
+    let node = async |congestion| {
+        let options = Options {
+            congestion,
+            ..direct()
+        };
+        Node::bind(&Identity::generate(), &options).await.unwrap()
+    };
+
+    for (number, (sends, fetches)) in [(Bbr, Bbr), (Bbr, Cubic), (Cubic, Bbr)]
+        .into_iter()
+        .enumerate()
+    {
+        let seeder = node(sends).await;
+        let (_, ticket) = seed(&seeder, &source);
+        let out = tmp.path().join(format!("out-{number}"));
+        let report = get(&node(fetches).await, &ticket, &out).await.unwrap();
+        assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
+        assert_eq!(report.fetched_bytes, data.len() as u64);
+    }
 }
 
 /// Whoever waits for a chunk can see how much of it has come.

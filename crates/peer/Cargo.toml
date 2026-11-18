@@ -20,6 +20,7 @@ engine.workspace = true
 fs.workspace = true
 dirs.workspace = true
 iroh.workspace = true
+noq-proto.workspace = true
 postcard.workspace = true
 serde.workspace = true
 thiserror = { workspace = true, features = ["std"] }

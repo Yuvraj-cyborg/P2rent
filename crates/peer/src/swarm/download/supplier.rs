@@ -128,7 +128,13 @@ impl Supply for Link {
         })
     }
 
-    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
+    /// Each chunk is a request of its own, whatever is asked for next.
+    fn chunk<'a>(
+        &'a self,
+        index: u64,
+        _following: u64,
+        arrived: &'a Arrived,
+    ) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             let artifact = &self.swarm.artifact;
             let location = artifact
