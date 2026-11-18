@@ -2,7 +2,7 @@ use super::server;
 use super::share::Share;
 use super::{Ticket, TicketPeer};
 use crate::error::Result;
-use crate::net::{Endpoint, Identity, NodeId};
+use crate::net::{Congestion, Endpoint, Identity, NodeId};
 use engine::{Store, sync};
 use fs::Folder;
 use model::artifact::{Artifact, Hash};
@@ -28,8 +28,22 @@ impl Node {
     ///
     /// Returns an error if the endpoint cannot be created or `addr` cannot be bound.
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Arc<Self>> {
+        Self::bind_with(identity, addr, Congestion::default())
+    }
+
+    /// The same, with a say in how the node's connections decide how fast
+    /// to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint cannot be created or `addr` cannot be bound.
+    pub fn bind_with(
+        identity: &Identity,
+        addr: SocketAddr,
+        congestion: Congestion,
+    ) -> Result<Arc<Self>> {
         let node = Arc::new(Self {
-            endpoint: Endpoint::bind(identity, addr)?,
+            endpoint: Endpoint::bind_with(identity, addr, congestion)?,
             shares: RwLock::new(HashMap::new()),
         });
         tokio::spawn(server::run(node.clone()));
