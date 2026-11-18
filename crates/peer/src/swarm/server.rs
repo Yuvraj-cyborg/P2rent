@@ -73,7 +73,7 @@ async fn serve_request(
     // less than a slice of each in turn. A small answer goes out ahead of
     // every chunk: on a slow link a chunk is on its way for a long time,
     // and whoever asked what this peer holds would give up waiting.
-    let small = !matches!(request, Request::Chunk { .. });
+    let small = matches!(request, Request::Status { .. } | Request::Manifest { .. });
     send.set_priority(if small { 1 } else { order })?;
 
     match request {
@@ -103,6 +103,18 @@ async fn serve_request(
             }
             None => proto::write_frame(&mut send, &Response::NotFound).await?,
         },
+
+        Request::Hints { content } => {
+            if let Some(share) = node.share(content).filter(|share| share.is_complete()) {
+                proto::write_frame(&mut send, &Response::Hints).await?;
+                for page in 0..share.hint_pages() {
+                    let hints = share.hint_page(page).await?;
+                    send.write_all(hints.encoded()).await?;
+                }
+            } else {
+                proto::write_frame(&mut send, &Response::NotFound).await?;
+            }
+        }
 
         Request::Chunk { content, index } => {
             // Never closed, so a turn always comes.

@@ -25,6 +25,12 @@ pub const MAX_REQUEST_BYTES: usize = 1024;
 /// needs one bit per chunk.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
+/// The sender computes at most 16 MiB of chunk data per page. Pages are
+/// contiguous on the wire, so a receiver can time out a stalled page.
+pub(crate) fn hint_page_chunks(chunk_size: u32) -> u32 {
+    (16 * 1024 * 1024 / chunk_size.max(1)).max(1)
+}
+
 /// A request, sent as the first frame on a new stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
@@ -48,6 +54,11 @@ pub enum Request {
         /// Position of the chunk in the content.
         index: u64,
     },
+    /// Rolling hashes in manifest chunk order, if available.
+    Hints {
+        /// Content whose chunks the receiver wants to find locally.
+        content: Hash,
+    },
 }
 
 /// The first frame of an answer.
@@ -67,6 +78,8 @@ pub enum Response {
     },
     /// The peer does not have what was asked for.
     NotFound,
+    /// Followed by one little-endian u64 for each chunk in the manifest.
+    Hints,
 }
 
 /// What a peer holds of an artifact and whom else it knows.

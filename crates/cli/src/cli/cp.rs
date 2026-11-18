@@ -660,7 +660,7 @@ impl Shown {
     }
 
     /// Notes the tree that is being copied, to name its files by.
-    fn copying(&self, tree: &Arc<Tree>) {
+    pub(super) fn copying(&self, tree: &Arc<Tree>) {
         if let Self::Lines(lines) = self {
             let _ = lines.tree.set(tree.clone());
         }

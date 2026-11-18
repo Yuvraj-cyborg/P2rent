@@ -142,26 +142,22 @@ pub fn scan(path: &Path, chunk_size: u32) -> Result<Scanned> {
 ///
 /// Returns an error only if `tree` is not a tree, which it is.
 pub fn as_kept(tree: &Tree) -> Result<Tree> {
-    let entries = tree.entries().iter().enumerate().map(|(index, entry)| {
-        let recorded = tree
-            .metadata(index)
-            .map(|recorded| io::as_kept(&entry.kind, recorded));
-        (entry.clone(), recorded)
-    });
-    let entries: Option<Vec<_>> = entries
-        .map(|(entry, recorded)| Some((entry, recorded?)))
+    as_kept_under(tree, tree.name())
+}
+
+/// The tree as this system keeps it, stored under a new root name.
+///
+/// # Errors
+///
+/// Returns an error if the destination name cannot be used.
+pub fn as_kept_under(tree: &Tree, name: &str) -> Result<Tree> {
+    let entries = tree
+        .entries()
+        .iter()
+        .zip(tree.recorded())
+        .map(|(entry, &recorded)| (entry.clone(), io::as_kept(&entry.kind, recorded)))
         .collect();
-    let entries = entries.ok_or_else(|| {
-        unsupported(
-            Path::new(tree.name()),
-            "has entries with nothing recorded of them",
-        )
-    })?;
-    Ok(Tree::new(
-        tree.name().to_owned(),
-        tree.chunk_size(),
-        entries,
-    )?)
+    Ok(Tree::new(name, tree.chunk_size(), entries)?)
 }
 
 /// The canonical form of `path`, and the name of what is there.
