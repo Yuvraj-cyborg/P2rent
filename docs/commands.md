@@ -100,7 +100,12 @@ that holds it.
 - A copy that was interrupted is carried on with when the command is run
   again: what is there is checked, and only what is missing is fetched.
 - `--streams` is not used. A machine is asked for as many chunks at once as
-  its connection has room for.
+  its connection has room for. `--max-peers <N>` is the most machines to
+  copy from at once, and is 8 unless it is given.
+- With `--seed` the command does not end when the copy is whole. It goes on
+  offering what it copied to other machines, until it is stopped with
+  Ctrl-C. Each machine that does this is one more to copy from: the ticket
+  stays the same, and a machine that asks one holder is told of the others.
 
 A ticket is all another machine needs, and whoever has it can fetch the
 data. These flags say how the two machines reach each other. They are the
@@ -117,16 +122,15 @@ same for `cp`, `probe`, `seed` and `get`:
 ## `mux seed` and `mux get`
 
 `mux seed <PATH>...` is `mux cp <PATH>... peer:`, and `mux get <TICKET>
---out <FOLDER>` is `mux cp <TICKET> <FOLDER>/`. They came first, and have a
-few flags of their own:
+--out <FOLDER>` is `mux cp <TICKET> <FOLDER>/`. They came first and are the
+same code: what one prints, takes with `--json` and ends with, the other
+does. Three flags are theirs alone:
 
 | Flag | |
 | --- | --- |
 | `seed --advertise <HOST[:PORT]>` | An address to put in the ticket for other machines to dial. Repeatable. |
 | `seed --chunk-size <SIZE>` | 4K to 16M. The default is 1M. |
-| `get --seed` | Keep serving to other machines after the download. |
-| `get --peer <NODE[@HOST:PORT]>` | Another machine to try, as well as those in the ticket. Repeatable. |
-| `get --max-peers <N>` | The most machines to fetch from at once. The default is 8. |
+| `get --peer <NODE[@HOST:PORT]>` | Another machine to try, as well as those in the ticket. Repeatable. A ticket can name it too: `…&peer=NODE@HOST:PORT`. |
 
 ## `mux probe`
 

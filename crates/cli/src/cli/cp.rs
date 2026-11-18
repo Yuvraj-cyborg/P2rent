@@ -10,7 +10,7 @@ use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest, Tree};
 use mux::place::{Event, Observer, Source, Verification};
 use mux::store::Folder;
-use mux::swarm::{DownloadOptions, Node, Ticket};
+use mux::swarm::{DownloadOptions, Node, Report, Ticket, announce};
 use mux::{Location, engine};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -48,11 +48,43 @@ pub(super) struct Args {
     #[arg(long)]
     dry_run: bool,
 
+    /// Go on offering what was copied from a ticket to other machines,
+    /// until stopped
+    #[arg(long)]
+    seed: bool,
+
+    /// The most machines to copy from at once, for what a ticket names
+    #[arg(long, default_value_t = 8, value_name = "N")]
+    max_peers: usize,
+
     #[command(flatten)]
     reach: Reach,
 }
 
+/// What `mux get` is told that `mux cp` is told too.
+pub(super) struct Get {
+    pub(super) seed: bool,
+    pub(super) max_peers: usize,
+    pub(super) stall_timeout: u64,
+    pub(super) reach: Reach,
+}
+
 impl Args {
+    /// What `mux get` means: what `ticket` names, copied into `folder`.
+    pub(super) fn get(ticket: String, folder: String, told: Get) -> Self {
+        Self {
+            places: vec![ticket, folder],
+            hash: None,
+            mirror: Vec::new(),
+            streams: 1,
+            stall_timeout: told.stall_timeout,
+            dry_run: false,
+            seed: told.seed,
+            max_peers: told.max_peers,
+            reach: told.reach,
+        }
+    }
+
     /// Where to put the copies, and what to copy.
     fn places(&self) -> anyhow::Result<(&String, &[String])> {
         match self.places.split_last() {
@@ -74,12 +106,26 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
     if to == Location::Serve {
         return offer(args, json, key).await;
     }
+    // Every place is read before anything is copied, so that a command
+    // with one written wrong copies nothing.
+    let located: Result<Vec<Location>, _> = from.iter().map(|place| mux::locate(place)).collect();
+    let sources = located?;
+    if args.seed
+        && !sources
+            .iter()
+            .any(|source| matches!(source, Location::Ticket(_)))
+    {
+        return misuse(
+            "--seed goes on offering what was copied from a ticket, and no source is one. \
+             To offer a file or a folder, copy it to `peer:`.",
+        );
+    }
     // Made when the first ticket is met: a copy that has to do with no
     // other machine opens no socket.
     let mut node: Option<Arc<Node>> = None;
+    let mut fetched: Vec<Report> = Vec::new();
     let mut outcome = Ok(());
-    for source in from {
-        let source = mux::locate(source)?;
+    for source in sources {
         let Location::Local(to) = &to else {
             return misuse(format!(
                 "`cp` cannot copy from {source} to {to}. It copies into a folder, or to \
@@ -102,7 +148,8 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
                         Some(node) => node.clone(),
                         None => node.insert(super::node(key, &args.reach).await?).clone(),
                     };
-                    copy.fetch(ticket, &node, &folder).await
+                    let report = copy.fetch(ticket, &node, &folder).await;
+                    report.map(|report| fetched.extend(report))
                 }
                 Err(refused) => Err(refused),
             },
@@ -114,9 +161,59 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
         }
     }
     if let Some(node) = node {
+        if args.seed && outcome.is_ok() {
+            keep_offering(&node, &fetched).await;
+        }
         node.shutdown().await;
     }
     outcome
+}
+
+/// Says to a person where what a ticket names came from.
+fn say_fetched(report: &Report) {
+    if report.fetched_bytes > 0 {
+        eprintln!(
+            "fetched  {} in {:.1}s ({}) from {}",
+            ui::bytes(report.fetched_bytes),
+            report.elapsed.as_secs_f64(),
+            ui::rate(report.fetched_bytes, report.elapsed),
+            ui::plural(report.sources.len(), "machine"),
+        );
+        // With one machine, the line above has said it.
+        for (node, bytes) in report.sources.iter().filter(|_| report.sources.len() > 1) {
+            eprintln!("         {}  {}", node.short(), ui::bytes(*bytes));
+        }
+    }
+    if report.resumed_bytes > 0 {
+        eprintln!(
+            "kept     {} that was already there",
+            ui::bytes(report.resumed_bytes)
+        );
+    }
+    if report.skipped_links > 0 {
+        eprintln!(
+            "skipped  {}, which this system cannot create",
+            ui::plural(report.skipped_links, "link")
+        );
+    }
+}
+
+/// Goes on offering what was fetched until the command is stopped, and
+/// keeps this machine listed with those it fetched from, so that machines
+/// that come later are told of it.
+async fn keep_offering(node: &Arc<Node>, fetched: &[Report]) {
+    let listed: Vec<_> = fetched
+        .iter()
+        .map(|report| {
+            let content = report.share.artifact().content_id();
+            tokio::spawn(announce(node.clone(), content, report.peers.clone()))
+        })
+        .collect();
+    let shares: Vec<_> = fetched.iter().map(|report| report.share.clone()).collect();
+    seed::serve_until_interrupted(&shares).await;
+    for listing in listed {
+        listing.abort();
+    }
 }
 
 /// `mux cp PATH... peer:`: offers the paths to other machines, as `mux
@@ -268,7 +365,12 @@ impl Copy<'_> {
     /// Copies what a ticket names from the machines that hold it into
     /// `folder`. Every chunk is checked against the ticket's manifest, so
     /// the copy is verified.
-    async fn fetch(&self, ticket: &Ticket, node: &Arc<Node>, folder: &Path) -> anyhow::Result<()> {
+    async fn fetch(
+        &self,
+        ticket: &Ticket,
+        node: &Arc<Node>,
+        folder: &Path,
+    ) -> anyhow::Result<Option<Report>> {
         let args = self.args;
         let finding = (!self.json).then(|| ui::spinner("finding the machines that hold it"));
         let found = mux::swarm::find(node, ticket).await;
@@ -283,12 +385,12 @@ impl Copy<'_> {
         if args.dry_run {
             let files = artifact.entries().iter().filter(|e| e.is_file()).count() as u64;
             self.say_plan(&saved, bytes, files, checked);
-            return Ok(());
+            return Ok(None);
         }
 
         let limits = DownloadOptions {
+            max_peers: args.max_peers,
             stall_timeout: Duration::from_secs(args.stall_timeout),
-            ..DownloadOptions::default()
         };
         let showing = Shown::new(self.json, self.from, self.to, folder);
         showing.copying(artifact.tree());
@@ -306,36 +408,16 @@ impl Copy<'_> {
                 fetched: report.fetched_bytes,
                 kept: report.resumed_bytes,
             });
-            return Ok(());
-        }
-        println!("{}\t{bytes}\t{checked}", saved.display());
-        eprintln!(
-            "saved    {}  ({}, {checked})",
-            saved.display(),
-            ui::bytes(bytes)
-        );
-        if report.fetched_bytes > 0 {
+        } else {
+            println!("{}\t{bytes}\t{checked}", saved.display());
             eprintln!(
-                "fetched  {} in {:.1}s ({}) from {}",
-                ui::bytes(report.fetched_bytes),
-                report.elapsed.as_secs_f64(),
-                ui::rate(report.fetched_bytes, report.elapsed),
-                ui::plural(report.sources.len(), "machine"),
+                "saved    {}  ({}, {checked})",
+                saved.display(),
+                ui::bytes(bytes)
             );
+            say_fetched(&report);
         }
-        if report.resumed_bytes > 0 {
-            eprintln!(
-                "kept     {} that was already there",
-                ui::bytes(report.resumed_bytes)
-            );
-        }
-        if report.skipped_links > 0 {
-            eprintln!(
-                "skipped  {}, which this system cannot create",
-                ui::plural(report.skipped_links, "link")
-            );
-        }
-        Ok(())
+        Ok(Some(report))
     }
 
     /// Says what a copy would bring to `path`, as a dry run says it.

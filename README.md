@@ -122,10 +122,11 @@ have them.
   either for a program to read.
   [docs/commands.md](docs/commands.md) has the details and the exit codes.
 - **`mux cp` copies between machines too.** `mux cp ./weights peer:` offers
-  a folder and prints a ticket, as `mux seed` does. `mux cp TICKET ./models/`
-  fetches what the ticket names from every machine that has it, as
-  `mux get` does. `mux probe TICKET` says what a ticket names and how much
-  of it each machine holds.
+  a folder and prints a ticket. `mux cp TICKET ./models/ --seed` fetches
+  what the ticket names from every machine that has it, and goes on
+  offering it. `mux seed` and `mux get` are the same two commands under
+  their first names. `mux probe TICKET` says what a ticket names and how
+  much of it each machine holds.
 - **`mux sync` makes a folder match a source,** and reads only what has
   changed. Nothing is removed without `--delete`, what is replaced or
   removed goes to a trash folder first, and a sync that would remove more

@@ -162,7 +162,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Probe(args) => probe::run(&args, cli.json, cli.key.as_deref()).await,
         Command::Sync(args) => sync::run(&args, cli.json).await,
         Command::Seed(args) => seed::run(args, cli.key.as_deref(), cli.json).await,
-        Command::Get(args) => get::run(args, cli.key.as_deref()).await,
+        Command::Get(args) => get::run(args, cli.json, cli.key.as_deref()).await,
         Command::Id => {
             println!("{}", identity(cli.key.as_deref())?.node_id());
             Ok(())
