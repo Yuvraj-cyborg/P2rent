@@ -407,7 +407,9 @@ fetches the manifest and checks it against the ticket: that is all
 `mux probe` and `mux cp --dry-run` need. `swarm::holders` then asks each
 peer of the ticket how much it has, and `swarm::fetch` does the rest of
 the picture. `fetch` reports the events that a copy from any other place
-reports, so `mux cp` shows a ticket as it shows a web address.
+reports, so `mux cp` shows a ticket as it shows a web address. `mux get`
+is `mux cp` with its arguments in another order, and has no code of its
+own beyond reading them.
 
 A ticket for one file may also name web addresses that hold the same
 bytes. `peer` cannot fetch from the web, and does not need to:

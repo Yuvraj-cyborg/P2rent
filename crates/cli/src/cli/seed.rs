@@ -158,7 +158,7 @@ async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Re
     Ok(node.seed(Arc::new(indexed.artifact), indexed.root))
 }
 
-async fn serve_until_interrupted(shares: &[Arc<Share>]) {
+pub(super) async fn serve_until_interrupted(shares: &[Arc<Share>]) {
     let status = ui::spinner("waiting for peers (Ctrl-C to stop)");
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
