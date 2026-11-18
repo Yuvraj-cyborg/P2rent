@@ -34,6 +34,9 @@ pub(crate) struct Behaviour {
     pub no_length: bool,
     /// The one thing the server gets wrong in what it answers, if any.
     pub mistake: Option<Mistake>,
+    /// The most connections it serves at once, if it has a limit. A
+    /// request on one more is refused.
+    pub crowd: Option<usize>,
 }
 
 /// A way of answering that no server should have.
@@ -72,6 +75,10 @@ struct State {
     connections: AtomicUsize,
     /// How many bytes of the file were sent, all told.
     sent: AtomicUsize,
+    /// How many connections are open, and how many requests were refused
+    /// for coming on one too many.
+    open: AtomicUsize,
+    refused: AtomicUsize,
 }
 
 impl Server {
@@ -84,13 +91,19 @@ impl Server {
             asked: Mutex::default(),
             connections: AtomicUsize::new(0),
             sent: AtomicUsize::new(0),
+            open: AtomicUsize::new(0),
+            refused: AtomicUsize::new(0),
         });
         let serving = state.clone();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let state = serving.clone();
                 state.connections.fetch_add(1, Ordering::Relaxed);
-                tokio::spawn(async move { while answer(&mut stream, &state).await {} });
+                state.open.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    while answer(&mut stream, &state).await {}
+                    state.open.fetch_sub(1, Ordering::Relaxed);
+                });
             }
         });
         Self { addr, state }
@@ -129,6 +142,12 @@ impl Server {
     pub(crate) fn sent(&self) -> usize {
         self.state.sent.load(Ordering::Relaxed)
     }
+
+    /// How many requests were refused for coming on one connection too
+    /// many.
+    pub(crate) fn refused(&self) -> usize {
+        self.state.refused.load(Ordering::Relaxed)
+    }
 }
 
 /// Answers one request. Returns whether the connection can carry another.
@@ -148,22 +167,7 @@ async fn answer(stream: &mut TcpStream, state: &State) -> bool {
     state.asked.lock().unwrap().push(range.clone());
     let behaviour = state.behaviour.lock().unwrap().clone();
 
-    // One address sends the asker on to the file, and one back to itself.
-    let onward = match path.as_str() {
-        "/moved" => Some("/sample.bin"),
-        "/loop" => Some("/loop"),
-        _ => None,
-    };
-    if let Some(onward) = onward {
-        let head = format!(
-            "HTTP/1.1 302 Found\r\nLocation: {onward}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        );
-        let _ = stream.write_all(head.as_bytes()).await;
-        return false;
-    }
-    if let Some(status) = behaviour.status {
-        let head =
-            format!("HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    if let Some(head) = instead_of_the_file(&path, &behaviour, state) {
         let _ = stream.write_all(head.as_bytes()).await;
         return false;
     }
@@ -239,6 +243,31 @@ async fn answer(stream: &mut TcpStream, state: &State) -> bool {
         return false;
     }
     true
+}
+
+/// The answer to a request that is not answered with the file, if this is
+/// one: the asker is sent on to another address, or the server has too
+/// many connections open, or it is set to refuse everything.
+fn instead_of_the_file(path: &str, behaviour: &Behaviour, state: &State) -> Option<String> {
+    let closing = "Content-Length: 0\r\nConnection: close\r\n\r\n";
+    // One address sends the asker on to the file, and one back to itself.
+    let onward = match path {
+        "/moved" => Some("/sample.bin"),
+        "/loop" => Some("/loop"),
+        _ => None,
+    };
+    if let Some(onward) = onward {
+        return Some(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {onward}\r\n{closing}"
+        ));
+    }
+    let open = state.open.load(Ordering::Relaxed);
+    if behaviour.crowd.is_some_and(|most| open > most) {
+        state.refused.fetch_add(1, Ordering::Relaxed);
+        return Some(format!("HTTP/1.1 503 Busy\r\n{closing}"));
+    }
+    let status = behaviour.status?;
+    Some(format!("HTTP/1.1 {status} Refused\r\n{closing}"))
 }
 
 /// Sends the body of an answer, as far as the fault that is due lets it.
