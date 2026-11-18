@@ -738,6 +738,101 @@ The library calls its BBR experimental. Its newer version, BBR 3, is in
 the QUIC library that the move to iroh would bring
 ([#19](https://github.com/yuvichh/mux/issues/19)).
 
+## The web and machines in one transfer
+
+A ticket can name a web address that holds the same file
+([#20](https://github.com/yuvichh/mux/issues/20)). A transfer then has
+suppliers of very different speeds, and its end used to wait for the
+slowest of them ([#104](https://github.com/yuvichh/mux/issues/104)).
+
+The made-up link again, with the web server behind 8 Mbit/s and 50 ms, and
+a machine that holds the file with nothing in its way. A 64 MiB file in
+chunks of 1 MiB. Seconds, three runs each:
+
+| Fetched from | Before | After |
+| --- | ---: | ---: |
+| The machine alone | 0.14, 0.14, 0.16 | 0.14, 0.14, 0.14 |
+| The machine and the web server | 9.30, 9.49, 9.30 | 1.16, 1.16, 1.16 |
+| The web server alone | 70.7 | |
+
+Before, the server sent 9.7 to 10.1 MiB of the 64. Eight chunks were being
+read from it when the machine had brought all the rest, and the transfer
+waited for them: 8 MiB at under a megabyte a second. After, it sent
+2.3 MiB, and none of that was waited for.
+
+Two things changed, and each is half of it.
+
+**What a slow supplier has still to ask for is taken over at once.** That
+was already the rule, but three things held it back. A fetcher that found
+nothing to take over looked again only a second later, and nothing told it
+when a slow run's speed became known. A take-over had to gain two seconds
+whoever took over, where one that is fifty times faster should need a
+fiftieth. And a machine, which answers many requests at once, was judged
+by how long one answer takes and not by how often one comes. Which
+supplier stored how much, in each tenth of a second of a 2 MiB transfer
+with a server paced at 640 KiB/s, is what showed the first of these:
+
+| Tenth of a second | The two machines | The web server |
+| --- | ---: | ---: |
+| 1st | 1.45 MiB | 36 KiB |
+| 2nd to 10th | nothing | about 64 KiB each |
+| 11th | 90 KiB | 28 KiB |
+
+The machines stood idle for nine tenths of a second and took over the
+rest on the second look. With the three changes that transfer takes 0.65 s
+where it took 1.5 s, and the server gives 4% of the file where it gave
+45%.
+
+**The chunk a slow supplier is reading is fetched from a quick one as
+well.** Whichever copy comes first is kept. A request is looked at after a
+second, and how much of its chunk has come says how long the whole will
+take, so a server that needs eight seconds for a megabyte is known for it
+before the megabyte is there. That one look is the second that the mixed
+transfer still takes over the machine alone.
+
+On the made-up network of the engine's tests, a supplier that needs eight
+seconds for a chunk beside one that needs three thousandths of one: the
+transfer ended after 8 s, after 3 s with the take-over alone, and after
+1 s with the look as well.
+
+With a server ten times as fast (80 Mbit/s) and a 256 MiB file:
+
+| Fetched from | Before | After |
+| --- | ---: | ---: |
+| The machine alone | 0.52, 0.52, 0.54 | 0.51, 0.52, 0.52 |
+| The machine and the web server | 3.29, 2.87, 3.10 | 1.18, 1.24, 1.21 |
+| The web server alone | 28.4 | |
+
+The server sent 31 to 35 MiB before and 14 to 16 MiB after. Here the
+server's first chunks take it under a second, so the mixed transfer ends
+when they come or at the look, whichever is first. It is still slower
+than the machine alone by what that takes: a transfer that a machine
+finishes in half a second is not helped by a server fifty times slower,
+and now costs a second for it and not three or nine.
+
+Nothing else got slower. `mux cp` from a web server alone, before and
+after, seconds, three runs each taken in turn:
+
+| Link, round trip | File | Before | After |
+| --- | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.61, 11.66, 11.60 | 11.57, 11.57, 11.57 |
+| 100 Mbit/s, 200 ms | 128 MiB | 13.23, 12.80, 12.83 | 12.81, 12.92, 12.98 |
+| 100 Mbit/s, 600 ms | 128 MiB | 28.39, 26.72, 26.04 | 27.04, 23.41, 26.44 |
+| 1 Gbit/s, 20 ms | 1 GiB | 9.26, 9.25, 9.21 | 9.19, 9.23, 9.21 |
+| 1 Gbit/s, 100 ms | 1 GiB | 10.81, 10.47, 10.70 | 11.00, 10.72, 10.49 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 17.17, 16.54, 17.93 | 13.61, 16.08, 15.99 |
+
+The server's log shows the same numbers of requests, connections and
+megabytes sent before and after, within what they vary by from run to run.
+The streams to one server are one supplier: none of them fetches a chunk
+another of them is reading.
+
+The two times at 600 ms, about 23 s and about 27 s, are in both columns
+and are not from this change. The slower runs have two or three
+connections more than the eight streams: a stream whose answer was cut
+off starts on a new connection, and at 600 ms that costs about two
+seconds each time ([#88](https://github.com/yuvichh/mux/issues/88)).
+
 ## Sending only what changed
 
 A destination that holds an older version of a file should not have to

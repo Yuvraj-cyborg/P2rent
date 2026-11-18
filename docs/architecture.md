@@ -524,6 +524,25 @@ what a request costs it.
   one takes most from a slow one. A run that has brought nothing for two
   seconds is reckoned at how long it has been, so one that has stopped is
   taken over whole in the end.
+- A connection is worth what would be fetched with it, so a pipeline
+  that is many times faster than the one it takes from needs as many
+  times less than those two seconds. That is what lets a machine near by
+  take the rest of a file from a web server far away, in a transfer that
+  has both. A supplier that answers many requests at once counts here by
+  how often an answer comes, and not by how long each is on its way.
+- Nothing is taken from a pipeline of which nothing is known. So the
+  moment the first chunk of a run has come, the pipelines with nothing to
+  do are told to look again. And a request is looked at after a second:
+  how much of its chunk is there says how long the whole will take,
+  before it has come.
+- The chunk a pipeline is reading can be fetched by another as well,
+  where that other would have it sooner by enough (`run::relieve`). Two
+  are then fetching one chunk. It belongs to the one that took it over,
+  the copy that comes first is the one stored, and the other is dropped
+  when it comes: it is told of and counted once. So a transfer does not
+  end by waiting for its slowest supplier to finish what it happened to
+  be reading. A pipeline that is no faster does this only for a chunk
+  that is long overdue.
 
 - A supplier may take fewer requests at once than it is given: a web
   server that limits the connections from one address refuses the rest.
