@@ -44,6 +44,7 @@ fn peer_info() -> impl Strategy<Value = PeerInfo> {
 fn request() -> impl Strategy<Value = Request> {
     prop_oneof![
         hash().prop_map(|artifact| Request::Manifest { artifact }),
+        hash().prop_map(|content| Request::Hints { content }),
         hash().prop_map(|content| Request::Status { content }),
         (hash(), any::<u64>()).prop_map(|(content, index)| Request::Chunk { content, index }),
     ]
@@ -57,6 +58,7 @@ fn response() -> impl Strategy<Value = Response> {
             .prop_map(|(have, peers)| Response::Status(Status { have, peers })),
         any::<u32>().prop_map(|len| Response::Chunk { len }),
         Just(Response::NotFound),
+        Just(Response::Hints),
     ]
 }
 

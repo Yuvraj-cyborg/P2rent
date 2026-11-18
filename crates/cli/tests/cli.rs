@@ -62,17 +62,14 @@ fn payload() -> Vec<u8> {
 
 /// Seeds `source` from a new process and returns it with its ticket.
 fn seed(key: &Path, source: &Path) -> (KillOnDrop, String) {
+    ticket_from(mux(key).args(["seed", "--chunk-size", "64K"]).arg(source))
+}
+
+/// Starts an offer on loopback and reads the ticket printed by the command.
+fn ticket_from(command: &mut Command) -> (KillOnDrop, String) {
     let mut seeder = KillOnDrop(
-        mux(key)
-            .args([
-                "seed",
-                "--no-relay",
-                "--listen",
-                "127.0.0.1:0",
-                "--chunk-size",
-                "64K",
-            ])
-            .arg(source)
+        command
+            .args(["--no-relay", "--listen", "127.0.0.1:0"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -351,26 +348,7 @@ fn a_command_that_asks_for_what_cannot_be_done_is_a_usage_error() {
 /// Offers `source` with `mux cp SOURCE peer:` from a new process, and
 /// returns it with the ticket it wrote.
 fn offer(key: &Path, source: &Path) -> (KillOnDrop, String) {
-    let mut offering = KillOnDrop(
-        mux(key)
-            .arg("cp")
-            .arg(source)
-            .args(["peer:", "--no-relay", "--listen", "127.0.0.1:0"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let mut ticket = String::new();
-    BufReader::new(offering.0.stdout.take().unwrap())
-        .read_line(&mut ticket)
-        .unwrap();
-    let ticket = ticket.trim().to_owned();
-    assert!(
-        ticket.starts_with("mux://"),
-        "unexpected output: {ticket:?}"
-    );
-    (offering, ticket)
+    ticket_from(mux(key).arg("cp").arg(source).arg("peer:"))
 }
 
 /// A command that has to do with the machines of `ticket`, and reaches
@@ -403,6 +381,46 @@ fn small_tree(at: &Path) {
     std::fs::write(at.join("a.bin"), &data[..1_500_000]).unwrap();
     std::fs::write(at.join("nested/b.bin"), &data[1_500_000..]).unwrap();
     std::fs::write(at.join("empty"), b"").unwrap();
+}
+
+#[test]
+fn cp_commits_a_reordered_file_with_no_chunks_fetched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("sample");
+    let chunk = 64 * 1024;
+    let new: Vec<_> = (1..=5u8)
+        .flat_map(|byte| std::iter::repeat_n(byte, chunk))
+        .collect();
+    std::fs::write(&path, &new).unwrap();
+    let (_seeder, ticket) = seed(&tmp.path().join("sender.key"), &path);
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let mut old = new.clone();
+    old.rotate_left(chunk);
+    std::fs::write(out.join("sample"), old).unwrap();
+
+    let copied = with_ticket(&tmp.path().join("receiver.key"), ["--json", "cp"], &ticket)
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        copied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&copied.stderr)
+    );
+    let lines: Vec<serde_json::Value> = String::from_utf8(copied.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines.iter().filter(|line| line["event"] == "file").count(),
+        1
+    );
+    let done = lines.iter().find(|line| line["event"] == "done").unwrap();
+    assert_eq!(done["fetched"], 0);
+    assert_eq!(done["kept"], new.len());
+    assert_eq!(std::fs::read(out.join("sample")).unwrap(), new);
 }
 
 #[test]

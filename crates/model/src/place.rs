@@ -191,6 +191,8 @@ pub struct Begun {
     /// file with no bytes is one, the first time. So is a file that an
     /// earlier transfer stopped just short of naming.
     pub named: Vec<usize>,
+    /// Whether [`Sink::search`] could recover a missing chunk from an older file.
+    pub older: bool,
 }
 
 /// A place data can be written to.
@@ -220,6 +222,23 @@ pub trait Sink: fmt::Debug + Send + Sync {
         expected: &Expected<'_>,
         examined: &(dyn Fn(u64) + Sync),
     ) -> Result<Begun, Failure>;
+
+    /// Reuses missing chunks found at other offsets in older files. Only
+    /// bytes matching `expected` can be kept. Updates the verified chunks
+    /// and newly committed files in `begun` before the transfer starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure if the place cannot read or store the bytes.
+    fn search(
+        &self,
+        _begun: &mut Begun,
+        _expected: &Expected<'_>,
+        _hints: &crate::search::ChunkHints,
+        _examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<(), Failure> {
+        Ok(())
+    }
 
     /// Writes `data` into `file` at `offset`. Nothing of it is visible
     /// under the file's final name until [`Sink::commit`].
