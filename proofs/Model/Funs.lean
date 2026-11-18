@@ -1712,6 +1712,158 @@ def mirror.step.decide
         else ok mirror.step.Step.Blocked
       else ok mirror.step.Step.Replace
 
+/-- [model::rolling::FACTOR]
+    Source: 'crates/model/src/rolling.rs', lines 18:0-18:42 -/
+@[global_simps, irreducible]
+def rolling.FACTOR : Std.U64 := 11400714819323198485#u64
+
+/-- [model::rolling::{impl core::clone::Clone for model::rolling::Rolling}::clone]:
+    Source: 'crates/model/src/rolling.rs', lines 25:9-25:14
+    Visibility: public -/
+def rolling.Rolling.Insts.CoreCloneClone.clone
+  (self : rolling.Rolling) : Result rolling.Rolling := do
+  ok self
+
+/-- Trait implementation: [model::rolling::{impl core::clone::Clone for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:9-25:14 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreCloneClone : core.clone.Clone rolling.Rolling
+  := {
+  clone := rolling.Rolling.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [model::rolling::{impl core::marker::Copy for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:16-25:20 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreMarkerCopy : core.marker.Copy rolling.Rolling
+  := {
+  cloneInst := rolling.Rolling.Insts.CoreCloneClone
+}
+
+/-- [model::rolling::{impl core::fmt::Debug for model::rolling::Rolling}::fmt]:
+    Source: 'crates/model/src/rolling.rs', lines 25:22-25:27
+    Visibility: public -/
+def rolling.Rolling.Insts.CoreFmtDebug.fmt
+  (self : rolling.Rolling) (f : core.fmt.Formatter) :
+  Result ((core.result.Result Unit core.fmt.Error) × core.fmt.Formatter)
+  := do
+  let dyn := Dyn.mk _ core.fmt.DebugU64 self.hash
+  let dyn1 := Dyn.mk _ (core.fmt.DebugShared core.fmt.DebugU64) self.leaving
+  core.fmt.Formatter.debug_struct_field2_finish f (toStr "Rolling") (toStr
+    "hash") dyn (toStr "leaving") dyn1
+
+/-- Trait implementation: [model::rolling::{impl core::fmt::Debug for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:22-25:27 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreFmtDebug : core.fmt.Debug rolling.Rolling := {
+  fmt := rolling.Rolling.Insts.CoreFmtDebug.fmt
+}
+
+/-- Trait implementation: [model::rolling::{impl core::marker::StructuralPartialEq for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:29-25:38 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq rolling.Rolling := {
+}
+
+/-- [model::rolling::{impl core::cmp::PartialEq<model::rolling::Rolling> for model::rolling::Rolling}::eq]:
+    Source: 'crates/model/src/rolling.rs', lines 25:29-25:38
+    Visibility: public -/
+def rolling.Rolling.Insts.CoreCmpPartialEqRolling.eq
+  (self : rolling.Rolling) (other : rolling.Rolling) : Result Bool := do
+  if self.hash = other.hash
+  then ok (self.leaving = other.leaving)
+  else ok false
+
+/-- Trait implementation: [model::rolling::{impl core::cmp::PartialEq<model::rolling::Rolling> for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:29-25:38 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreCmpPartialEqRolling : core.cmp.PartialEq
+  rolling.Rolling rolling.Rolling := {
+  eq := rolling.Rolling.Insts.CoreCmpPartialEqRolling.eq
+}
+
+/-- [model::rolling::{impl core::cmp::Eq for model::rolling::Rolling}::assert_fields_are_eq]:
+    Source: 'crates/model/src/rolling.rs', lines 25:40-25:42
+    Visibility: public -/
+def rolling.Rolling.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : rolling.Rolling) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [model::rolling::{impl core::cmp::Eq for model::rolling::Rolling}]
+    Source: 'crates/model/src/rolling.rs', lines 25:40-25:42 -/
+@[reducible]
+def rolling.Rolling.Insts.CoreCmpEq : core.cmp.Eq rolling.Rolling := {
+  partialEqInst := rolling.Rolling.Insts.CoreCmpPartialEqRolling
+  assert_fields_are_eq := rolling.Rolling.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [model::rolling::{model::rolling::Rolling}::of]: loop body 0:
+    Source: 'crates/model/src/rolling.rs', lines 39:8-47:9
+    Visibility: public -/
+@[rust_loop_body]
+def rolling.Rolling.of_loop.body
+  (window : Slice Std.U8) (hash : Std.U64) (leaving : Std.U64)
+  («at» : Std.Usize) :
+  Result (ControlFlow (Std.U64 × Std.U64 × Std.Usize) (Std.U64 × Std.U64))
+  := do
+  let i := Slice.len window
+  if «at» < i
+  then
+    let i1 ← lift (core.num.U64.wrapping_mul hash rolling.FACTOR)
+    let i2 ← Slice.index_usize window «at»
+    let i3 ← lift (core.convert.num.FromU64U8.from i2)
+    let hash1 ← lift (core.num.U64.wrapping_add i1 i3)
+    let leaving1 ←
+      if «at» > 0#usize
+      then ok (core.num.U64.wrapping_mul leaving rolling.FACTOR)
+      else ok leaving
+    let at1 ← «at» + 1#usize
+    ok (cont (hash1, leaving1, at1))
+  else ok (done (hash, leaving))
+
+/-- [model::rolling::{model::rolling::Rolling}::of]: loop 0:
+    Source: 'crates/model/src/rolling.rs', lines 39:8-47:9
+    Visibility: public -/
+@[rust_loop]
+def rolling.Rolling.of_loop
+  (window : Slice Std.U8) (hash : Std.U64) (leaving : Std.U64)
+  («at» : Std.Usize) :
+  Result (Std.U64 × Std.U64)
+  := do
+  loop
+    (fun (hash1, leaving1, at1) => rolling.Rolling.of_loop.body window hash1
+      leaving1 at1)
+    (hash, leaving, «at»)
+
+/-- [model::rolling::{model::rolling::Rolling}::of]:
+    Source: 'crates/model/src/rolling.rs', lines 35:4-49:5
+    Visibility: public -/
+def rolling.Rolling.of (window : Slice Std.U8) : Result rolling.Rolling := do
+  let (hash, leaving) ← rolling.Rolling.of_loop window 0#u64 1#u64 0#usize
+  ok { hash, leaving }
+
+/-- [model::rolling::{model::rolling::Rolling}::value]:
+    Source: 'crates/model/src/rolling.rs', lines 52:4-54:5
+    Visibility: public -/
+def rolling.Rolling.value (self : rolling.Rolling) : Result Std.U64 := do
+  ok self.hash
+
+/-- [model::rolling::{model::rolling::Rolling}::roll]:
+    Source: 'crates/model/src/rolling.rs', lines 61:4-66:5
+    Visibility: public -/
+def rolling.Rolling.roll
+  (self : rolling.Rolling) (out : Std.U8) (inn : Std.U8) :
+  Result rolling.Rolling
+  := do
+  let i ← lift (core.convert.num.FromU64U8.from out)
+  let i1 ← lift (core.num.U64.wrapping_mul self.leaving i)
+  let without ← lift (core.num.U64.wrapping_sub self.hash i1)
+  let i2 ← lift (core.num.U64.wrapping_mul without rolling.FACTOR)
+  let i3 ← lift (core.convert.num.FromU64U8.from inn)
+  let i4 ← lift (core.num.U64.wrapping_add i2 i3)
+  ok { self with hash := i4 }
+
 /-- [model::schedule::{impl core::clone::Clone for model::schedule::ChunkState}::clone]:
     Source: 'crates/model/src/schedule.rs', lines 14:9-14:14
     Visibility: public -/
