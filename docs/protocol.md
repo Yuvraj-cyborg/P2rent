@@ -1,7 +1,7 @@
 # Protocol
 
 This describes protocol version 4, negotiated with the ALPN token `mux/4`.
-Version 3 carried the same messages over connections authenticated with
+Version 3 used connections authenticated with
 certificates, and version 2 was that protocol under the project's former
 name, p2rent, with the token `p2rent/2`. No two versions interoperate.
 
@@ -58,6 +58,13 @@ Request frames are limited to 1 KiB and response frames to 4 MiB.
 | `Manifest { artifact }` | `Manifest { len }` | `len` bytes of encoded manifest, at most 64 MiB |
 | `Status { content }` | `Status { have, peers }` | none |
 | `Chunk { content, index }` | `Chunk { len }` | `len` bytes of chunk data |
+| `Hints { content }` | `Hints` | one little-endian 64-bit rolling hash per manifest chunk |
+
+A receiver with an older file can ask a complete peer for the optional hint table. Its length
+comes from the verified manifest. A missing table, a malformed reply or an
+older peer closing the stream leaves the receiver free to fetch the chunks.
+A rolling hash suggests a possible offset. The receiver checks those bytes
+against the chunk's BLAKE3 digest before copying them into the part file.
 
 Any request may be answered with `NotFound`.
 

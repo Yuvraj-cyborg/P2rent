@@ -27,6 +27,37 @@ use alloc::vec::Vec;
 /// twenty bits of a rolling hash.
 const FILTER_BITS: usize = 1 << 20;
 
+/// One little-endian rolling hash per chunk in manifest order. The table
+/// travels separately from the manifest and carries no integrity guarantee.
+#[derive(Debug, Clone)]
+pub struct ChunkHints(Vec<u8>);
+
+impl ChunkHints {
+    /// Packs rolling hashes in chunk order.
+    pub fn pack(hashes: impl Iterator<Item = u64>) -> Self {
+        Self(hashes.flat_map(u64::to_le_bytes).collect())
+    }
+
+    /// Accepts exactly one rolling hash per chunk of the verified manifest.
+    pub fn decode(bytes: Vec<u8>, chunks: u64) -> Option<Self> {
+        (Some(bytes.len() as u64) == chunks.checked_mul(8)).then_some(Self(bytes))
+    }
+
+    /// The table in wire order.
+    pub fn encoded(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The hint for a chunk, if present.
+    pub fn get(&self, index: u64) -> Option<u64> {
+        let (hashes, _) = self.0.as_chunks::<8>();
+        hashes
+            .get(usize::try_from(index).ok()?)
+            .copied()
+            .map(u64::from_le_bytes)
+    }
+}
+
 /// The chunks of one length that a destination lacks and looks for.
 #[derive(Debug, Clone)]
 pub struct Wanted {

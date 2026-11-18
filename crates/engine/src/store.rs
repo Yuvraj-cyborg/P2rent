@@ -3,6 +3,7 @@ use model::artifact::{Artifact, Bitfield, EntryKind, FileDigest, Hash, Tree};
 use model::assembly::Assembly;
 use model::notes::Notes;
 use model::place::{Begun, Failure, Foreknown, Sink, Source, Verification};
+use model::search::ChunkHints;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// What became of a chunk handed to a [`Store`].
@@ -78,6 +79,7 @@ impl Store {
         let begun = Begun {
             held: Bitfield::full(artifact.chunk_count()),
             named: Vec::new(),
+            older: false,
         };
         let tree = artifact.tree().clone();
         Self::over(tree, Digests::Known(artifact), source, None, begun)
@@ -95,9 +97,43 @@ impl Store {
         place: Arc<P>,
         examined: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Arc<Self>, Failure> {
+        Self::resume_with_hints(artifact, place, examined, std::future::ready(None)).await
+    }
+
+    /// Resumes a verified transfer, requesting rolling hashes only if an
+    /// older file could supply missing chunks. An unavailable hint table
+    /// leaves the ordinary resume path in effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns the place's failure if it cannot prepare or reuse its files.
+    pub async fn resume_with_hints<P: Source + Sink + 'static>(
+        artifact: Arc<Artifact>,
+        place: Arc<P>,
+        examined: impl Fn(u64) + Send + Sync + 'static,
+        hints: impl Future<Output = Option<ChunkHints>>,
+    ) -> Result<Arc<Self>, Failure> {
         let (opened, expected) = (place.clone(), artifact.clone());
-        let begun =
-            waiting(move || opened.begin(&|index| expected.chunk_hash(index), &examined)).await?;
+        let (mut begun, examined) = waiting(move || {
+            let begun = opened.begin(&|index| expected.chunk_hash(index), &examined)?;
+            Ok((begun, examined))
+        })
+        .await?;
+        if begun.older
+            && let Some(hints) = hints.await
+        {
+            let (opened, expected) = (place.clone(), artifact.clone());
+            begun = waiting(move || {
+                opened.search(
+                    &mut begun,
+                    &|index| expected.chunk_hash(index),
+                    &hints,
+                    &examined,
+                )?;
+                Ok(begun)
+            })
+            .await?;
+        }
         let tree = artifact.tree().clone();
         let digests = Digests::Known(artifact);
         Ok(Self::over(tree, digests, place.clone(), Some(place), begun))
