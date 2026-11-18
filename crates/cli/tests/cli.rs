@@ -340,11 +340,12 @@ fn a_command_that_asks_for_what_cannot_be_done_is_a_usage_error() {
     let file = tmp.path().join("file");
     std::fs::write(&file, b"x").unwrap();
     let file = file.to_str().unwrap();
-    let refused: [(&[&str], &str); 4] = [
+    let refused: [(&[&str], &str); 5] = [
         (&["seed", file, "--chunk-size", "1"], "chunk size must be"),
         (&["sync", file, "peer:"], "is not a folder on this machine"),
         (&["cp", file, "peer:", "--dry-run"], "--dry-run has nothing"),
         (&["cp", file, "peer:", "--hash", "blake3:00"], ""),
+        (&["cp", file, "./elsewhere/", "--seed"], "--seed goes on"),
     ];
     for (line, why) in refused {
         let output = mux(&key).args(line).output().unwrap();
@@ -654,4 +655,51 @@ fn an_offer_is_told_to_a_program_as_a_line_with_its_ticket() {
         String::from_utf8_lossy(&copied.stderr)
     );
     assert_eq!(files_under(&out.join("tree")), files_under(&source));
+}
+
+/// A machine that copied with `--seed` goes on offering what it copied:
+/// with the first offer gone, the next machine copies from it alone.
+#[test]
+fn a_copy_that_goes_on_offering_serves_the_next_machine() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let (offering, ticket) = offer(&tmp.path().join("offer.key"), &source);
+
+    // A port for the second machine, so that a ticket can say where it is.
+    let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let at = free.local_addr().unwrap().to_string();
+    drop(free);
+    let key = tmp.path().join("second.key");
+    let id = String::from_utf8(mux(&key).arg("id").output().unwrap().stdout).unwrap();
+    let second = tmp.path().join("second");
+    let mut copying = KillOnDrop(
+        mux(&key)
+            .args(["cp", &ticket])
+            .arg(format!("{}/", second.display()))
+            .args(["--seed", "--no-relay", "--listen", &at])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    // It says what it wrote once that is whole, and does not end.
+    let mut line = String::new();
+    BufReader::new(copying.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.trim_end().ends_with("\tverified"), "{line:?}");
+    drop(offering);
+
+    let content = ticket.split('?').next().unwrap();
+    let from_the_second = format!("{content}?peer={}@{at}", id.trim());
+    let third = tmp.path().join("third");
+    let copied = with_ticket(&tmp.path().join("third.key"), ["cp"], &from_the_second)
+        .arg(format!("{}/", third.display()))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&copied.stderr).into_owned();
+    assert!(copied.status.success(), "{said}");
+    assert!(said.contains("from 1 machine"), "{said}");
+    assert_eq!(files_under(&third.join("tree")), files_under(&source));
 }
