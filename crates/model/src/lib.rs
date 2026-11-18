@@ -25,6 +25,7 @@ pub mod notes;
 pub mod pace;
 pub mod place;
 pub mod retry;
+pub mod rolling;
 pub mod schedule;
 pub mod ticket;
 
