@@ -251,6 +251,8 @@ impl Supply for Reached {
         })
     }
 
+    fn leave(&self, _index: u64) {}
+
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: !self.made.script.in_order,
@@ -1223,6 +1225,28 @@ struct Watched {
     random_access: bool,
     /// The file and offset of every reader that was opened.
     opened: Mutex<Vec<(usize, u64)>>,
+    /// How many readers are open, and the most there have been at once.
+    open: Arc<AtomicUsize>,
+    most_open: AtomicUsize,
+}
+
+/// A reader that is counted as open for as long as it lives.
+#[derive(Debug)]
+struct Open {
+    reader: Box<dyn Reader>,
+    open: Arc<AtomicUsize>,
+}
+
+impl Reader for Open {
+    fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
+        self.reader.read(len, arrived)
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.open.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Watched {
@@ -1232,6 +1256,8 @@ impl Watched {
             place: Memory::holding(tree, &sample.files).unwrap(),
             random_access,
             opened: Mutex::default(),
+            open: Arc::default(),
+            most_open: AtomicUsize::new(0),
         })
     }
 
@@ -1258,7 +1284,16 @@ impl Source for Watched {
 
     fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
         self.opened.lock().unwrap().push((file, offset));
-        self.place.open(file, offset)
+        Box::pin(async move {
+            let reader = self.place.open(file, offset).await?;
+            let open = self.open.fetch_add(1, Ordering::Relaxed) + 1;
+            self.most_open.fetch_max(open, Ordering::Relaxed);
+            let counted: Box<dyn Reader> = Box::new(Open {
+                reader,
+                open: self.open.clone(),
+            });
+            Ok(counted)
+        })
     }
 }
 
@@ -1292,6 +1327,33 @@ fn chunks_in_a_row_come_from_one_reader() {
         (3..=4).contains(&opened),
         "{opened} readers for seven chunks"
     );
+}
+
+/// A reader is closed as soon as the pipeline that was reading from it goes
+/// elsewhere. Left open, a request for the rest of a file goes on being
+/// sent what nobody reads. So there are never more readers open than there
+/// are pipelines, however often they move.
+#[test]
+fn a_reader_is_closed_when_its_pipeline_goes_elsewhere() {
+    let sample = long(64);
+    // A first transfer leaves the first ten chunks, so that the pipelines
+    // of the second have uneven shares, and those that finish early move.
+    let some = Script {
+        holds: (0..64).map(|chunk| chunk < 10).collect(),
+        ..Script::default()
+    };
+    let first = Setup::new(&sample).run(&[Made::new(1, some, &sample)]);
+    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
+
+    let source = Watched::new(&sample, true);
+    let mut setup = Setup::new(&sample).into(&first.place);
+    setup.options.requests_per_supplier = 4;
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let opened = source.opened.lock().unwrap().len();
+    assert!(opened > 4, "no pipeline moved: {opened} readers");
+    assert_eq!(source.most_open.load(Ordering::Relaxed), 4);
 }
 
 /// A source that is one stream is read from its start, each file once, by

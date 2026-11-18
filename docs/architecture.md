@@ -371,7 +371,10 @@ does the same for a supplier that is a web server or a folder.
 Any `Source` is a supplier through `engine::supplier`. It keeps a reader
 open after each chunk, and whoever asks for the chunk that follows reads on
 from it. For a web server that is one request for a long run of chunks and
-not one for each. A source that cannot be opened part of the way in is one
+not one for each. A reader is closed as soon as the pipeline that was
+reading from it goes elsewhere: left open, a request for the rest of a
+file goes on being sent what nobody reads, over a link that others need.
+A source that cannot be opened part of the way in is one
 stream: the engine then runs a single pipeline over it, from the first
 chunk that is missing.
 
