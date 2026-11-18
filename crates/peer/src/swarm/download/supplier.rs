@@ -9,7 +9,7 @@ use crate::net::{Connection, NodeId, PeerInfo};
 use crate::swarm::Node;
 use engine::sync;
 use model::artifact::Artifact;
-use model::place::{Capabilities, Failure, Pending, Status, Supplier, SupplierId, Supply};
+use model::place::{Arrived, Capabilities, Failure, Pending, Status, Supplier, SupplierId, Supply};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
@@ -128,19 +128,22 @@ impl Supply for Link {
         })
     }
 
-    fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>> {
+    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             let artifact = &self.swarm.artifact;
             let location = artifact
                 .locate(index)
                 .ok_or_else(|| Failure::Fatal("chunk index out of range".into()))?;
             self.connection
-                .chunk(artifact.content_id(), index, location.len)
+                .chunk(artifact.content_id(), index, location.len, arrived)
                 .await
                 .map_err(|e| unreachable(&e))?
                 .ok_or_else(|| Failure::Absent(format!("peer does not hold chunk {index}")))
         })
     }
+
+    /// Each chunk is a request of its own, so nothing is left open.
+    fn leave(&self, _index: u64) {}
 
     /// A peer is asked for any chunk, and for several at once.
     fn capabilities(&self) -> Capabilities {

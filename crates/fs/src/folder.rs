@@ -1,7 +1,9 @@
 use super::io;
 use model::artifact::{Bitfield, EntryKind, Hash, PART_SUFFIX, Tree};
 use model::assembly::Assembly;
-use model::place::{Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source};
+use model::place::{
+    Arrived, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
+};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
@@ -598,7 +600,7 @@ struct FileReader {
 }
 
 impl Reader for FileReader {
-    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+    fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         let (file, offset) = (self.file.clone(), self.offset);
         Box::pin(async move {
             let data = waiting(move || {
@@ -608,6 +610,7 @@ impl Reader for FileReader {
             })
             .await?;
             self.offset += u64::from(len);
+            arrived.add(data.len());
             Ok(data)
         })
     }

@@ -12,7 +12,9 @@ use crate::{Put, Store};
 use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Tree,
 };
-use model::place::{Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source};
+use model::place::{
+    Arrived, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -222,10 +224,11 @@ struct MemoryReader {
 }
 
 impl Reader for MemoryReader {
-    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+    fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         let read = self.place.bytes(self.file, self.offset, len);
         if read.is_ok() {
             self.offset += u64::from(len);
+            arrived.add(len as usize);
         }
         ready(read)
     }
@@ -359,7 +362,20 @@ impl Sample {
     ///
     /// Returns an error if the entries are not a valid artifact.
     pub fn of(tree: &[(&str, Option<usize>)]) -> Result<Self, model::Error> {
-        let chunk = MIN_CHUNK_SIZE as usize;
+        Self::with_chunks(tree, MIN_CHUNK_SIZE)
+    }
+
+    /// The same, with chunks of `chunk_size` bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entries are not a valid artifact, or the
+    /// size is not one a chunk may have.
+    pub fn with_chunks(
+        tree: &[(&str, Option<usize>)],
+        chunk_size: u32,
+    ) -> Result<Self, model::Error> {
+        let chunk = chunk_size as usize;
         // Bytes that do not repeat, so that no two chunks are the same.
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next_byte = move || {
@@ -394,7 +410,7 @@ impl Sample {
             .iter()
             .flat_map(|bytes| bytes.chunks(chunk).map(Hash::of))
             .collect();
-        let manifest = Manifest::new("sample", MIN_CHUNK_SIZE, entries, digests);
+        let manifest = Manifest::new("sample", chunk_size, entries, digests);
         Ok(Self {
             artifact: Arc::new(Artifact::new(manifest)?),
             files,
@@ -777,6 +793,7 @@ pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wr
         // Read in order, in pieces of uneven sizes, a file is its bytes.
         let reader = source.open(file, 0).await;
         let mut reader = reader.map_err(|e| wrong("opening a file", &e))?;
+        let arrived = Arrived::default();
         let mut read = Vec::new();
         for size in [1usize, 7, 4096, 5000].into_iter().cycle() {
             let left = bytes.len() - read.len();
@@ -784,12 +801,16 @@ pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wr
                 break;
             }
             let piece = reader
-                .read(u32::try_from(size.min(left)).unwrap_or(1))
+                .read(u32::try_from(size.min(left)).unwrap_or(1), &arrived)
                 .await;
             read.extend(piece.map_err(|e| wrong("reading on", &e))?);
         }
         ensure(&read == bytes, "a file read in order is not its bytes")?;
-        let past = reader.read(1).await;
+        ensure(
+            arrived.so_far() == bytes.len() as u64,
+            "a reader did not count the bytes it handed over",
+        )?;
+        let past = reader.read(1, &arrived).await;
         ensure(past.is_err(), "a reader went on past the end of its file")?;
 
         // Opened part of the way in, it gives the rest.
@@ -798,7 +819,7 @@ pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wr
         if random || middle == 0 {
             let reader = source.open(file, middle as u64).await;
             let mut reader = reader.map_err(|e| wrong("opening part of the way in", &e))?;
-            let tail = reader.read(rest).await;
+            let tail = reader.read(rest, &arrived).await;
             ensure(
                 tail.as_deref() == Ok(&bytes[middle..]),
                 "the rest of a file reads wrong",

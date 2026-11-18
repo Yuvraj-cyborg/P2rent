@@ -2,9 +2,11 @@
 
 mod common;
 
-use common::{CHUNK, addr_of, assert_same_tree, get, node, pattern, seed};
+use common::{CHUNK, addr_of, assert_same_tree, direct, get, node, pattern, peer_info, seed};
 use model::artifact::Hash;
+use model::place::Arrived;
 use peer::Error;
+use peer::net::{Endpoint, Identity};
 use peer::swarm::Ticket;
 use std::fs;
 
@@ -34,6 +36,31 @@ async fn downloads_a_file() {
             .uploaded_bytes(),
         data.len() as u64
     );
+}
+
+/// Whoever waits for a chunk can see how much of it has come.
+#[tokio::test]
+async fn the_bytes_of_a_chunk_are_counted_as_they_arrive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("model.bin");
+    let data = pattern(CHUNK * 3 + 7, 4);
+    fs::write(&source, &data).unwrap();
+    let seeder = node().await;
+    let (artifact, _) = seed(&seeder, &source);
+
+    // Kept until the end: an endpoint that is let go of closes what it has
+    // connected.
+    let asker = Endpoint::bind(&Identity::generate(), &direct()).await;
+    let asker = asker.unwrap();
+    let connection = asker.connect(&peer_info(&seeder)).await.unwrap();
+    let arrived = Arrived::default();
+    let len = u32::try_from(CHUNK).unwrap();
+    let chunk = connection.chunk(artifact.content_id(), 1, len, &arrived);
+    let chunk = chunk.await.unwrap().unwrap();
+
+    assert_eq!(chunk, data[CHUNK..2 * CHUNK]);
+    assert_eq!(arrived.so_far(), CHUNK as u64);
+    asker.close().await;
 }
 
 #[tokio::test]

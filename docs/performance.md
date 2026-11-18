@@ -455,18 +455,59 @@ a lower priority than the one before.
   that open four connections get four times one. A congestion control that
   does not take every loss for congestion (BBR) is the thing to measure:
   [#82](https://github.com/yuvichh/mux/issues/82).
-- **`mux cp` from the web, far away.** At 200 ms it reaches 62% of curl.
-  Each time a stream moves to another part of the file it drops its
-  connection and opens another, which costs round trips and a new slow
-  start: [#84](https://github.com/yuvichh/mux/issues/84).
+- **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl:
+  see "A reader left open" below, and
+  [#84](https://github.com/yuvichh/mux/issues/84).
 - **curl at 1 Gbit/s and 100 ms** is held to 26.5 MiB/s by the size of the
   receive window that Linux gives one TCP connection. It is the figure for
   one connection with nothing tuned, not a limit of TCP.
 - **600 ms.** Every tool spends most of a 128 MiB file getting up to speed.
-- A transfer counts progress in whole chunks. With no chunk stored for the
-  stall timeout it is taken for stalled, even while bytes arrive. `mux cp`
-  from the web over 0.5 Mbit/s gave up on an 8 MiB file for that reason:
-  [#83](https://github.com/yuvichh/mux/issues/83).
+- A transfer counted progress in whole chunks. With no chunk stored for the
+  stall timeout it was taken for stalled, even while bytes arrived. `mux cp`
+  from the web over 0.5 Mbit/s gave up on an 8 MiB file after 100 seconds
+  for that reason. Progress is now counted in bytes
+  ([#83](https://github.com/yuvichh/mux/issues/83)): the same copy takes
+  145 seconds, and `mux get` of the same file 142, at 93% of what the link
+  carries. Loopback costs the same CPU as before within a hundredth (5.59
+  CPU seconds per GiB against 5.55), and the first row of the table reads
+  91.5 MiB/s.
+
+### A reader left open
+
+A request to a web server is for the rest of the file from where it
+starts. A stream that comes to a part another stream has fetched starts a
+request elsewhere. The reader it left was kept open, in case somebody read
+on from it. Nobody did, and the server went on sending into it until the
+connection's window was full, over the same link the other streams were
+using.
+
+nginx was made to log each request and the bytes it sent. A 128 MiB file
+over 100 Mbit/s at 200 ms:
+
+| | Requests | Bytes the server sent | Time |
+| --- | ---: | ---: | ---: |
+| curl | 1 | 128.0 MiB | 13.2 s |
+| `mux cp --streams 1` | 2 | 128.0 MiB | 13.6 s |
+| `mux cp`, four streams, before | 13 | 201.0 MiB | 18.1 s |
+| `mux cp`, four streams, after | 13 | 154.7 MiB | 17.5 s |
+
+A reader is now closed as soon as the stream that was reading from it goes
+elsewhere. `mux cp` with four streams, MiB/s, the median of three runs
+with the builds taken in turn, and the range:
+
+| Link, round trip | File | Before | After | curl |
+| --- | ---: | ---: | ---: | ---: |
+| 1 Gbit/s, 20 ms | 1 GiB | 98.8 (95.4 to 102.7) | 107.1 (107.0 to 108.0) | 111.1 |
+| 1 Gbit/s, 100 ms | 1 GiB | 69.6 (66.5 to 79.4) | 83.4 (78.7 to 83.5) | 26.5 |
+| 100 Mbit/s, 50 ms | 128 MiB | 9.2 (9.2 to 9.4) | 9.9 (9.8 to 9.9) | 11.0 |
+| 100 Mbit/s, 200 ms | 128 MiB | 6.6 (6.3 to 6.7) | 7.6 (7.5 to 7.8) | 9.3 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.91 | 1.91 | 0.48 |
+
+What is left is the number of requests. Near the end of a copy a stream
+that has finished its part takes half of what another has left, again and
+again, and each time that is a new connection that starts slowly. One
+stream is as fast as curl on these links, and four are still slower where
+one connection can fill the link by itself. That is the rest of #84.
 
 ## Sending only what changed
 
