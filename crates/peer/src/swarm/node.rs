@@ -101,7 +101,11 @@ impl Node {
         if peers.is_empty() {
             peers.push(TicketPeer { node, at: None });
         }
-        Ticket { artifact, peers }
+        Ticket {
+            artifact,
+            peers,
+            origins: Vec::new(),
+        }
     }
 
     /// Closes all connections and stops serving. Returns once the other

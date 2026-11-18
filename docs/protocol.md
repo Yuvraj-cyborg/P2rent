@@ -8,15 +8,24 @@ name, p2rent, with the token `p2rent/2`. No two versions interoperate.
 ## Tickets
 
 ```
-mux://<artifact id>?peer=<node id>@<host:port>&peer=...
+mux://<artifact id>?peer=<node id>[@<where>]&peer=...&url=<web address>&url=...
 ```
 
 - `artifact id`: 64 hex characters. It pins the content and the metadata of
   one artifact. [Identifiers](#identifiers) says how it is derived.
 - `node id`: 64 hex characters, an Ed25519 public key.
-- `host` may be an IPv4 address, a bracketed IPv6 address or a DNS name.
+- `where` is `host:port`, or the address of a relay beginning `https://` or
+  `http://`. `host` may be an IPv4 address, a bracketed IPv6 address or a
+  DNS name. Without it the node is looked up by its id. A node reached at
+  several places has one `peer=` for each.
+- `url` is a web address said to hold the same bytes, for an artifact that
+  is one file. In it `%`, `&`, `#` and `?` are written `%25`, `%26`, `%23`
+  and `%3F`, so that it ends where the next parameter begins. It is one
+  more place to fetch chunks from and is trusted no more than a peer:
+  every chunk is compared with the digest the manifest gives for it.
 
-Unknown query parameters are ignored.
+Unknown query parameters are ignored, so a build that does not know `url`
+fetches from the peers alone.
 
 ## Transport and identity
 

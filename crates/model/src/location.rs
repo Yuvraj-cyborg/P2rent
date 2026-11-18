@@ -205,7 +205,7 @@ fn file_url_path(rest: &str) -> Result<String> {
 
 /// Replaces each `%XX` with the byte it stands for. `None` if an escape is
 /// cut short or not hex, or if the bytes are not UTF-8.
-fn percent_decode(text: &str) -> Option<String> {
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
     let mut out = Vec::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('%') {
@@ -216,6 +216,27 @@ fn percent_decode(text: &str) -> Option<String> {
     }
     out.extend_from_slice(rest.as_bytes());
     String::from_utf8(out).ok()
+}
+
+/// Reads a web address by itself, as [`Location::parse`] reads one, and
+/// gives it as a [`Location::Web`] holds it.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidLocation`] if it is not one.
+pub(crate) fn web_address(text: &str) -> Result<String> {
+    let read = scheme_of(text).map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest));
+    match read {
+        Some((scheme, rest)) if matches!(scheme.as_str(), "http" | "https") => {
+            match web(&scheme, rest)? {
+                Location::Web(address) => Ok(address),
+                _ => Err(invalid(format!("{text:?} is not a web address."))),
+            }
+        }
+        _ => Err(invalid(format!(
+            "{text:?} is not a web address: one begins `https://` or `http://`."
+        ))),
+    }
 }
 
 /// Checks the parts of a web address that decide where a request goes: it

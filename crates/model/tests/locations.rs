@@ -66,7 +66,12 @@ fn whereabouts() -> impl Strategy<Value = Option<Whereabouts>> {
 
 fn ticket() -> impl Strategy<Value = Ticket> {
     let peer = (node(), whereabouts()).prop_map(|(node, at)| TicketPeer { node, at });
-    (hash(), vec(peer, 0..5)).prop_map(|(artifact, peers)| Ticket { artifact, peers })
+    let origins = vec(web_address().prop_map(|(_, kept)| kept), 0..3);
+    (hash(), vec(peer, 0..5), origins).prop_map(|(artifact, peers, origins)| Ticket {
+        artifact,
+        peers,
+        origins,
+    })
 }
 
 /// A path as a person types it, with no scheme: relative, absolute, or on a

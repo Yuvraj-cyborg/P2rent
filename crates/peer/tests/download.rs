@@ -242,6 +242,7 @@ async fn a_ticket_without_peers_is_rejected() {
     let ticket = Ticket {
         artifact: Hash::of(b"x"),
         peers: Vec::new(),
+        origins: Vec::new(),
     };
     let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::InvalidTicket(_)), "{error}");
