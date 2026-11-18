@@ -230,7 +230,28 @@ async fn a_run_of_chunks_is_one_request() {
     assert_eq!(server.sent(), file.len() + 1);
 }
 
-/// Four streams read the file a run at a time. Each request ends where
+/// A server that serves two connections at a time and refuses a third is
+/// used with two. The requests it refuses are not what the copy waits for.
+#[tokio::test]
+async fn a_server_that_takes_few_connections_is_used_with_those_it_takes() {
+    let file = file();
+    let mut crowded = serving(file.clone());
+    crowded.crowd = Some(2);
+    let server = Server::start(crowded).await;
+    let tmp = tempfile::tempdir().unwrap();
+    fetch(&server, "/sample.bin", tmp.path(), Options::default())
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(tmp.path().join("sample.bin")).unwrap(), file);
+    // Eight requests at a time were tried, so six or seven were refused.
+    // Had a refusal been taken for the server failing, all eight would
+    // have been made again, and as many refused again.
+    let refused = server.refused();
+    assert!((1..10).contains(&refused), "{refused} requests refused");
+}
+
+/// Several streams read the file a run at a time. Each request ends where
 /// its run does, so a connection is used again for the next, and there
 /// are fewer connections than requests.
 #[tokio::test]
