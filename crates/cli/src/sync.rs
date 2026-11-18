@@ -9,6 +9,7 @@ use crate::artifact::{DEFAULT_CHUNK_SIZE, EntryKind, Timestamp, Tree};
 use crate::mirror::{self, Plan, Step};
 use crate::place::{Observer, Source};
 use crate::store::{self, Folder, Trash};
+use crate::swarm::{self, Found, Node, Ticket};
 use crate::{engine, engine::Copied};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -119,26 +120,7 @@ pub async fn look(
     destination: &Path,
     remove: bool,
 ) -> Result<Looked, Error> {
-    let destination = std::path::absolute(destination).map_err(|source| Error::Change {
-        path: destination.to_owned(),
-        source,
-    })?;
-    let Some(name) = destination.file_name() else {
-        let said = format!("{} has no name to sync under", destination.display());
-        return Err(Error::Stopped(said));
-    };
-    let name = name.to_string_lossy().into_owned();
-    let wanted = engine::plan(sources, Some(name), DEFAULT_CHUNK_SIZE)
-        .await
-        .map_err(engine::Error::from)?;
-    let wanted = store::as_kept(&wanted.tree)?;
-    let was = there(destination.clone()).await?;
-    Ok(Looked {
-        plan: mirror::plan(&wanted, was.as_ref(), remove),
-        wanted,
-        was,
-        destination,
-    })
+    Input::places(sources).look(destination, remove).await
 }
 
 /// Makes `destination` hold what `sources` hold. Each source holds the
@@ -155,69 +137,205 @@ pub async fn sync(
     options: &Options,
     observer: Observer,
 ) -> Result<Synced, Error> {
-    let looked = look(&sources, destination, options.remove).await?;
-    if let Some(why) = looked.stopped(options.force) {
-        return Err(Error::Stopped(why));
-    }
-    let mut synced = Synced {
-        looked,
-        copied: None,
-        trash: None,
-    };
-    if synced.looked.plan.is_done() {
-        return Ok(synced);
-    }
-    let (destination, wanted) = (synced.looked.destination.clone(), &synced.looked.wanted);
-    // Both are there: `look` found the name.
-    let parent = destination.parent().unwrap_or(Path::new("")).to_owned();
-    let name = wanted.name().to_owned();
+    Input::places(&sources)
+        .sync(destination, options, observer, |_| {})
+        .await
+}
 
-    // A folder keeps its trash inside itself. A file has no inside, and its
-    // trash is beside it.
-    let (trash_in, below) = if wanted.is_file() {
-        (parent.clone(), Some(name.clone()))
-    } else {
-        (destination.clone(), None)
-    };
-    let clearing = Clearing {
-        root: trash_in.clone(),
-        below,
-        trash: options.trash.then(|| Trash::new(&trash_in, now())),
-    };
-    synced.trash = make_way(&synced.looked, clearing).await?;
+/// A source of a one-way sync, with the verified snapshot for a ticket.
+#[derive(Debug)]
+pub struct Input<'a>(SourceOfSync<'a>);
 
-    let picked = to_bring(&synced.looked.plan, &synced.looked.wanted);
-    if !picked.is_empty() {
-        let parts = sources
-            .into_iter()
-            .map(|source| engine::part(source, picked.clone()));
-        let copied = engine::copy(
-            parts.collect(),
-            Some(name),
-            DEFAULT_CHUNK_SIZE,
-            |tree| Arc::new(Folder::inside(tree.clone(), &parent)),
-            options.limits.clone(),
-            observer,
-        )
-        .await?;
-        synced.copied = Some(copied);
+#[derive(Debug)]
+enum SourceOfSync<'a> {
+    Places(&'a [Arc<dyn Source>]),
+    Ticket {
+        node: &'a Arc<Node>,
+        ticket: &'a Ticket,
+        found: Found,
+    },
+}
+
+impl<'a> Input<'a> {
+    /// Reads from one or more ordinary sources that hold the same files.
+    pub fn places(sources: &'a [Arc<dyn Source>]) -> Self {
+        Self(SourceOfSync::Places(sources))
     }
-    touch(&synced.looked, &destination).await?;
-    Ok(synced)
+
+    /// Finds the snapshot a ticket identifies and verifies its manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no peer can supply that manifest.
+    pub async fn ticket(node: &'a Arc<Node>, ticket: &'a Ticket) -> crate::Result<Self> {
+        let found = swarm::find(node, ticket).await?;
+        Ok(Self(SourceOfSync::Ticket {
+            node,
+            ticket,
+            found,
+        }))
+    }
+
+    /// Plans a sync into the exact destination without changing its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either place cannot be examined.
+    pub async fn look(&self, destination: &Path, remove: bool) -> Result<Looked, Error> {
+        let destination = std::path::absolute(destination).map_err(|source| Error::Change {
+            path: destination.to_owned(),
+            source,
+        })?;
+        let Some(name) = destination.file_name() else {
+            let said = format!("{} has no name to sync under", destination.display());
+            return Err(Error::Stopped(said));
+        };
+        let name = name
+            .to_str()
+            .ok_or_else(|| {
+                Error::Stopped(format!(
+                    "{} has no usable UTF-8 name",
+                    destination.display()
+                ))
+            })?
+            .to_owned();
+        // A trailing slash makes symlink_metadata follow a directory link on Unix.
+        let destination = destination.with_file_name(&name);
+        let wanted = match &self.0 {
+            SourceOfSync::Places(sources) => {
+                let plan = engine::plan(sources, Some(name), DEFAULT_CHUNK_SIZE)
+                    .await
+                    .map_err(engine::Error::from)?;
+                store::as_kept(&plan.tree)?
+            }
+            SourceOfSync::Ticket { found, .. } => {
+                store::as_kept_under(found.artifact.tree(), &name)?
+            }
+        };
+        let was = there(destination.clone()).await?;
+        let reserved = |tree: &Tree| {
+            tree.entries()
+                .iter()
+                .any(|entry| entry.path.eq_ignore_ascii_case(mirror::TRASH))
+        };
+        if wanted.name().eq_ignore_ascii_case(mirror::TRASH)
+            || reserved(&wanted)
+            || was.as_ref().is_some_and(reserved)
+        {
+            return Err(Error::Stopped(format!(
+                "{} is reserved for sync trash",
+                mirror::TRASH
+            )));
+        }
+        Ok(Looked {
+            plan: mirror::plan(&wanted, was.as_ref(), remove),
+            wanted,
+            was,
+            destination,
+        })
+    }
+
+    /// Carries out the same plan as a dry run. `copying` receives the selected
+    /// tree so observers can name the files in transfer events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a rule stops the sync or a transfer fails.
+    pub async fn sync(
+        self,
+        destination: &Path,
+        options: &Options,
+        observer: Observer,
+        copying: impl FnOnce(&Arc<Tree>),
+    ) -> Result<Synced, Error> {
+        let looked = self.look(destination, options.remove).await?;
+        if let Some(why) = looked.stopped(options.force) {
+            return Err(Error::Stopped(why));
+        }
+        let mut synced = Synced {
+            looked,
+            copied: None,
+            trash: None,
+        };
+        if synced.looked.plan.is_done() {
+            return Ok(synced);
+        }
+        let (destination, wanted) = (synced.looked.destination.clone(), &synced.looked.wanted);
+        // Both are there: `look` found the name.
+        let parent = destination.parent().unwrap_or(Path::new("")).to_owned();
+        let name = wanted.name().to_owned();
+
+        // A folder keeps its trash inside itself. A file has no inside, and its
+        // trash is beside it.
+        let (trash_in, below) = if wanted.is_file() {
+            (parent.clone(), Some(name.clone()))
+        } else {
+            (destination.clone(), None)
+        };
+        let clearing = Clearing {
+            root: trash_in.clone(),
+            below,
+            trash: options.trash.then(|| Trash::new(&trash_in, now())),
+        };
+        synced.trash = make_way(&synced.looked, clearing).await?;
+
+        let picked = to_bring(&synced.looked.plan, &synced.looked.wanted);
+        if !picked.is_empty() {
+            let open = |tree: &Arc<Tree>| {
+                copying(tree);
+                Arc::new(Folder::replacing(tree.clone(), &parent))
+            };
+            let copied = match self.0 {
+                SourceOfSync::Places(sources) => {
+                    let parts = sources
+                        .iter()
+                        .map(|source| engine::part(source.clone(), picked.clone()));
+                    engine::copy(
+                        parts.collect(),
+                        Some(name),
+                        DEFAULT_CHUNK_SIZE,
+                        open,
+                        options.limits.clone(),
+                        observer,
+                    )
+                    .await?
+                }
+                SourceOfSync::Ticket {
+                    node,
+                    mut found,
+                    ticket,
+                } => {
+                    crate::origins::add(&mut found, ticket).await;
+                    found
+                        .fetch_entries(node, &picked, &name, open, options.limits.clone(), observer)
+                        .await?
+                }
+            };
+            synced.copied = Some(copied);
+        }
+        touch(&synced.looked, &destination).await?;
+        Ok(synced)
+    }
 }
 
 /// What is at the destination now, as this system keeps it. Nothing, if
 /// nothing is there.
 async fn there(path: PathBuf) -> Result<Option<Tree>, Error> {
-    let scanned =
-        tokio::task::spawn_blocking(move || match store::scan(&path, DEFAULT_CHUNK_SIZE) {
-            Ok(scanned) => store::as_kept(&scanned.tree).map(Some),
+    tokio::task::spawn_blocking(move || {
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_symlink()) {
+            return Err(Error::Stopped(format!(
+                "{} is a symbolic link. Name the destination directly",
+                path.display()
+            )));
+        }
+        match store::scan(&path, DEFAULT_CHUNK_SIZE) {
+            Ok(scanned) => Ok(Some(store::as_kept(&scanned.tree)?)),
             Err(store::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        });
-    Ok(scanned
-        .await
-        .unwrap_or_else(|stopped| Err(cut_short(&stopped)))?)
+            Err(e) => Err(e.into()),
+        }
+    })
+    .await
+    .map_err(|stopped| cut_short(&stopped))?
 }
 
 fn cut_short(stopped: &tokio::task::JoinError) -> store::Error {
@@ -318,6 +436,15 @@ async fn make_way(looked: &Looked, clearing: Clearing) -> Result<Option<PathBuf>
             path: clearing.on_disk(path),
             source,
         };
+        if let Some(trash) = &clearing.trash
+            && let Some(at) = trash.folder().parent()
+            && std::fs::symlink_metadata(at).is_ok_and(|m| m.is_symlink())
+        {
+            return Err(Error::Stopped(format!(
+                "{} is a symbolic link. Sync trash must be a directory",
+                at.display()
+            )));
+        }
         // In the order of the paths: a folder goes with all that is in
         // it, and what was in it is then no longer there to take.
         for path in &to_take {
@@ -336,22 +463,15 @@ async fn make_way(looked: &Looked, clearing: Clearing) -> Result<Option<PathBuf>
 /// every directory. A directory costs nothing to bring, and bringing it
 /// puts its time right after what was done inside it.
 fn to_bring(plan: &Plan, wanted: &Tree) -> Vec<usize> {
-    let brought = |entry: usize| {
-        plan.steps.iter().any(|planned| {
-            planned.source == Some(entry) && matches!(planned.step, Step::Add | Step::Replace)
+    plan.steps
+        .iter()
+        .filter_map(|planned| {
+            let entry = planned.source?;
+            (matches!(planned.step, Step::Add | Step::Replace)
+                || wanted.entries()[entry].kind == EntryKind::Directory)
+                .then_some(entry)
         })
-    };
-    let entries = wanted.entries().iter().enumerate();
-    let picked: Vec<usize> = entries
-        .filter(|(entry, described)| described.kind == EntryKind::Directory || brought(*entry))
-        .map(|(entry, _)| entry)
-        .collect();
-    // One file that is neither added nor replaced leaves nothing to copy.
-    let anything = picked.iter().any(|&entry| brought(entry));
-    if wanted.is_file() && !anything {
-        return Vec::new();
-    }
-    picked
+        .collect()
 }
 
 /// Gives each file that the plan touches the permissions the source's has.

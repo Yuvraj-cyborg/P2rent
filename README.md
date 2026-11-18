@@ -127,8 +127,9 @@ have them.
   offering it. `mux seed` and `mux get` are the same two commands under
   their first names. `mux probe TICKET` says what a ticket names and how
   much of it each machine holds.
-- **`mux sync` makes a folder match a source,** and reads only what has
-  changed. Nothing is removed without `--delete`, what is replaced or
+- **`mux sync` makes a folder match a source.** Run `mux sync TICKET ./backup`
+  to pull a snapshot from another machine. Mux fetches only the missing chunks
+  of changed files. Nothing is removed without `--delete`, what is replaced or
   removed goes to a trash folder first, and a sync that would remove more
   than half of a folder stops and asks. The rule for each path is proven in
   Lean.
