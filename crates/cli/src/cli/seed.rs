@@ -1,8 +1,9 @@
+use super::exit::misuse;
 use super::tell::{self, Line};
 use super::{Reach, ui};
-use anyhow::{Context, bail};
+use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
-use mux::net::{Identity, Relays};
+use mux::net::Relays;
 use mux::store;
 use mux::swarm::{Node, Share};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -46,21 +47,19 @@ impl Args {
     }
 }
 
-pub(super) async fn run(args: Args, identity: &Identity, json: bool) -> anyhow::Result<()> {
+pub(super) async fn run(args: Args, key: Option<&Path>, json: bool) -> anyhow::Result<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&args.chunk_size) {
-        bail!(
+        return misuse(format!(
             "chunk size must be between {} and {} (default {})",
             ui::bytes(u64::from(MIN_CHUNK_SIZE)),
             ui::bytes(u64::from(MAX_CHUNK_SIZE)),
             ui::bytes(u64::from(DEFAULT_CHUNK_SIZE)),
-        );
+        ));
     }
 
     // Bind first so a busy port is reported before any hashing starts.
     let relays = args.reach.relays();
-    let node = Node::bind(identity, &args.reach.options())
-        .await
-        .context("cannot open a socket to listen on")?;
+    let node = super::node(key, &args.reach).await?;
     let bound = node.local_addrs();
     // With no relay, a ticket has to say where this machine is.
     let detect = relays == Relays::Off;

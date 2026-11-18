@@ -291,3 +291,14 @@ They are the same for every command and do not change between versions.
 
 An error is one line on standard error beginning `error:`. Where there is
 something to do about it, a line beginning `hint:` follows.
+
+2 is for a command that asks for what `mux` does not do, however often it
+is run: too few places, a place that is not one, two places that cannot be
+copied between, a flag that is not for that kind of place, a folder copied
+into itself, a new name for what a ticket names. The command has to be
+written another way. A command refused like this copies nothing, opens no
+socket and makes no key.
+
+A sync that stops because of what it found ends with 1: a folder in the
+way, more than half of the destination to remove, a file where a folder
+is. The message says which flag goes on, if that is what is meant.

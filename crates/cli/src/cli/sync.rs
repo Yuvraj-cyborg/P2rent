@@ -5,6 +5,7 @@
 //! `mux::sync`.
 
 use super::cp::{self, Shown};
+use super::exit::misuse;
 use super::tell::{self, Line};
 use super::ui;
 use anyhow::{Context, bail};
@@ -74,7 +75,10 @@ enum Told<'a> {
 pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
     let source = mux::locate(&args.source)?;
     let Location::Local(to) = mux::locate(&args.destination)? else {
-        bail!("{} is not a folder on this machine", args.destination);
+        return misuse(format!(
+            "{} is not a folder on this machine",
+            args.destination
+        ));
     };
     // The destination is what is made to match, not a folder to put a
     // copy in: so it is written here as a folder, for the check that it
