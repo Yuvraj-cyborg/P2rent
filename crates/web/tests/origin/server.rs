@@ -37,6 +37,9 @@ pub(crate) struct Behaviour {
     /// The most connections it serves at once, if it has a limit. A
     /// request on one more is refused.
     pub crowd: Option<usize>,
+    /// How long it takes over each 16 KiB it sends, on all its connections
+    /// together: a server with a slow line.
+    pub pace: Option<Duration>,
 }
 
 /// A way of answering that no server should have.
@@ -79,6 +82,9 @@ struct State {
     /// for coming on one too many.
     open: AtomicUsize,
     refused: AtomicUsize,
+    /// Held while a piece is sent by a server with a slow line, so that
+    /// its connections share the line.
+    line: tokio::sync::Mutex<()>,
 }
 
 impl Server {
@@ -93,6 +99,7 @@ impl Server {
             sent: AtomicUsize::new(0),
             open: AtomicUsize::new(0),
             refused: AtomicUsize::new(0),
+            line: tokio::sync::Mutex::default(),
         });
         let serving = state.clone();
         tokio::spawn(async move {
@@ -288,7 +295,16 @@ async fn send(stream: &mut TcpStream, body: &[u8], state: &State) -> bool {
         None => body,
     };
     // In pieces, so that a reader that stops is noticed and not sent to.
+    let pace = state.behaviour.lock().unwrap().pace;
     for piece in sending.chunks(16 * 1024) {
+        let _line = match pace {
+            Some(pace) => {
+                let line = state.line.lock().await;
+                tokio::time::sleep(pace).await;
+                Some(line)
+            }
+            None => None,
+        };
         if stream.write_all(piece).await.is_err() {
             return false;
         }

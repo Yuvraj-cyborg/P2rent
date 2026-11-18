@@ -14,9 +14,12 @@ mod common;
 
 use common::assert_same_tree;
 use mux::artifact::Hash;
+use mux::origins::Origin;
+use mux::swarm::{Node, Report, Ticket};
 use server::{Behaviour, Fault, Server};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mux");
 const DATE: &str = "Tue, 17 Nov 2026 10:00:00 GMT";
@@ -1275,4 +1278,158 @@ async fn a_sync_whose_source_cannot_be_read_harms_nothing_and_can_be_finished() 
     let finished = mux(["sync", text(&new), text(&out), "--delete"]).await;
     assert!(finished.status.success(), "{}", said(&finished));
     assert_eq!(final_names(&out), wanted);
+}
+
+// One transfer fed from the web and from other machines at once.
+
+/// Two machines that hold `file` under the name `sample.bin`, and a ticket
+/// that names them both and the web addresses `origins`.
+async fn two_holders(
+    dir: &Path,
+    file: &[u8],
+    origins: &[&str],
+) -> (Vec<Arc<Node>>, Arc<mux::artifact::Artifact>, Ticket) {
+    let held = dir.join("sample.bin");
+    std::fs::write(&held, file).unwrap();
+    let (artifact, root) = common::index(&held);
+    let mut holders = Vec::new();
+    let mut ticket = Ticket {
+        artifact: artifact.id(),
+        peers: Vec::new(),
+        origins: origins.iter().map(|&origin| origin.to_owned()).collect(),
+    };
+    for _ in 0..2 {
+        let node = common::node().await;
+        node.seed(artifact.clone(), root.clone());
+        ticket
+            .peers
+            .extend(common::ticket_for(&node, &artifact).peers);
+        holders.push(node);
+    }
+    (holders, artifact, ticket)
+}
+
+/// Fetches what `ticket` names into `out`, from its machines and its web
+/// addresses, and says which addresses were used.
+async fn fetch_all(ticket: &Ticket, out: &Path) -> (mux::Result<Report>, Vec<Origin>) {
+    let node = common::node().await;
+    let mut found = mux::swarm::find(&node, ticket).await.unwrap();
+    let origins = mux::origins::add(&mut found, ticket).await;
+    let progress = Arc::new(mux::swarm::Progress::default());
+    let fetching = mux::swarm::fetch(
+        &node,
+        found,
+        out,
+        common::options(),
+        progress,
+        Arc::new(|_| {}),
+    );
+    (fetching.await, origins)
+}
+
+/// With a slow server and two machines that hold the file, a transfer
+/// from all three ends well before a copy from the server alone, and
+/// holds the same bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_server_and_two_machines_are_faster_than_the_server_alone() {
+    let file = bytes(3 * 1024 * 1024 + 7, 77);
+    // 16 KiB every 15 ms: about a megabyte a second.
+    let mut slow = serving(file.clone());
+    slow.pace = Some(std::time::Duration::from_millis(15));
+    let server = Server::start(slow).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+
+    let started = std::time::Instant::now();
+    let alone = tmp.path().join("alone");
+    let output = cp([&url, &format!("{}/", text(&alone))]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let alone = started.elapsed();
+    let from_the_server_alone = server.sent();
+
+    let (_holders, _, ticket) = two_holders(tmp.path(), &file, &[&url]).await;
+    let started = std::time::Instant::now();
+    let out = tmp.path().join("out");
+    let (fetched, origins) = fetch_all(&ticket, &out).await;
+    let together = started.elapsed();
+    let report = fetched.unwrap();
+
+    assert!(std::fs::read(out.join("sample.bin")).unwrap() == file);
+    assert_eq!(origins.len(), 1);
+    assert_eq!(origins[0].unused, None);
+    assert!(
+        together < alone / 2,
+        "from all three it took {together:?}, and from the server alone {alone:?}"
+    );
+    // The machines gave most of it, and the server was asked for less.
+    let from_machines: u64 = report.sources.iter().map(|(_, bytes)| bytes).sum();
+    assert!(from_machines > file.len() as u64 / 2, "{report:?}");
+    assert!(server.sent() - from_the_server_alone < file.len() / 2);
+}
+
+/// A machine that sends other bytes is dropped, and the web address the
+/// ticket names fills in for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_address_fills_in_for_a_machine_that_sends_wrong_bytes() {
+    let file = bytes(1024 * 1024 + 3, 78);
+    let server = Server::start(serving(file.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+
+    // The manifest of the file, from a machine whose copy holds other
+    // bytes of the same length.
+    let right = tmp.path().join("right");
+    std::fs::create_dir(&right).unwrap();
+    std::fs::write(right.join("sample.bin"), &file).unwrap();
+    let (artifact, _) = common::index(&right.join("sample.bin"));
+    let forged = tmp.path().join("sample.bin");
+    std::fs::write(&forged, bytes(file.len(), 79)).unwrap();
+    let liar = common::node().await;
+    liar.seed(artifact.clone(), forged);
+    let mut ticket = common::ticket_for(&liar, &artifact);
+    ticket.origins.push(url.clone());
+
+    let out = tmp.path().join("out");
+    let (fetched, origins) = fetch_all(&ticket, &out).await;
+    let report = fetched.unwrap();
+    assert!(std::fs::read(out.join("sample.bin")).unwrap() == file);
+    assert_eq!(report.others, [(origins[0].id, file.len() as u64)]);
+    assert!(report.sources.iter().all(|(_, bytes)| *bytes == 0));
+}
+
+/// A web address that is down, that holds a file of another size, or that
+/// holds other bytes is of no use, and the machines finish the transfer.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_its_web_address_of_no_use_the_machines_finish_the_transfer() {
+    let file = bytes(1024 * 1024 + 3, 80);
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Nobody at the address: a port that was just let go of.
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let down = format!("http://{}/sample.bin", free.local_addr().unwrap());
+    drop(free);
+    // A server that holds less, and one that holds as much of other bytes.
+    let shorter = Server::start(serving(file[..file.len() - 1].to_vec())).await;
+    let other = Server::start(serving(bytes(file.len(), 81))).await;
+    let (shorter, other) = (shorter.url("/sample.bin"), other.url("/sample.bin"));
+
+    let origins = [down.as_str(), shorter.as_str(), other.as_str()];
+    let (_holders, _, ticket) = two_holders(tmp.path(), &file, &origins).await;
+    let out = tmp.path().join("out");
+    let (fetched, origins) = fetch_all(&ticket, &out).await;
+    let report = fetched.unwrap();
+
+    assert!(std::fs::read(out.join("sample.bin")).unwrap() == file);
+    let why: Vec<&str> = origins
+        .iter()
+        .map(|origin| origin.unused.as_deref().unwrap_or("used"))
+        .collect();
+    assert!(why[0] != "used", "{why:?}");
+    assert!(why[1].contains("bytes"), "{why:?}");
+    // The one with other bytes of the right size is found out chunk by
+    // chunk: nothing of it is kept.
+    assert_eq!(why[2], "used");
+    assert!(report.others.iter().all(|(_, bytes)| *bytes == 0));
+    let from_machines: u64 = report.sources.iter().map(|(_, bytes)| bytes).sum();
+    assert_eq!(from_machines, file.len() as u64);
 }
