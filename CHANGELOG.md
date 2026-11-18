@@ -39,6 +39,8 @@ copies and syncs between folders, web addresses and other machines.
   changed. Nothing is removed without `--delete`. What is replaced or
   removed goes to a trash folder first. A sync that would remove more than
   half of a folder stops (#77, #78).
+  `mux sync TICKET DESTINATION` pulls a peer snapshot into the named file
+  or folder, reusing verified local chunks and resuming interrupted syncs (#115).
 - **`mux probe`** says what is at a place without copying it: size, files,
   how far a copy would be checked, and for a ticket, which machine holds
   how much (#71, #99).

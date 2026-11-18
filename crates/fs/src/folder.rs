@@ -34,6 +34,8 @@ pub struct Folder(Arc<Inner>);
 struct Inner {
     tree: Arc<Tree>,
     root: PathBuf,
+    /// Stage even whole files when a sync needs to replace their metadata.
+    replace: bool,
     /// Whether each entry has its final name. Set after the rename, so a
     /// reader that sees it finds the file there.
     in_place: Vec<AtomicBool>,
@@ -44,6 +46,13 @@ struct Inner {
     skipped_links: AtomicUsize,
 }
 
+#[derive(Clone, Copy)]
+enum Start {
+    Whole,
+    Resume,
+    Replace,
+}
+
 impl Folder {
     /// Files that are already whole, as after indexing them. Nothing is
     /// read: the caller vouches for the content.
@@ -51,21 +60,30 @@ impl Folder {
     /// `root` is the file itself for a tree that is one file, or the
     /// directory that holds the tree.
     pub fn whole(tree: Arc<Tree>, root: PathBuf) -> Self {
-        Self::over(tree, root, true)
+        Self::over(tree, root, Start::Whole)
     }
 
     /// The tree inside `dir`, under its own name, to be filled in.
     /// Nothing is touched until [`Sink::begin`].
     pub fn inside(tree: Arc<Tree>, dir: &Path) -> Self {
         let root = dir.join(tree.name());
-        Self::over(tree, root, false)
+        Self::over(tree, root, Start::Resume)
     }
 
-    fn over(tree: Arc<Tree>, root: PathBuf, in_place: bool) -> Self {
+    /// The selected entries of a sync. Commit each selected file with the
+    /// requested metadata, including one whose old bytes all verify. The old
+    /// file may also have a hard link in the trash.
+    pub fn replacing(tree: Arc<Tree>, dir: &Path) -> Self {
+        let root = dir.join(tree.name());
+        Self::over(tree, root, Start::Replace)
+    }
+
+    fn over(tree: Arc<Tree>, root: PathBuf, start: Start) -> Self {
         Self(Arc::new(Inner {
             in_place: (0..tree.entries().len())
-                .map(|_| AtomicBool::new(in_place))
+                .map(|_| AtomicBool::new(matches!(start, Start::Whole)))
                 .collect(),
+            replace: matches!(start, Start::Replace),
             unflushed: Mutex::default(),
             skipped_links: AtomicUsize::new(0),
             tree,
@@ -489,7 +507,8 @@ impl Folder {
             ),
             None => (Vec::new(), 0),
         };
-        if existing.is_some()
+        if !self.0.replace
+            && existing.is_some()
             && reusable.len() as u64 == chunks.end - chunks.start
             && old_size == size
         {
