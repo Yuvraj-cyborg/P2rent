@@ -2,26 +2,84 @@
 
 <img src="assets/logo.png" alt="mux" width="360">
 
-**Copy large files and directories to many machines at once.**
+**Copy and sync data between folders, the web and other machines.**
 
 [![CI][ci-badge]](../../actions/workflows/ci.yml)
 [![Latest release][release-badge]](../../releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
+[Commands](docs/commands.md) ·
 [How it works](docs/how-it-works.md) ·
 [Architecture](docs/architecture.md) ·
 [Protocol](docs/protocol.md) ·
 [Performance](docs/performance.md) ·
-[Contributing](CONTRIBUTING.md)
+[Changelog](CHANGELOG.md)
 
 </div>
 
-mux is a command-line tool and Rust library that copies large files and
-directories, such as model weights, datasets, build outputs and disk images,
-from one machine to many. Every machine that is downloading also serves the
-parts it already has, so the tenth machine does not wait on the first. It is
-a single binary: there is no tracker, scheduler or database to run. It builds
-and is tested on Linux, macOS and Windows.
+mux is one command-line tool and one Rust library for moving data from one
+place to another. A place is a folder, a web address or another machine.
+The commands are the same whatever the two places are, and so is what they
+promise: a file has its name only when it is whole, a copy that was
+interrupted carries on, and what cannot be checked is not called checked.
+It is a single binary. It builds and is tested on Linux, macOS and Windows.
+
+```console
+$ mux cp https://example.org/big.iso ./downloads/     # from the web
+$ mux cp ./weights /mnt/backup/                       # a folder
+$ mux cp ./weights peer:                              # offer it to other machines
+$ mux cp 'mux://450b9c6b…' /models/                   # fetch it on another machine
+$ mux sync ./weights /mnt/backup/weights --delete     # only what changed
+$ mux probe https://example.org/big.iso               # what is there
+```
+
+> [!NOTE]
+> **mux was called p2rent** up to release 0.2.0. Release 0.3 is the first
+> under the new name, and it does not talk to 0.2 machines:
+> [what to know when moving](#coming-from-p2rent-02).
+
+## Examples
+
+### From the web
+
+```console
+$ mux cp https://example.org/big.iso ./downloads/
+./downloads/big.iso	1288490188	consistent
+```
+
+The file is read over several connections. Run the same command again
+after an interruption and it carries on where it stopped. If the file
+changes on the server meanwhile, the copy stops with an error and keeps
+nothing of it. With `--hash sha256:…` the copy is verified, and
+`--mirror URL` reads the same file from a second server at once.
+
+The line on standard output is what was written, its size in bytes, and
+how far it was checked: `verified` against a digest, or `consistent`,
+which means no digest was known and the source stayed what it was.
+
+### Between machines
+
+On the machine that has the data:
+
+```console
+$ mux cp ./weights peer:
+seeding  weights  (400.68 MiB, 402 chunks)
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./
+```
+
+On every machine that needs it:
+
+```console
+$ mux cp 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./' /models/ --seed
+/models/weights	420143104	verified
+```
+
+The ticket is all a machine needs. It names the content by its hash and
+the machine by its key, with the relay that machine can be reached through
+(ids are shortened here). Every chunk is checked before it is written,
+whoever sent it. With `--seed`
+a machine goes on offering what it fetched, so the tenth machine does not
+wait on the first:
 
 ```
  direct download                    mux
@@ -33,134 +91,111 @@ and is tested on Linux, macOS and Windows.
  five machines share one uplink     every machine is also a source
 ```
 
-> [!NOTE]
-> **mux was called p2rent.** The latest release, 0.2.0, was published under
-> that name, and its binaries and command are still `p2rent`. The first
-> release named mux will be 0.3. Everything on this page is true of 0.2.0
-> unless it is under [Not yet released](#not-yet-released).
+Two machines behind routers reach each other directly where their routers
+allow it, and through a relay where they do not.
 
-## Example
+### The web and other machines at once
 
-On the machine that has the data:
+The first machine copies from the web and goes on offering the file:
 
 ```console
-$ mux seed ./weights
-seeding  weights  (400.68 MiB, 402 chunks)
-mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433
+$ mux cp https://example.org/big.iso ./downloads/ --seed
+./downloads/big.iso	1288490188	consistent
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./&url=https://example.org/big.iso
 ```
 
-On every machine that needs it:
+Every other machine uses that ticket. It reads from the machines that have
+the file and from the web address in one transfer, and checks every chunk
+against the first machine's copy.
+
+### Keeping a folder the same as another
 
 ```console
-$ mux get 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@10.0.0.5:4433' --out /models --seed
-saved    /models/weights  (400.68 MiB)
-fetched  400.68 MiB from 2 peers
-         35964d95  219.68 MiB
-         aec1c5f2  181.00 MiB
+$ mux sync ./weights /mnt/backup/weights --delete
+remove	old-notes.txt
+add	run-7/config.json
+replace	run-7/model.bin
 ```
 
-The second machine to ask got part of the data from the first, which was
-still seeding. (Ids are shortened and the timing line is left out.)
+Only what the destination lacks or has in another version is read. Nothing
+is removed without `--delete`. What is replaced or removed goes to a trash
+folder first, and a sync that would remove more than half of a folder
+stops before it changes anything.
 
-The ticket is all a machine needs. `--seed` keeps a machine serving after its
-own download finishes. An interrupted download resumes: run the same command
-again and only the missing chunks are fetched.
+### Looking before copying
 
-With release 0.2.0 the commands are the same, spelled `p2rent`:
+```console
+$ mux probe https://example.org/big.iso
+name     big.iso
+kind     file
+size     1288490188 bytes (1.20 GiB)
+files    1
+checked  consistent, if it is copied
+parts    read several at once
+```
 
-| | Release 0.2.0 | Built from this source |
-| --- | --- | --- |
-| Command | `p2rent` | `mux` |
-| Tickets | `p2rent://…` | `mux://…` |
-| Key variable | `P2RENT_KEY` | `MUX_KEY` |
-| Talks to | other 0.2.0 machines | other builds of this source |
+`--dry-run` on `cp` and `sync` says what would be done and does none of it.
+`--json` on any command writes one JSON object on each line for a program
+to read, and the [exit codes](docs/commands.md#exit-codes) say whether
+running a command again is worth it.
 
-## Features
+## What it promises
 
-- **Content addressed.** `seed` hashes files where they are with BLAKE3 and
-  builds a manifest. The ticket carries the hash of that manifest, so a
-  ticket pins exactly which bytes will arrive.
-- **Verified before written.** Every chunk is checked against the manifest
-  before it touches the disk. A peer that sends bad data is dropped and never
-  contacted again.
-- **Many sources.** Chunks are requested from several peers in parallel and
-  offered to others as soon as they land. Peers find each other through the
-  peers they already know.
-- **No extra copies.** A seeder serves straight from the original files.
-  Memory use does not grow with the size of what is sent.
-- **Resumable.** There is no state file. Whatever is already at the
-  destination is hashed, and only what does not match is fetched. The same
-  step repairs a damaged copy.
-- **Authenticated.** Every machine has an Ed25519 key. Connections are QUIC
-  with TLS 1.3, authenticated in both directions against those keys.
+- **A file has its name only when it is whole.** It is written under a
+  name ending `.mux-part` and renamed when every byte is in place. However
+  the program stops, there is never a file with holes under a name
+  somebody would open.
+- **A copy carries on.** Run the same command again. What is there is
+  checked, and only what is missing is fetched. There is no state file.
+- **It says how far it checked.** `verified` means every byte was compared
+  with a digest known beforehand. `consistent` means there was none. It
+  never claims more.
+- **Between machines, nobody has to be trusted.** Every chunk is compared
+  with the digest in the manifest before it touches the disk, and a
+  machine that sends anything else is dropped.
+- **The whole tree arrives:** empty folders, links that stay inside the
+  tree, permissions and times.
+- **A sync does not destroy data.** See above.
+- **Several places feed one transfer:** any number of machines, and web
+  addresses beside them.
 
-### Not yet released
+The rules behind some of these are proven: which chunk is fetched next,
+where a path may point, what a sync does to each path.
+[proofs/README.md](proofs/README.md) says what is proven and what the
+proofs rest on.
 
-These are on the `main` branch and will be in 0.3. Release 0.2.0 does not
-have them.
+## Speed
 
-- **Only whole files appear.** A download is written to `<name>.mux-part`
-  and renamed into place when every chunk of it has been verified. A file
-  that was already there is replaced in one step or left alone.
-- **The whole tree arrives.** Empty directories, symbolic links that stay
-  inside the tree, permissions and modification times are kept. 0.2.0 keeps
-  only the execute bit and leaves links out.
-- **The same bytes are one swarm.** Names, permissions and times are kept
-  apart from the content, so two machines holding the same bytes can supply
-  each other whatever their copies are called.
-- **The new name**, as in the table above. A machine that ran p2rent keeps
-  its identity: its key is copied to the new configuration folder the first
-  time mux runs.
-- **`mux cp` copies a file from the web, or a folder, into a folder.**
-  `mux cp https://example.org/big.iso ./downloads/` reads it over several
-  connections, carries on where an interrupted copy stopped, and stops with
-  an error if the file changes on the server meanwhile. With
-  `--hash sha256:…` the copy is verified, and `--mirror URL` reads from a
-  second server at the same time. `mux cp ./weights /mnt/backup/` copies a
-  folder with its links, permissions and times. `--dry-run` says what a
-  copy would do, `mux probe` says what is at a place, and `--json` writes
-  either for a program to read.
-  [docs/commands.md](docs/commands.md) has the details and the exit codes.
-- **`mux cp` copies between machines too.** `mux cp ./weights peer:` offers
-  a folder and prints a ticket. `mux cp TICKET ./models/ --seed` fetches
-  what the ticket names from every machine that has it, and goes on
-  offering it. `mux seed` and `mux get` are the same two commands under
-  their first names. `mux probe TICKET` says what a ticket names and how
-  much of it each machine holds.
-- **`mux sync` makes a folder match a source,** and reads only what has
-  changed. Nothing is removed without `--delete`, what is replaced or
-  removed goes to a trash folder first, and a sync that would remove more
-  than half of a folder stops and asks. The rule for each path is proven in
-  Lean.
-- **Machines behind routers.** Connections are made by
-  [iroh](https://github.com/n0-computer/iroh). Two machines that cannot dial
-  each other are connected directly where their routers allow it, and
-  through a relay where they do not. A relay passes on packets that it
-  cannot read. A ticket names a machine by its key and needs no address.
-  `--relay` uses a relay of your own and `--no-relay` uses none.
-- **It does not talk to 0.2.0.** The way two machines prove who they are
-  changed with the move to iroh.
+Measured over links shaped to behave like real ones.
+[docs/performance.md](docs/performance.md) has the method and every figure.
+
+- From a web server, `mux cp` is level with curl where one connection
+  fills the link, a few percent faster far from the server, and several
+  times faster where the link is fast and far or loses packets.
+- Between machines, a transfer asks for as many chunks at once as the
+  route has room for.
 
 ## Installation
 
-### Release 0.2.0
+### A release
 
-Binaries for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows
-are attached to the [release](../../releases/tag/v0.2.0), with SHA-256
-checksums. They are named `p2rent`. On Linux:
+Binaries for Linux (x86_64, arm64), macOS (Intel, Apple silicon) and
+Windows are attached to each [release](../../releases), with SHA-256
+checksums. On Linux:
 
 ```console
-$ curl -sSfL https://github.com/yuvichh/mux/releases/download/v0.2.0/p2rent-x86_64-linux.tar.gz | tar xz p2rent
-$ sudo install p2rent /usr/local/bin/
+$ curl -sSfL https://github.com/yuvichh/mux/releases/latest/download/mux-x86_64-linux.tar.gz | tar xz mux
+$ sudo install mux /usr/local/bin/
 ```
 
 The Linux binaries need glibc 2.17 or newer, which covers mainstream
-distributions from the last ten years. The macOS binaries are not notarized:
-if a browser download is blocked, run `xattr -d com.apple.quarantine p2rent`.
+distributions from the last ten years. The macOS binaries are not
+notarized: if a browser download is blocked, run
+`xattr -d com.apple.quarantine mux`.
 
 ### From source
 
-This builds `mux` from the `main` branch. It needs Rust 1.91 or newer.
+It needs Rust 1.91 or newer.
 
 ```console
 $ cargo install --git https://github.com/yuvichh/mux --locked cli
@@ -174,52 +209,76 @@ From a checkout, `cargo build --release` produces `target/release/mux`.
 $ nix run github:yuvichh/mux -- --help
 ```
 
-## Usage
+## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `mux seed <PATH>...` | Hash files or directories and serve them. Prints one ticket for each path on standard output. |
-| `mux get <TICKET>` | Download into `--out`, which defaults to the current directory. |
+| `mux cp <SOURCE>... <DESTINATION>` | Copy each source to the destination. |
+| `mux sync <SOURCE> <DESTINATION>` | Make the destination hold what the source holds. |
+| `mux probe <PLACE>` | Say what is at a place, without copying it. |
+| `mux protocols` | List the kinds of place this build can read and write. |
 | `mux id` | Print this machine's node id. |
+| `mux seed <PATH>...` | `mux cp <PATH>... peer:`, under its first name. |
+| `mux get <TICKET> --out <DIR>` | `mux cp <TICKET> <DIR>/`, under its first name. |
 
-Commonly used options:
+A place is written as a path, a web address, a ticket, or `peer:` for this
+machine offering to others:
 
-| Option | Applies to | Meaning |
-| --- | --- | --- |
-| `--listen <ADDR>` | both | Address to bind. By default every address, at a port the system picks. |
-| `--advertise <HOST[:PORT]>` | `seed` | An address to put in the ticket for other machines to dial. |
-| `--relay <URL>` | both | Reach machines behind routers through this relay, in place of the public ones. |
-| `--no-relay` | both | Use no relay and no directory. A machine is then reached at an address or not at all, and the ticket carries this machine's own. |
-| `--chunk-size <SIZE>` | `seed` | 4K to 16M. The default is 1M. |
-| `--seed` | `get` | Keep serving after the download completes. |
-| `--peer <NODE[@HOST:PORT]>` | `get` | Another peer to try, as well as those in the ticket. |
-| `--key <FILE>` | all | Node key file. Also `MUX_KEY`. |
+| Place | Written as | Read | Written |
+| --- | --- | --- | --- |
+| A file or folder | `./data`, `/srv/data`, `file:///srv/data` | yes | yes |
+| A web address | `https://example.org/big.iso` | yes | no |
+| What other machines hold | `mux://<id>?peer=…` | yes | |
+| This machine, offering | `peer:` | | yes |
 
-Run `mux <command> --help` for the full list.
+[docs/commands.md](docs/commands.md) has every flag, what each command
+prints, the lines written with `--json`, and the exit codes.
+
+## Coming from p2rent 0.2
+
+- **0.3 does not talk to 0.2.** The way two machines connect and prove who
+  they are changed. Move every machine together.
+- The command is `mux`, tickets begin `mux://`, and the key variable is
+  `MUX_KEY`. A machine that ran p2rent keeps its identity: its key is
+  copied to the new configuration folder the first time `mux` runs.
+- `seed` and `get` work as before.
+- By default a machine now uses public relays and a directory to reach
+  machines behind routers. `--no-relay` uses neither, as 0.2 did.
+
+[CHANGELOG.md](CHANGELOG.md) lists everything that changed.
 
 ## Security
 
-- A ticket is a capability. Anyone who has it and can reach a peer can
-  download the data. Treat a ticket for private data as a secret.
-- Peers are identified by key, not by address. A downloader talks only to
-  the node ids named in its ticket or introduced by those nodes.
-- Integrity does not depend on trusting peers. All data is verified against
-  the hash in the ticket.
-- Links are never followed when seeding, and a manifest received from a peer
-  is validated so that no path can leave the destination directory.
+- A ticket is a capability. Anyone who has it and can reach a machine that
+  holds the data can fetch it. Treat a ticket for private data as a secret.
+- Machines are identified by key, not by address. Connections are QUIC
+  with TLS 1.3, authenticated in both directions against those keys. A
+  machine talks only to the ones named in its ticket or introduced by
+  those.
+- Integrity does not depend on trusting anybody. All data is verified
+  against the hash in the ticket.
+- A copy from the web is as trustworthy as the server and the connection
+  to it, unless it is given `--hash`.
+- Links are never followed when offering, and a manifest received from
+  another machine is validated so that no path can leave the destination.
 
 ## Limitations
 
 mux is not yet production software.
 
-- In 0.2.0, peers must be able to reach each other directly. On `main` they
-  need not, and by default a machine then uses the public relays and the
-  directory run by the makers of iroh: both learn its node id and its
-  network addresses, and neither can read what is transferred.
-- There are no upload rate limits, and no access control beyond holding the
-  ticket.
-- If a seeded file changes on disk, its chunks stop verifying and
-  downloaders drop that seeder. Seed again to publish the new contents.
+- By default a machine uses the public relays and the directory run by the
+  makers of [iroh](https://github.com/n0-computer/iroh). Both learn its
+  node id and its network addresses, and neither can read what is
+  transferred. `--relay` uses a relay of your own and `--no-relay` uses
+  none.
+- There are no upload rate limits, and no access control beyond holding
+  the ticket.
+- A web address can be read and not written. Cloud storage is not a place
+  yet.
+- A file that has changed is fetched again whole between machines if its
+  parts have moved. Chunks that stayed at the same offset are kept.
+- If an offered file changes on disk, its chunks stop verifying and other
+  machines drop that source. Offer it again to publish the new contents.
 - It is developed on macOS and Linux. Windows is covered by the test suite
   in CI and has not been used beyond that.
 
@@ -227,21 +286,21 @@ mux is not yet production software.
 
 | Document | Covers |
 | --- | --- |
-| [How it works](docs/how-it-works.md) | An illustrated walk-through of a transfer. |
-| [Architecture](docs/architecture.md) | The crates, the data model, storage and the download loop. |
+| [Commands](docs/commands.md) | Every command, its flags, what it prints and how it ends. |
+| [How it works](docs/how-it-works.md) | An illustrated walk-through of a transfer between machines. |
+| [Architecture](docs/architecture.md) | The crates, the data model, storage and the transfer loop. |
 | [Protocol](docs/protocol.md) | Tickets, the wire messages and the manifest format. |
 | [Performance](docs/performance.md) | How speed is measured, the figures, and what was tried. |
 | [Scope](docs/scope.md) | What the project is for, and what it will not do. |
 | [Proofs](proofs/README.md) | Which parts are formally proven, and what the proofs rest on. |
 | [Changelog](CHANGELOG.md) | What changed for someone who uses `mux`, release by release. |
-| [Commands](docs/commands.md) | Every command on `main`, its flags, what it prints and how it ends. |
 
 ## Repository layout
 
 | Path | Holds |
 | --- | --- |
-| `crates/model` | The data model and the logic that is proven: hashes, manifests, chunk layout, the download schedule. No I/O, and no standard library. |
-| `crates/engine` | What is the same for every place data goes: checking chunks, and committing a file when it is whole. |
+| `crates/model` | The data model and the logic that is proven: hashes, manifests, chunk layout, the schedule, how a place is named. No I/O, and no standard library. |
+| `crates/engine` | What is the same for every place data goes: checking chunks, sharing the work between suppliers, and committing a file when it is whole. |
 | `crates/fs` | Local folders: hashing files, and reading and writing them. |
 | `crates/web` | Web addresses: reading a file in parts, carrying on after a break, and noticing a file that changes. |
 | `crates/peer` | Node identity, connections between machines, the wire protocol and the swarm. |
@@ -253,11 +312,10 @@ mux is not yet production software.
 
 ## Roadmap
 
-mux is growing from a swarm distributor into a general tool and library for
-moving and syncing data between any two places: folders, web URLs, other
-machines and cloud storage. [docs/scope.md](docs/scope.md) describes where it
-is going, and the [milestones](../../milestones) track the work. None of that
-is in a release yet.
+[docs/scope.md](docs/scope.md) describes where the project is going, and
+the [milestones](../../milestones) track the work. Next: sending only the
+changed parts of a file, keeping a folder in sync as it changes, and cloud
+storage as a place.
 
 ## Development
 
