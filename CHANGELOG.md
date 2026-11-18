@@ -75,6 +75,9 @@ copies and syncs between folders, web addresses and other machines.
   in bytes, not in whole chunks (#85).
 - **A transfer that has nobody left to fetch from says so at once,** and
   does not wait for a timeout (#64).
+- **A transfer does not wait for its slowest supplier.** With a slow web
+  server beside a quick machine, the quick one does the work: 9.3 s became
+  1.2 s in the case measured (#111).
 
 ### Fixed
 
