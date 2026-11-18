@@ -28,6 +28,7 @@ pub mod retry;
 pub mod rolling;
 pub mod run;
 pub mod schedule;
+pub mod search;
 pub mod ticket;
 
 pub use error::{Error, Result};

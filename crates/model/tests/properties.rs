@@ -4,8 +4,10 @@ use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Timestamp,
 };
 use model::hex;
+use model::rolling::Rolling;
 use model::run;
 use model::schedule::{ChunkState, Outcome, Owner, Schedule};
+use model::search::{Searched, Wanted};
 use proptest::collection::{btree_set, vec};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -406,6 +408,73 @@ proptest! {
         if run::relieve(each, waited, mine) {
             let remaining = if waited < each { each - waited } else { waited };
             prop_assert!(mine > 0 && mine < remaining);
+        }
+    }
+}
+
+/// An older version of a file and a newer one: the older with a run of
+/// bytes put in, taken out or written over somewhere. Bytes of few values,
+/// so that the same run turns up in several places.
+fn two_versions() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+    let old = vec(0u8..4, 0..300);
+    (
+        old,
+        any::<prop::sample::Index>(),
+        vec(0u8..4, 0..40),
+        0usize..40,
+    )
+        .prop_map(|(old, at, put_in, taken_out)| {
+            let at = at.index(old.len() + 1);
+            let end = (at + taken_out).min(old.len());
+            let mut new = old[..at].to_vec();
+            new.extend_from_slice(&put_in);
+            new.extend_from_slice(&old[end..]);
+            (old, new)
+        })
+}
+
+proptest! {
+    /// Whatever was done to a file, a search of the older version finds
+    /// every whole chunk of the newer one that the older holds anywhere,
+    /// says rightly where, and finds nothing else. And it finds the same
+    /// whatever the size of the blocks the file is read in.
+    #[test]
+    fn a_search_finds_every_chunk_the_old_file_holds(
+        (old, new) in two_versions(),
+        len in 1u32..24,
+        block in 1usize..80,
+    ) {
+        let size = usize::try_from(len).unwrap();
+        let chunks: Vec<&[u8]> = new.chunks_exact(size).collect();
+        let mut wanted = Wanted::new(len, u64::MAX);
+        for (index, chunk) in (0u64..).zip(&chunks) {
+            wanted.add(index, Rolling::of(chunk).value(), Hash::of(chunk));
+        }
+        // Block by block, each beginning with what the one before kept.
+        let block = block.max(size);
+        let mut finds: Vec<(usize, usize)> = Vec::new();
+        let (mut from, mut end) = (0, block.min(old.len()));
+        loop {
+            let ended = wanted.search(&old[from..end], &mut |index, at| {
+                finds.push((usize::try_from(index).unwrap(), from + at));
+            });
+            match ended {
+                Searched::On(kept) if end < old.len() => {
+                    from += kept;
+                    end = (end + block).min(old.len());
+                }
+                _ => break,
+            }
+        }
+
+        for &(index, at) in &finds {
+            prop_assert_eq!(&old[at..at + size], chunks[index]);
+        }
+        let found: BTreeSet<usize> = finds.iter().map(|&(index, _)| index).collect();
+        prop_assert_eq!(found.len(), finds.len(), "a chunk was found twice");
+        for (index, chunk) in chunks.iter().enumerate() {
+            let held = old.windows(size).any(|window| window == *chunk);
+            prop_assert_eq!(found.contains(&index), held, "chunk {}", index);
         }
     }
 }
