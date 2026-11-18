@@ -8,7 +8,8 @@
 
 use crate::conformance::{Memory, Sample};
 use crate::{Error, Options, Store, Summary, transfer};
-use model::artifact::{Bitfield, FileDigest, Hash};
+use model::artifact::{Bitfield, FileDigest, Hash, MIN_CHUNK_SIZE};
+use model::pace;
 use model::place::{
     Capabilities, Description, Event, Expected, Failure, Foreknown, Observer, Pending, Reader,
     Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
@@ -43,6 +44,13 @@ struct Script {
     useless_after: Option<usize>,
     /// It is one stream: it gives its chunks only in order, one at a time.
     in_order: bool,
+    /// Every request to it travels on one connection.
+    multiplexed: bool,
+    /// Its line carries one chunk at a time, in the order they were asked
+    /// for, and takes this long over each.
+    line: Duration,
+    /// After this many chunks, its line takes ten times as long.
+    tires_after: Option<usize>,
     /// Suppliers it tells of.
     others: Vec<Made>,
 }
@@ -88,6 +96,30 @@ struct Inner {
     handed_over: Hook,
     /// Every chunk it has been asked for, in the order it was asked.
     asked: Mutex<Vec<u64>>,
+    /// Held by the request whose chunk is on the line.
+    line: tokio::sync::Mutex<()>,
+    /// How many requests are in flight.
+    in_flight: AtomicUsize,
+    /// How many were in flight, each time it was asked for a chunk.
+    in_flight_when_asked: Mutex<Vec<usize>>,
+}
+
+/// A request in flight, counted for as long as this lives.
+struct Asking<'a>(&'a Inner);
+
+impl<'a> Asking<'a> {
+    fn begin(inner: &'a Inner, index: u64) -> Self {
+        let in_flight = inner.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        inner.asked.lock().unwrap().push(index);
+        inner.in_flight_when_asked.lock().unwrap().push(in_flight);
+        Self(inner)
+    }
+}
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Called each time a supplier hands over a chunk that is right.
@@ -113,7 +145,16 @@ impl Made {
             opened: AtomicUsize::new(0),
             handed_over,
             asked: Mutex::default(),
+            line: tokio::sync::Mutex::default(),
+            in_flight: AtomicUsize::new(0),
+            in_flight_when_asked: Mutex::default(),
         }))
+    }
+
+    /// How many requests were in flight, each time it was asked for a
+    /// chunk, that request among them.
+    fn in_flight_when_asked(&self) -> Vec<usize> {
+        self.0.in_flight_when_asked.lock().unwrap().clone()
     }
 }
 
@@ -166,8 +207,15 @@ impl Supply for Reached {
     fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>> {
         Box::pin(async move {
             let script = &self.made.script;
-            self.made.asked.lock().unwrap().push(index);
+            let _asking = Asking::begin(&self.made, index);
             tokio::time::sleep(script.delay).await;
+            if !script.line.is_zero() {
+                let _line = self.made.line.lock().await;
+                let tired = script
+                    .tires_after
+                    .is_some_and(|limit| self.sent.load(Ordering::Relaxed) >= limit);
+                tokio::time::sleep(script.line * if tired { 10 } else { 1 }).await;
+            }
             let sent = self.sent.fetch_add(1, Ordering::Relaxed);
             if script.breaks_after.is_some_and(|limit| sent >= limit) {
                 return Err(Failure::Unreachable("the line went dead".into()));
@@ -194,6 +242,7 @@ impl Supply for Reached {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: !self.made.script.in_order,
+            multiplexed: self.made.script.multiplexed,
         }
     }
 }
@@ -1187,6 +1236,7 @@ impl Source for Watched {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: self.random_access,
+            multiplexed: false,
         }
     }
 
@@ -1272,6 +1322,125 @@ fn a_supplier_that_is_one_stream_is_asked_in_order() {
     );
 }
 
+/// One long file, for what only shows over many chunks.
+fn long(chunks: usize) -> Arc<Sample> {
+    let size = chunks * MIN_CHUNK_SIZE as usize;
+    Arc::new(Sample::of(&[("", None), ("long.bin", Some(size))]).unwrap())
+}
+
+/// Whether each chunk asked for is the one after the chunk asked for before
+/// it, going round from the last to the first.
+fn is_in_a_row(asked: &[u64], chunks: u64) -> bool {
+    asked
+        .windows(2)
+        .all(|pair| pair[1] == (pair[0] + 1) % chunks)
+}
+
+/// A supplier a round trip away with a fast line is asked for as many chunks
+/// at once as there may be. With a set few, its line would stand idle for
+/// most of every round trip: four at a time would take 14 seconds here.
+#[test]
+fn a_far_supplier_with_a_fast_line_is_asked_for_many_chunks_at_once() {
+    let sample = long(400);
+    let far = Script {
+        multiplexed: true,
+        delay: Duration::from_millis(100),
+        line: Duration::from_millis(10),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, far, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let in_flight = supplier.in_flight_when_asked();
+    assert_eq!(in_flight.first(), Some(&1), "it starts with one request");
+    let most = usize::try_from(pace::most(u64::from(MIN_CHUNK_SIZE))).unwrap();
+    assert_eq!(in_flight.iter().max(), Some(&most));
+    assert!(ran.took < Duration::from_secs(7), "it took {:?}", ran.took);
+    // All of them take the chunks in a row between them.
+    let asked = supplier.0.asked.lock().unwrap().clone();
+    assert!(is_in_a_row(&asked, sample.artifact.chunk_count()));
+}
+
+/// The number of requests stops growing once a chunk no longer comes
+/// quickly. Here each takes half a second on the line, so with four in
+/// flight a chunk is two seconds in coming. The number doubles with each
+/// round of answers, so it may pass that by as much again and no more.
+#[test]
+fn requests_stop_being_added_when_chunks_stop_being_quick() {
+    let sample = long(120);
+    let steady = Script {
+        multiplexed: true,
+        line: Duration::from_millis(500),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, steady, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let most = supplier.in_flight_when_asked().into_iter().max().unwrap();
+    assert!((4..=8).contains(&most), "{most} requests at once");
+}
+
+/// A supplier with a slow line is asked for one chunk at a time.
+#[test]
+fn a_supplier_with_a_slow_line_is_asked_for_one_chunk_at_a_time() {
+    let sample = sample();
+    let slow = Script {
+        multiplexed: true,
+        line: Duration::from_secs(3),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, slow, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(supplier.in_flight_when_asked(), [1; 7]);
+}
+
+/// When a line slows down, the requests in flight come down to as many as
+/// it still carries in good time. Here there come to be dozens at a tenth
+/// of a second a chunk. At a second a chunk, every one of those is slow,
+/// so they are taken away one by one, and then added again only for as
+/// long as a chunk comes within two seconds.
+#[test]
+fn requests_are_taken_away_when_chunks_come_slowly() {
+    let sample = long(600);
+    let tiring = Script {
+        multiplexed: true,
+        line: Duration::from_millis(100),
+        tires_after: Some(200),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, tiring, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let in_flight = supplier.in_flight_when_asked();
+    assert!(in_flight[..200].iter().max() >= Some(&20), "{in_flight:?}");
+    let later = in_flight[300..500].iter().max().unwrap();
+    assert!((2..=4).contains(later), "{in_flight:?}");
+    assert_eq!(supplier.0.opened.load(Ordering::Relaxed), 1);
+}
+
+/// A supplier whose requests are each a connection is asked for the set
+/// number at once, however quickly its chunks come.
+#[test]
+fn a_supplier_that_is_not_multiplexed_keeps_to_the_set_number() {
+    let sample = long(400);
+    let quick = Script {
+        delay: Duration::from_millis(100),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, quick, &sample);
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 3;
+    let ran = setup.run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(supplier.in_flight_when_asked().into_iter().max(), Some(3));
+}
+
 fn script(chunks: usize) -> impl Strategy<Value = Script> {
     let flags = move |likely: f64| vec(proptest::bool::weighted(likely), chunks);
     (
@@ -1281,19 +1450,27 @@ fn script(chunks: usize) -> impl Strategy<Value = Script> {
         proptest::option::weighted(0.3, 0usize..4),
         0u64..3000,
         0usize..3,
+        proptest::bool::ANY,
+        0u64..12_000,
     )
         .prop_map(
-            |(holds, lies, withholds, breaks_after, delay, unreachable_for)| Script {
-                holds,
-                lies,
-                withholds,
-                breaks_after,
-                delay: Duration::from_millis(delay),
-                unreachable_for,
-                changes_after: None,
-                useless_after: None,
-                in_order: false,
-                others: Vec::new(),
+            |(holds, lies, withholds, breaks_after, delay, unreachable_for, multiplexed, line)| {
+                Script {
+                    holds,
+                    lies,
+                    withholds,
+                    breaks_after,
+                    delay: Duration::from_millis(delay),
+                    unreachable_for,
+                    changes_after: None,
+                    useless_after: None,
+                    in_order: false,
+                    multiplexed,
+                    // Slow enough, at times, for there to be fewer requests.
+                    line: Duration::from_millis(if multiplexed { line } else { 0 }),
+                    tires_after: None,
+                    others: Vec::new(),
+                }
             },
         )
 }

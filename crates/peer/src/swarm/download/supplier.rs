@@ -146,6 +146,8 @@ impl Supply for Link {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
+            // Each request is a stream of the one connection to the peer.
+            multiplexed: true,
         }
     }
 }

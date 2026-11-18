@@ -6,13 +6,16 @@ use iroh::endpoint::{
 };
 use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr};
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
+use model::pace;
 use model::ticket::NodeId;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_STREAMS_PER_CONNECTION: u32 = 16;
+/// Streams a peer may have open at once: every request the engine keeps in
+/// flight to one supplier, and a few for what else is asked meanwhile.
+const MAX_STREAMS_PER_CONNECTION: u32 = pace::MOST_REQUESTS + 8;
 const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
 const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 
