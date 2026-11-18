@@ -1233,7 +1233,7 @@ def assembly.Assembly.Insts.CoreCmpEq : core.cmp.Eq assembly.Assembly := {
 }
 
 /-- [model::assembly::{model::assembly::Assembly}::new]: loop body 1:
-    Source: 'crates/model/src/assembly.rs', lines 38:12-43:13
+    Source: 'crates/model/src/assembly.rs', lines 39:12-44:13
     Visibility: public -/
 @[rust_loop_body]
 def assembly.Assembly.new_loop0_loop0.body
@@ -1252,7 +1252,7 @@ def assembly.Assembly.new_loop0_loop0.body
   else ok (done lacking)
 
 /-- [model::assembly::{model::assembly::Assembly}::new]: loop 1:
-    Source: 'crates/model/src/assembly.rs', lines 38:12-43:13
+    Source: 'crates/model/src/assembly.rs', lines 39:12-44:13
     Visibility: public -/
 @[rust_loop]
 def assembly.Assembly.new_loop0_loop0
@@ -1266,7 +1266,7 @@ def assembly.Assembly.new_loop0_loop0
     (lacking, index)
 
 /-- [model::assembly::{model::assembly::Assembly}::new]: loop body 0:
-    Source: 'crates/model/src/assembly.rs', lines 34:8-46:9
+    Source: 'crates/model/src/assembly.rs', lines 35:8-47:9
     Visibility: public -/
 @[rust_loop_body]
 def assembly.Assembly.new_loop0.body
@@ -1286,7 +1286,7 @@ def assembly.Assembly.new_loop0.body
   else ok (done missing)
 
 /-- [model::assembly::{model::assembly::Assembly}::new]: loop 0:
-    Source: 'crates/model/src/assembly.rs', lines 34:8-46:9
+    Source: 'crates/model/src/assembly.rs', lines 35:8-47:9
     Visibility: public -/
 @[rust_loop]
 def assembly.Assembly.new_loop0
@@ -1300,45 +1300,45 @@ def assembly.Assembly.new_loop0
     (missing, file)
 
 /-- [model::assembly::{model::assembly::Assembly}::new]:
-    Source: 'crates/model/src/assembly.rs', lines 26:4-52:5
+    Source: 'crates/model/src/assembly.rs', lines 27:4-53:5
     Visibility: public -/
 def assembly.Assembly.new
   (layout : artifact.layout.Layout) (held : artifact.bitfield.Bitfield) :
   Result assembly.Assembly
   := do
-  let i ← artifact.bitfield.Bitfield.impl.len held
-  let i1 ← artifact.layout.Layout.impl.chunk_count layout
-  let held1 ← if i = i1
+  let i ← artifact.layout.Layout.impl.chunk_count layout
+  let b ← artifact.bitfield.Bitfield.is_well_formed held i
+  let held1 ← if b
                 then ok held
-                else artifact.bitfield.Bitfield.new i1
-  let i2 ← artifact.layout.Layout.file_count layout
-  let missing := alloc.vec.Vec.with_capacity Std.U64 i2
+                else artifact.bitfield.Bitfield.new i
+  let i1 ← artifact.layout.Layout.file_count layout
+  let missing := alloc.vec.Vec.with_capacity Std.U64 i1
   let missing1 ← assembly.Assembly.new_loop0 layout held1 missing 0#usize
   ok { layout, held := held1, missing := missing1 }
 
 /-- [model::assembly::{model::assembly::Assembly}::held]:
-    Source: 'crates/model/src/assembly.rs', lines 55:4-57:5
+    Source: 'crates/model/src/assembly.rs', lines 56:4-58:5
     Visibility: public -/
 def assembly.Assembly.impl.held
   (self : assembly.Assembly) : Result artifact.bitfield.Bitfield := do
   ok self.held
 
 /-- [model::assembly::{model::assembly::Assembly}::has]:
-    Source: 'crates/model/src/assembly.rs', lines 60:4-62:5
+    Source: 'crates/model/src/assembly.rs', lines 61:4-63:5
     Visibility: public -/
 def assembly.Assembly.has
   (self : assembly.Assembly) (index : Std.U64) : Result Bool := do
   artifact.bitfield.Bitfield.get self.held index
 
 /-- [model::assembly::{model::assembly::Assembly}::is_complete]:
-    Source: 'crates/model/src/assembly.rs', lines 65:4-67:5
+    Source: 'crates/model/src/assembly.rs', lines 66:4-68:5
     Visibility: public -/
 def assembly.Assembly.is_complete
   (self : assembly.Assembly) : Result Bool := do
   artifact.bitfield.Bitfield.is_full self.held
 
 /-- [model::assembly::{model::assembly::Assembly}::is_whole]:
-    Source: 'crates/model/src/assembly.rs', lines 71:4-73:5
+    Source: 'crates/model/src/assembly.rs', lines 72:4-74:5
     Visibility: public -/
 def assembly.Assembly.is_whole
   (self : assembly.Assembly) (file : Std.Usize) : Result Bool := do
@@ -1352,7 +1352,7 @@ def assembly.Assembly.is_whole
   else ok false
 
 /-- [model::assembly::{model::assembly::Assembly}::add]:
-    Source: 'crates/model/src/assembly.rs', lines 81:4-94:5
+    Source: 'crates/model/src/assembly.rs', lines 82:4-95:5
     Visibility: public -/
 def assembly.Assembly.add
   (self : assembly.Assembly) (index : Std.U64) :
