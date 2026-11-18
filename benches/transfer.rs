@@ -67,6 +67,7 @@ fn main() {
     let mut ticket = Ticket {
         artifact: artifact.id(),
         peers: Vec::new(),
+        origins: Vec::new(),
     };
     let mut seeding = Vec::new();
     for _ in 0..seeders {

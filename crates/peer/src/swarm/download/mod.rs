@@ -17,7 +17,7 @@ use crate::net::{NodeId, PeerInfo};
 use engine::{Store, sync};
 use fs::Folder;
 use model::artifact::{Artifact, Bitfield, Hash};
-use model::place::{Event, Observer};
+use model::place::{Event, Observer, Supplier, SupplierId};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
@@ -146,10 +146,13 @@ pub struct Report {
     pub root: PathBuf,
     /// Bytes that were already on disk and valid.
     pub resumed_bytes: u64,
-    /// Bytes fetched from peers.
+    /// Bytes fetched.
     pub fetched_bytes: u64,
     /// Bytes fetched from each peer, largest first.
     pub sources: Vec<(NodeId, u64)>,
+    /// Bytes fetched from each supplier that is not a peer and was added
+    /// with [`Found::also`], largest first.
+    pub others: Vec<(SupplierId, u64)>,
     /// Every peer this download learned about, for [`announce`].
     pub peers: Vec<PeerInfo>,
     /// Links of the artifact that were left out because this system cannot
@@ -167,6 +170,18 @@ pub struct Found {
     pub artifact: Arc<Artifact>,
     /// The peers the ticket names, other than this node.
     peers: Vec<PeerInfo>,
+    /// What else its chunks are to be fetched from.
+    others: Vec<Arc<dyn Supplier>>,
+}
+
+impl Found {
+    /// Adds a supplier that is not a peer to fetch the chunks from as
+    /// well: a web server that holds the same file, say. It is trusted no
+    /// more than a peer is: what it sends is compared with the digests of
+    /// the artifact, and it is dropped if it sends anything else.
+    pub fn also(&mut self, supplier: Arc<dyn Supplier>) {
+        self.others.push(supplier);
+    }
 }
 
 /// One peer of a ticket, and how much of the artifact it holds.
@@ -214,7 +229,11 @@ pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
         ));
     }
     let artifact = Arc::new(fetch_manifest(node, ticket.artifact, &peers).await?);
-    Ok(Found { artifact, peers })
+    Ok(Found {
+        artifact,
+        peers,
+        others: Vec::new(),
+    })
 }
 
 /// Asks each peer of the ticket how much of the artifact it holds. A peer
@@ -282,6 +301,7 @@ pub async fn fetch(
     let Found {
         artifact,
         peers: bootstrap,
+        others,
     } = found;
     progress
         .total
@@ -317,9 +337,11 @@ pub async fn fetch(
         known: Arc::default(),
         relays: named.chain(node.endpoint().relay()).collect(),
     };
+    let not_peers: Vec<SupplierId> = others.iter().map(|other| other.id()).collect();
     let suppliers = bootstrap
         .into_iter()
         .map(|peer| swarm.supplier(peer))
+        .chain(others)
         .collect();
     let limits = engine::Options {
         max_suppliers: options.max_peers,
@@ -349,17 +371,21 @@ pub async fn fetch(
         .map(|id| NodeId::from_bytes(*id))
         .filter_map(|node| known.get(&node).cloned())
         .collect();
+    let (others, sources): (Vec<_>, Vec<_>) = summary
+        .sources
+        .into_iter()
+        .partition(|(id, _)| not_peers.contains(id));
     Ok(Report {
         skipped_links: folder.skipped_links(),
         root: folder.root().to_owned(),
         share,
         resumed_bytes: resumed,
         fetched_bytes: progress.fetched_bytes(),
-        sources: summary
-            .sources
+        sources: sources
             .into_iter()
             .map(|(id, bytes)| (NodeId::from_bytes(id), bytes))
             .collect(),
+        others,
         peers,
         elapsed: started.elapsed(),
     })

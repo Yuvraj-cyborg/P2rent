@@ -6,7 +6,7 @@ use common::{CHUNK, get, index, listing, node, options, pattern, peer_info, seed
 use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
-use peer::swarm::{Holder, Progress, TicketPeer, announce, download, find, holders};
+use peer::swarm::{Holder, Progress, TicketPeer, announce, download, fetch, find, holders};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -307,4 +307,52 @@ async fn the_peers_of_a_ticket_say_how_much_of_it_each_holds() {
             holds(absent, None),
         ]
     );
+}
+
+/// What a ticket names can be fetched from a supplier that is no peer as
+/// well: a web server that holds the same file, say. It is checked as a
+/// peer is, it fills in for a peer that lies, and the report tells what
+/// came from it.
+#[tokio::test]
+async fn a_supplier_that_is_no_peer_fills_in_for_a_peer_that_lies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("model.bin");
+    let data = pattern(CHUNK * 20, 8);
+    fs::write(&source, &data).unwrap();
+    let (artifact, root) = index(&source);
+
+    let forged = tmp.path().join("forged");
+    fs::create_dir_all(&forged).unwrap();
+    fs::write(forged.join("model.bin"), pattern(data.len(), 96)).unwrap();
+    let liar = node().await;
+    liar.seed(artifact.clone(), forged.join("model.bin"));
+
+    let downloader = node().await;
+    let mut found = find(&downloader, &ticket_for(&liar, &artifact))
+        .await
+        .unwrap();
+    let elsewhere = [7; 32];
+    let holding = Arc::new(::fs::Folder::whole(artifact.tree().clone(), root));
+    found.also(engine::supplier(
+        elsewhere,
+        artifact.tree().clone(),
+        holding,
+    ));
+    let out = tmp.path().join("out");
+    let progress = Arc::new(Progress::default());
+    let report = fetch(
+        &downloader,
+        found,
+        &out,
+        options(),
+        progress,
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
+    assert_eq!(report.others, [(elsewhere, data.len() as u64)]);
+    assert!(report.sources.iter().all(|(_, bytes)| *bytes == 0));
+    assert_eq!(report.fetched_bytes, data.len() as u64);
 }

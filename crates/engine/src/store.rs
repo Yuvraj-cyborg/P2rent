@@ -160,6 +160,14 @@ impl Store {
         }
     }
 
+    /// Whether the digest of every chunk was known before anything was
+    /// fetched. Each chunk in the place has then been compared with its
+    /// own, whichever supplier it came from, so no two of them can be of
+    /// different versions of a file.
+    pub fn knows_every_digest(&self) -> bool {
+        matches!(self.digests, Digests::Known(_))
+    }
+
     /// How far the bytes in this store have been checked, once it is
     /// complete.
     pub fn verification(&self) -> Verification {
