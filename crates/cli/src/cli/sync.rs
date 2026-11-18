@@ -37,8 +37,8 @@ pub(super) struct Args {
     #[command(flatten)]
     care: Care,
 
-    /// Parts of a file to fetch at once from the source
-    #[arg(long, default_value_t = 4, value_name = "N")]
+    /// The most parts of a file to fetch at once from the source
+    #[arg(long, default_value_t = 8, value_name = "N")]
     streams: usize,
 
     /// Give up after this long without receiving any data

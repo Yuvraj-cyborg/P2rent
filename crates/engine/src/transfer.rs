@@ -50,10 +50,11 @@ const MAX_OTHERS_PER_STATUS: usize = 64;
 pub struct Options {
     /// Suppliers to fetch from at the same time.
     pub max_suppliers: usize,
-    /// Requests made at the same time to each supplier whose requests are
-    /// each a connection of their own. Each is for a run of chunks. A
-    /// supplier that takes every request on one connection is asked for as
-    /// many chunks at once as its route has room for.
+    /// The most requests made at the same time to each supplier whose
+    /// requests are each a connection of their own. Each is for a run of
+    /// chunks. A supplier that refuses some of them is used with those it
+    /// takes. A supplier that takes every request on one connection is
+    /// asked for as many chunks at once as its route has room for.
     pub requests_per_supplier: usize,
     /// Give up when next to nothing has arrived for this long.
     pub stall_timeout: Duration,
@@ -63,7 +64,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             max_suppliers: 8,
-            requests_per_supplier: 4,
+            requests_per_supplier: 8,
             stall_timeout: Duration::from_secs(60),
         }
     }
@@ -539,6 +540,8 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
         let most = pace::most(u64::from(run.store.tree().chunk_size()));
         Arc::new(Paced::new(most))
     });
+    // How many of this supplier's pipelines make requests of their own.
+    let fellows = Arc::new(AtomicU64::new(0));
     let pipeline = |paced: Option<Arc<Paced>>| Pipeline {
         run: run.clone(),
         supply: supply.clone(),
@@ -546,6 +549,9 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
         view: view.clone(),
         owner,
         cursor: cursor.clone(),
+        // Counted here and not when the pipeline starts work, so that the
+        // first to reserve a run shares the work with all of them.
+        stream: paced.is_none().then(|| Stream::begin(&run, &fellows)),
         paced,
         in_order: !capabilities.random_access,
     };
@@ -556,9 +562,9 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
         (None, true) => run.options.requests_per_supplier.max(1) as u64,
         (None, false) => 1,
     };
-    let _streams = Streams::new(&run, requests);
-    for _ in 0..requests {
-        workers.spawn(work(pipeline(None)));
+    let streams: Vec<Pipeline> = (0..requests).map(|_| pipeline(None)).collect();
+    for stream in streams {
+        workers.spawn(work(stream));
     }
 
     let mut ticker = tokio::time::interval(STATUS_INTERVAL);
@@ -596,22 +602,56 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
 /// it, they take the chunks in a row between them.
 type Cursor = Arc<Mutex<u64>>;
 
-/// Counts pipelines as taking runs for as long as it lives.
-struct Streams<'a> {
-    run: &'a Run,
-    count: u64,
+/// A pipeline that makes requests of its own, counted for as long as this
+/// lives: among all such pipelines of the transfer, which is what work is
+/// shared out between, and among those of its supplier.
+struct Stream {
+    run: Arc<Run>,
+    fellows: Arc<AtomicU64>,
+    /// Whether it has stepped aside, and is counted among its fellows no
+    /// more.
+    aside: bool,
 }
 
-impl<'a> Streams<'a> {
-    fn new(run: &'a Run, count: u64) -> Self {
-        run.streams.fetch_add(count, Ordering::Relaxed);
-        Self { run, count }
+impl Stream {
+    fn begin(run: &Arc<Run>, fellows: &Arc<AtomicU64>) -> Self {
+        run.streams.fetch_add(1, Ordering::Relaxed);
+        fellows.fetch_add(1, Ordering::Relaxed);
+        Self {
+            run: run.clone(),
+            fellows: fellows.clone(),
+            aside: false,
+        }
+    }
+
+    /// Steps aside if another pipeline of the supplier carries on, and
+    /// says whether it did. Of several that ask at the same moment, one is
+    /// always left: the last of a supplier does not step aside, and what
+    /// stopped it is then the supplier's failure.
+    fn steps_aside(&mut self) -> bool {
+        let mut fellows = self.fellows.load(Ordering::Relaxed);
+        while fellows > 1 && !self.aside {
+            let fewer = self.fellows.compare_exchange_weak(
+                fellows,
+                fellows - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            match fewer {
+                Ok(_) => self.aside = true,
+                Err(now) => fellows = now,
+            }
+        }
+        self.aside
     }
 }
 
-impl Drop for Streams<'_> {
+impl Drop for Stream {
     fn drop(&mut self) {
-        self.run.streams.fetch_sub(self.count, Ordering::Relaxed);
+        self.run.streams.fetch_sub(1, Ordering::Relaxed);
+        if !self.aside {
+            self.fellows.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -717,6 +757,8 @@ struct Pipeline {
     /// Whether the supplier gives its files only from their start. Its one
     /// pipeline then takes every chunk it can in a row.
     in_order: bool,
+    /// Set if the pipeline makes requests of its own, each for a run.
+    stream: Option<Stream>,
 }
 
 /// One request pipeline: reserve a run of chunks, fetch them one after
@@ -731,6 +773,7 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         cursor,
         paced,
         in_order,
+        mut stream,
     } = pipeline;
     // How long a chunk took to come over the last run, in microseconds.
     let mut micros_each = 0;
@@ -795,6 +838,21 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
                     sync::write(&view).refuse(index);
                     continue;
                 }
+                // A request that the supplier would not take, or that it
+                // has let starve, while its other requests carry on: it
+                // takes fewer requests at once than it was given, and is
+                // used with those it takes. What this one had reserved
+                // goes back to the others.
+                Some(Err(Failure::Unreachable(why)))
+                    if fetched == 0 && stream.as_mut().is_some_and(Stream::steps_aside) =>
+                {
+                    debug!(supplier = %short(&from), "one request fewer at a time: {why}");
+                    return Ok(());
+                }
+                None if stream.as_mut().is_some_and(Stream::steps_aside) => {
+                    debug!(supplier = %short(&from), "one request fewer at a time: chunk {index} did not arrive in time");
+                    return Ok(());
+                }
                 Some(Err(failure)) => return Err(Ended::by(failure)),
                 None => {
                     return Err(Ended::Failed(format!(
@@ -814,24 +872,31 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
             micros_each = (micros(began.elapsed()) / fetched).max(1);
             reserved.learn(micros_each, run.now());
 
-            // From here the chunk is seen through, whatever becomes of this
-            // supplier: it is stored, counted and marked done as one step.
-            match tokio::spawn(keep(run.clone(), claim, from, data)).await {
-                Ok(Ok(Put::Refused)) => {
-                    return Err(Ended::Dropped(format!("chunk {index} failed verification")));
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(failure)) => return Err(Ended::Fatal(failure)),
-                Err(e) => {
-                    return Err(Ended::Failed(format!(
-                        "storing chunk {index} was cut short: {e}"
-                    )));
-                }
-            }
+            see_through(&run, claim, from, data).await?;
             if paced.as_ref().is_some_and(|paced| paced.is_over()) {
                 return Ok(());
             }
         }
+    }
+}
+
+/// Has a chunk that arrived stored, and waits until it is. From here the
+/// chunk is seen through, whatever becomes of its supplier: it is stored,
+/// counted and marked done as one step.
+async fn see_through(
+    run: &Arc<Run>,
+    claim: Claim,
+    from: SupplierId,
+    data: Vec<u8>,
+) -> Result<(), Ended> {
+    let index = claim.index;
+    match tokio::spawn(keep(run.clone(), claim, from, data)).await {
+        Ok(Ok(Put::Refused)) => Err(Ended::Dropped(format!("chunk {index} failed verification"))),
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(failure)) => Err(Ended::Fatal(failure)),
+        Err(e) => Err(Ended::Failed(format!(
+            "storing chunk {index} was cut short: {e}"
+        ))),
     }
 }
 

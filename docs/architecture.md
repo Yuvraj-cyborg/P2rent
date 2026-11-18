@@ -460,8 +460,8 @@ what a request costs it.
   within two seconds adds one, and a chunk that takes more than eight
   takes one away.
 - Where each request is a connection of its own, as to a web server, there
-  are `requests_per_supplier` pipelines, and a run is what one request
-  asks for (`model::run`). Between two requests a connection carries
+  are `requests_per_supplier` pipelines, eight unless told otherwise, and
+  a run is what one request asks for (`model::run`). Between two requests a connection carries
   nothing for a round trip, so a pipeline should make few. And a pipeline
   with nothing left to take stands idle while the others finish, so they
   should end together. Both are had by sharing out the work by speed: a
@@ -481,6 +481,14 @@ what a request costs it.
   seconds is reckoned at how long it has been, so one that has stopped is
   taken over whole in the end.
 
+- A supplier may take fewer requests at once than it is given: a web
+  server that limits the connections from one address refuses the rest.
+  A request that is refused, or that the supplier lets starve, while
+  others of the same supplier carry on, steps aside: the supplier is used
+  with the requests it takes. Only when its last request fails has the
+  supplier failed
+  ([#88](https://github.com/yuvichh/mux/issues/88)).
+
 Before [#84](https://github.com/yuvichh/mux/issues/84) a request was for
 the rest of the file, and a pipeline that ran into what another had
 fetched dropped its connection and began elsewhere. Far from the server
@@ -498,7 +506,7 @@ A supplier is asked for its next chunk only when the store has taken the
 last one. So the memory held for chunk data is bounded by what is asked for
 at once, however slow the destination is:
 `max_suppliers × requests_per_supplier × chunk_size` where the number is
-set (32 MiB with the defaults), and 64 MiB for each supplier where it
+set (64 MiB with the defaults), and 64 MiB for each supplier where it
 follows the route.
 
 Everything that happens is reported as a typed event: a supplier opened or

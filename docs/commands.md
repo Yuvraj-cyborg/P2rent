@@ -31,7 +31,7 @@ has. Otherwise it is the name the copy is given.
 | --- | --- |
 | `--hash <DIGEST>` | For a source on the web. The digest the source must have: `blake3:` or `sha256:` and 64 hex characters. A copy that does not have it is not kept. |
 | `--mirror <URL>` | For a source on the web. Another address that holds the same file, read together with the source. Repeatable. It needs a digest of the file, from `--hash` or from a server that sends one: nothing else tells that two servers hold the same bytes. |
-| `--streams <N>` | Requests to make at once to each source, each for a part of a file. The default is 4. With 1, a file is one request. |
+| `--streams <N>` | The most requests to make at once to each source, each for a part of a file. The default is 8. A server that refuses some of them is used with those it takes. With 1, a file is one request. |
 | `--stall-timeout <SECONDS>` | Give up after this long with next to nothing received: under about a kilobyte a second on every stream. A slow link is waited for. The default is 60. |
 | `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
 | `--json` | Write for a program: see [below](#for-a-program). |
