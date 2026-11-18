@@ -148,6 +148,22 @@ mutants:
 transfer size_mb="1024" seeders="1" runs="3" files="1":
     MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_SEEDERS={{seeders}} MUX_BENCH_RUNS={{runs}} MUX_BENCH_FILES={{files}} cargo bench --locked --package benches --bench transfer
 
+# Linux only, and needs no root: the link is the loopback of a network that
+# exists for this command alone. `tbf` holds it to the rate and cuts bundles
+# of packets into packets, and `netem` adds the delay, the loss and a queue of
+# a tenth of a second.
+
+# Time a transfer over a link like a real one, e.g. `just far 50 1000` for 100 ms there and back at 1 Gbit/s
+far delay_ms="50" rate_mbit="1000" loss_percent="0" size_mb="1024" runs="1":
+    cargo bench --locked --package benches --bench transfer --no-run
+    unshare --map-root-user --net sh -c '\
+        ip link set lo up && ip link set lo mtu 1500 && \
+        tc qdisc add dev lo root handle 1: tbf rate {{rate_mbit}}mbit burst 16kb latency 1s && \
+        tc qdisc add dev lo parent 1:1 handle 10: netem delay {{delay_ms}}ms loss {{loss_percent}}% \
+            limit $(( {{rate_mbit}} * 125000 / 1500 * ({{delay_ms}} + 100) / 1000 + 4 )) && \
+        MUX_BENCH_SIZE_MB={{size_mb}} MUX_BENCH_RUNS={{runs}} \
+            cargo bench --locked --offline --package benches --bench transfer'
+
 # Compare ways of sending only the changed parts of a file. Holds three times `size_mb` in memory.
 delta size_mb="256":
     MUX_BENCH_SIZE_MB={{size_mb}} cargo bench --locked --package benches --bench delta

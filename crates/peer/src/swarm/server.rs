@@ -7,11 +7,15 @@ use crate::net::proto::{self, Have, Request, Response, Status};
 use iroh::endpoint::{RecvStream, SendStream};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Chunks being read from disk for one connection at a time. A peer may ask
+/// for many more at once, and the rest wait their turn.
+const CHUNKS_AT_ONCE: usize = 4;
 
 /// Accepts connections until the endpoint closes.
 pub(crate) async fn run(node: Arc<Node>) {
@@ -31,11 +35,18 @@ pub(crate) async fn run(node: Arc<Node>) {
 
 async fn serve_connection(node: Arc<Node>, connection: Connection) {
     debug!(peer = %connection.peer().short(), at = ?connection.peer_info(), "peer connected");
+    let turns = Arc::new(Semaphore::new(CHUNKS_AT_ONCE));
+    // Lower for each request, so that what was asked for first is sent
+    // first.
+    let mut order: i32 = 0;
     while let Ok((send, recv)) = connection.accept_request().await {
+        order = order.saturating_sub(1);
         let node = node.clone();
         let connection = connection.clone();
+        let turns = turns.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve_request(&node, &connection, send, recv).await {
+            let served = serve_request(&node, &connection, &turns, order, send, recv).await;
+            if let Err(e) = served {
                 debug!(peer = %connection.peer().short(), "request failed: {e}");
             }
         });
@@ -45,6 +56,8 @@ async fn serve_connection(node: Arc<Node>, connection: Connection) {
 async fn serve_request(
     node: &Node,
     connection: &Connection,
+    turns: &Semaphore,
+    order: i32,
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> Result<()> {
@@ -54,6 +67,14 @@ async fn serve_request(
     )
     .await
     .map_err(|_| Error::Transport("timed out waiting for a request".into()))??;
+
+    // A chunk goes out ahead of the chunks asked for after it. The
+    // connection then carries one chunk at a time, which costs both ends
+    // less than a slice of each in turn. A small answer goes out ahead of
+    // every chunk: on a slow link a chunk is on its way for a long time,
+    // and whoever asked what this peer holds would give up waiting.
+    let small = !matches!(request, Request::Chunk { .. });
+    send.set_priority(if small { 1 } else { order })?;
 
     match request {
         Request::Manifest { artifact } => match node.share_of_artifact(artifact) {
@@ -84,6 +105,8 @@ async fn serve_request(
         },
 
         Request::Chunk { content, index } => {
+            // Never closed, so a turn always comes.
+            let _turn = turns.acquire().await;
             let share = node.share(content).filter(|share| share.has(index));
             let data = match share {
                 Some(share) => match share.store().read_chunk(index).await {

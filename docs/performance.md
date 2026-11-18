@@ -288,15 +288,45 @@ no setting for more.
 This is the cost on a route with a large MTU, which is loopback and a
 network of jumbo frames. On the usual 1500-byte network a datagram could
 not grow past 1472 bytes before either, and the figure to compare with is
-the 365 MiB/s that macOS reached at that size.
+the 365 MiB/s that macOS reached at that size. With chunks sent one after
+another ([#80](https://github.com/yuvichh/mux/issues/80)) the same macOS
+transfer runs at 361 MiB/s and 7.7 CPU seconds per GiB.
 
 What iroh adds to the binary and to the list of crates that ship is in the
 pull request for #19.
 
-One transfer was made between two machines on different networks, each
-behind a router, with a ticket that named the seeder by its key and gave no
-address: 20 MiB in 22.0 seconds, at the 1 MiB/s that link gives, and the
-checksums were equal.
+### Over links like real ones
+
+The rows of "Links like real ones" below, with quinn and with iroh, both
+with the change of #80. MiB/s, one run each, 18 November 2026.
+
+| Link, round trip | File | quinn | iroh |
+| --- | ---: | ---: | ---: |
+| 1 Gbit/s, 100 ms | 1 GiB | 91.3 | 90.4 |
+| 1 Gbit/s, 20 ms | 1 GiB | 107.1 | 108.3 |
+| 100 Mbit/s, 50 ms | 128 MiB | 10.7 | 10.6 |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.8 | 8.7 |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.5 | 5.3 |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.056 | 0.056 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.03 | 0.59 |
+
+Nothing is lost on a link without loss. With loss iroh's QUIC did worse in
+each of three runs (0.57 to 0.68, against 0.78 to 1.06 in four runs with
+quinn). Both are far below what the link carries, and what closes that gap
+is the congestion control:
+[#82](https://github.com/yuvichh/mux/issues/82) has the first figures for
+both.
+
+### Between two real machines
+
+A laptop on Wi-Fi fetched 20 MiB from a machine on the same home network,
+with a ticket that named the seeder by its key and gave no address. The
+two met by way of a public relay, and iroh found the direct route between
+them by itself within the first second: the log shows the connection move
+from the relay to the seeder's address on the home network. It took 21.6
+seconds, and the checksums were equal. `ssh` moves the same 20 MiB over
+the same link in 21.3 seconds. That link carries 10 Mbit/s, which is what
+the seeder's network card had agreed with its switch.
 
 ## Web downloads
 
@@ -349,6 +379,94 @@ of a file, which moved neither figure:
 | --- | --- |
 | What arrives is appended to a buffer, and a chunk is cut from its front | First version. 2,535 MiB/s and 1.35 CPU s/GiB over four streams, 1,392 MiB/s and 0.75 over one. |
 | Each byte is copied once, from where it arrived into a buffer of the chunk's size | Kept. 2,758 MiB/s and 1.28 over four streams, 1,495 MiB/s and 0.72 over one. |
+
+## Links like real ones
+
+Loopback has no distance, no limit of speed and no loss. A real link has
+all three, and some faults show only with them. So transfers are also timed
+over a link made to behave like a real one.
+
+One Linux machine holds two networks of its own, joined by a virtual cable.
+They are made with `unshare`, which needs no root, and are gone when the
+command ends. Each end of the cable is held to a rate by `tbf`, which also
+cuts the bundles of packets the kernel hands over into single packets, and
+is given a delay, a loss and a queue of a tenth of a second by `netem`. The
+seeder or the web server is in one network and the downloader in the
+other. The MTU is 1500.
+
+`just far` is a shorter form of this, for the first look: the timed
+transfer as it is, over the loopback of one such network. Both directions
+then share a queue.
+
+```console
+$ just far 50 1000         # 100 ms there and back, at 1 Gbit/s
+$ just far 25 100 1 64     # 50 ms, 100 Mbit/s, 1% loss, a 64 MiB file
+```
+
+### A fixed number of requests
+
+Until [#80](https://github.com/yuvichh/mux/issues/80) a machine was asked
+for four chunks at a time. A request takes a round trip before its first
+byte comes back, so a fast link to a far machine carried nothing for most
+of each round trip. On a slow link the four shared it, none finished
+within the time a transfer waits for a chunk, and the transfer gave up.
+
+Now the number follows how long a chunk takes to come: see "Transfer" in
+[architecture.md](architecture.md#transfer).
+
+MiB/s for the whole command, one run each, on an Intel Core i5-10200H with
+the files on tmpfs, 18 November 2026. curl and aria2c fetch from nginx, and
+so does `mux cp`. `mux get` fetches from `mux seed`.
+
+| Link, round trip | File | curl | aria2c, 4 connections | `mux cp` from the web | `mux get` before | `mux get` after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.5 | 95.7 | 80.1 | 33.8 | **91.3** |
+| 1 Gbit/s, 20 ms | 1 GiB | 111.1 | 106.1 | 97.2 | 108.3 | 107.1 |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.0 | 10.5 | 9.5 | 10.7 | 10.7 |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.3 | 9.2 | 5.7 | 8.7 | 8.8 |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.2 | 3.4 | 3.6 | 3.8 | **5.5** |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.060 | | 0.034 | gives up after 60 s | **0.056** |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.48 | 2.17 | 1.86 | 0.84 | 1.03 |
+
+1 Gbit/s is 119 MiB/s, 100 Mbit/s is 11.9 and 0.5 Mbit/s is 0.060.
+
+- **Far and fast:** 2.7 times the rate. Four chunks of 1 MiB in a round
+  trip of 100 ms can be 40 MiB/s at the very most.
+- **Slow:** it works where it could not. One chunk is asked for at a time,
+  and it is there in 17 seconds.
+- **Near, or not fast:** no change, as there should be none.
+- **Loopback**, where the CPU is the limit: 6.75 CPU seconds per GiB
+  before and 5.55 after, with the builds taken in turn three times. The
+  rate is the same within what that benchmark can tell apart: 423 to
+  443 MiB/s before, 407 to 468 after.
+
+The CPU is saved by the order in which a seeder sends. With every chunk
+that was asked for sharing the connection a slice at a time, as a QUIC
+connection does unless told otherwise, 64 requests in flight cost 8.3 CPU
+seconds per GiB: each packet woke another reader. A seeder now sends the
+chunks one after another, in the order they were asked for, by giving each
+a lower priority than the one before.
+
+### What these runs show and this did not change
+
+- **Loss.** With 1% of packets lost, one connection is held back by its
+  congestion control, which halves its rate at each loss. `mux get` is one
+  QUIC connection and does twice as well as one TCP connection, but tools
+  that open four connections get four times one. A congestion control that
+  does not take every loss for congestion (BBR) is the thing to measure:
+  [#82](https://github.com/yuvichh/mux/issues/82).
+- **`mux cp` from the web, far away.** At 200 ms it reaches 62% of curl.
+  Each time a stream moves to another part of the file it drops its
+  connection and opens another, which costs round trips and a new slow
+  start: [#84](https://github.com/yuvichh/mux/issues/84).
+- **curl at 1 Gbit/s and 100 ms** is held to 26.5 MiB/s by the size of the
+  receive window that Linux gives one TCP connection. It is the figure for
+  one connection with nothing tuned, not a limit of TCP.
+- **600 ms.** Every tool spends most of a 128 MiB file getting up to speed.
+- A transfer counts progress in whole chunks. With no chunk stored for the
+  stall timeout it is taken for stalled, even while bytes arrive. `mux cp`
+  from the web over 0.5 Mbit/s gave up on an 8 MiB file for that reason:
+  [#83](https://github.com/yuvichh/mux/issues/83).
 
 ## Sending only what changed
 
@@ -454,8 +572,9 @@ not.
   how much by way of a relay.
 - x86 servers, where BLAKE3 and AES-GCM have different costs.
 - Windows.
-- Links with latency. Each peer is asked for four chunks at a time, which may
-  leave a long-distance link idle between requests.
+- A real link with a real router, to check the made-up one against.
+- Many machines fetching from one, and one fetching from many, over links
+  like real ones.
 - Web downloads over a real network, and over HTTPS.
 - The search for moved chunks on files that are not random: text, images of
   disks with long runs of zeros, archives.
