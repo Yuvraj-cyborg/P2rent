@@ -161,4 +161,11 @@ theorem rolling.Rolling.roll.spec (self : rolling.Rolling) (out inn : U8) (rest 
   rw [← hashOf_moved_on out inn rest, ← hhash, ← hleaving]
   simp [factor, wide]
 
+/-- `value` gives the hash. -/
+@[step]
+theorem rolling.Rolling.value.spec (self : rolling.Rolling) :
+    rolling.Rolling.value self ⦃ r => r = self.hash ⦄ := by
+  unfold rolling.Rolling.value
+  simp only [WP.spec_ok]
+
 end model
