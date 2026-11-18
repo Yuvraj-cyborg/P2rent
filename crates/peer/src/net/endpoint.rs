@@ -4,6 +4,7 @@ use super::tls;
 use crate::error::{Error, Result};
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
 use model::pace;
+use model::place::Arrived;
 use model::ticket::NodeId;
 use quinn::{RecvStream, SendStream, VarInt};
 use rustls::pki_types::CertificateDer;
@@ -217,7 +218,8 @@ impl Connection {
                     .ok()
                     .filter(|&len| len <= MAX_MANIFEST_BYTES)
                     .ok_or_else(|| Error::Protocol("manifest exceeds the size limit".into()))?;
-                Ok(Some(proto::read_payload(&mut recv, len).await?))
+                let arrived = Arrived::default();
+                Ok(Some(proto::read_payload(&mut recv, len, &arrived).await?))
             }
             (Response::NotFound, _) => Ok(None),
             (other, _) => Err(unexpected(&other)),
@@ -239,7 +241,8 @@ impl Connection {
     }
 
     /// Fetches one chunk, which must be exactly `expected_len` bytes. `None`
-    /// means the peer does not hold it. The bytes are unverified.
+    /// means the peer does not hold it. The bytes are unverified, and are
+    /// added to `arrived` as they come.
     ///
     /// # Errors
     ///
@@ -250,10 +253,12 @@ impl Connection {
         content: Hash,
         index: u64,
         expected_len: u32,
+        arrived: &Arrived,
     ) -> Result<Option<Vec<u8>>> {
         match self.request(&Request::Chunk { content, index }).await? {
             (Response::Chunk { len }, mut recv) if len == expected_len => {
-                Ok(Some(proto::read_payload(&mut recv, len as usize).await?))
+                let whole = proto::read_payload(&mut recv, len as usize, arrived);
+                Ok(Some(whole.await?))
             }
             (Response::Chunk { len }, _) => Err(Error::Protocol(format!(
                 "chunk {index} has length {len}, expected {expected_len}"

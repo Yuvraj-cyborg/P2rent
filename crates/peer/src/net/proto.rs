@@ -8,6 +8,7 @@
 
 use crate::error::{Error, Result};
 use model::artifact::{Bitfield, Hash};
+use model::place::Arrived;
 use model::ticket::NodeId;
 use quinn::{RecvStream, SendStream};
 use serde::de::DeserializeOwned;
@@ -141,17 +142,23 @@ pub async fn read_frame<T: DeserializeOwned>(recv: &mut RecvStream, max: usize) 
             "frame of {len} bytes exceeds the {max} byte limit"
         )));
     }
-    let body = read_payload(recv, len).await?;
+    let body = read_payload(recv, len, &Arrived::default()).await?;
     postcard::from_bytes(&body).map_err(|e| Error::Protocol(e.to_string()))
 }
 
-/// Reads exactly `len` raw bytes.
+/// Reads exactly `len` raw bytes, and adds them to `arrived` as they come.
 ///
 /// # Errors
 ///
 /// Returns a transport error if the stream ends early.
-pub async fn read_payload(recv: &mut RecvStream, len: usize) -> Result<Vec<u8>> {
+pub async fn read_payload(recv: &mut RecvStream, len: usize, arrived: &Arrived) -> Result<Vec<u8>> {
     let mut payload = vec![0u8; len];
-    recv.read_exact(&mut payload).await?;
+    let mut filled = 0;
+    while filled < len {
+        let read = recv.read(&mut payload[filled..]).await?;
+        let read = read.ok_or_else(|| Error::Transport("the stream ended early".into()))?;
+        filled += read;
+        arrived.add(read);
+    }
     Ok(payload)
 }

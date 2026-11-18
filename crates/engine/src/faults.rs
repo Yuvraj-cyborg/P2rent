@@ -11,8 +11,8 @@ use crate::{Error, Options, Store, Summary, transfer};
 use model::artifact::{Bitfield, FileDigest, Hash, MIN_CHUNK_SIZE};
 use model::pace;
 use model::place::{
-    Capabilities, Description, Event, Expected, Failure, Foreknown, Observer, Pending, Reader,
-    Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
+    Arrived, Capabilities, Description, Event, Expected, Failure, Foreknown, Observer, Pending,
+    Reader, Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -36,6 +36,10 @@ struct Script {
     breaks_after: Option<usize>,
     /// How long it takes over each chunk.
     delay: Duration,
+    /// It counts the bytes of a chunk as they come, a tenth of the chunk in
+    /// each tenth of that time. Otherwise it counts nothing until the
+    /// chunk is whole, like a place that cannot tell.
+    steadily: bool,
     /// How many times it cannot be reached before it can.
     unreachable_for: usize,
     /// After this many chunks, what it reads from has changed.
@@ -204,11 +208,19 @@ impl Supply for Reached {
         })
     }
 
-    fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>> {
+    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             let script = &self.made.script;
             let _asking = Asking::begin(&self.made, index);
-            tokio::time::sleep(script.delay).await;
+            if script.steadily {
+                let tenth = self.made.sample.chunk(index).len() / 10;
+                for _ in 0..10 {
+                    tokio::time::sleep(script.delay / 10).await;
+                    arrived.add(tenth);
+                }
+            } else {
+                tokio::time::sleep(script.delay).await;
+            }
             if !script.line.is_zero() {
                 let _line = self.made.line.lock().await;
                 let tired = script
@@ -1322,6 +1334,78 @@ fn a_supplier_that_is_one_stream_is_asked_in_order() {
     );
 }
 
+/// Three chunks of a size that takes a while to come, for what only shows
+/// when a chunk is slow.
+fn large() -> Arc<Sample> {
+    let chunk = 256 * 1024;
+    let tree = [("", None), ("large.bin", Some(3 * chunk))];
+    Arc::new(Sample::with_chunks(&tree, u32::try_from(chunk).unwrap()).unwrap())
+}
+
+/// A supplier whose chunks take longer than a request with no sign of life
+/// is given, and longer than a transfer goes without progress, is waited
+/// for as long as the bytes keep coming.
+#[test]
+fn a_supplier_that_is_slow_and_keeps_sending_is_waited_for() {
+    let sample = large();
+    let slow = Script {
+        delay: Duration::from_secs(150),
+        steadily: true,
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, slow, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert!(
+        ran.took >= Duration::from_secs(150),
+        "it took {:?}",
+        ran.took
+    );
+    assert_eq!(supplier.0.opened.load(Ordering::Relaxed), 1);
+}
+
+/// The same supplier, if it does not say what has come until a chunk is
+/// whole, cannot be told from one that sends nothing, and is given up.
+#[test]
+fn a_supplier_that_is_slow_and_gives_no_sign_is_given_up() {
+    let sample = large();
+    let silent = Script {
+        delay: Duration::from_secs(150),
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, silent, &sample);
+    let ran = Setup::new(&sample).run(&[supplier]);
+
+    assert!(
+        matches!(ran.outcome, Err(Error::Stalled(_))),
+        "{:?}",
+        ran.outcome
+    );
+}
+
+/// A supplier that sends next to nothing is given up, even though bytes do
+/// come: a tenth of a chunk in forty seconds is under a kilobyte a second.
+#[test]
+fn a_supplier_that_sends_next_to_nothing_is_given_up() {
+    let sample = large();
+    let trickle = Script {
+        delay: Duration::from_secs(400),
+        steadily: true,
+        ..Script::honest(&sample)
+    };
+    let supplier = Made::new(1, trickle, &sample);
+    let ran = Setup::new(&sample).run(std::slice::from_ref(&supplier));
+
+    assert!(
+        matches!(ran.outcome, Err(Error::Stalled(_))),
+        "{:?}",
+        ran.outcome
+    );
+    // Each request was given up, and the supplier reached for again.
+    assert!(supplier.0.opened.load(Ordering::Relaxed) > 1);
+}
+
 /// One long file, for what only shows over many chunks.
 fn long(chunks: usize) -> Arc<Sample> {
     let size = chunks * MIN_CHUNK_SIZE as usize;
@@ -1465,6 +1549,7 @@ fn script(chunks: usize) -> impl Strategy<Value = Script> {
                     changes_after: None,
                     useless_after: None,
                     in_order: false,
+                    steadily: false,
                     multiplexed,
                     // Slow enough, at times, for there to be fewer requests.
                     line: Duration::from_millis(if multiplexed { line } else { 0 }),
