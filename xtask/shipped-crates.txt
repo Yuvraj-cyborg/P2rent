@@ -35,18 +35,13 @@ dirs-sys
 displaydoc
 either
 encode_unicode: x86_64-pc-windows-msvc
-equivalent
 errno: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
-fnv
 form_urlencoded
 futures-channel
 futures-core
-futures-sink
 futures-task
 futures-util
 getrandom
-h2
-hashbrown
 heck
 http
 http-body
@@ -65,7 +60,6 @@ icu_properties_data
 icu_provider
 idna
 idna_adapter
-indexmap
 indicatif
 ipnet
 is_terminal_polyfill
@@ -136,7 +130,6 @@ tinyvec
 tokio
 tokio-macros
 tokio-rustls
-tokio-util
 tower
 tower-http
 tower-layer
