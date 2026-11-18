@@ -56,10 +56,10 @@ These hold for every place, which is the reason to use one tool.
    trash folder first, a sync that would delete a large share of a folder
    stops and asks, and a missing record is never treated as a deletion.
 
-Guarantees 1 to 4 and 6 hold today. Of 5, a sync reads only the files that
-changed, and a file that changed is fetched whole unless its chunks kept
-their place: finding chunks that moved is
-[#74](https://github.com/yuvichh/mux/issues/74).
+Ticket transfers reuse verified chunks from an older file, even when an
+insertion has shifted their offsets. One-way sync selects changed files
+by size and modification time. HTTP resume depends on the server's range
+and version support. See the [command reference](commands.md).
 
 ## What it is not
 
