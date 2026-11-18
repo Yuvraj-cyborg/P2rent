@@ -50,6 +50,7 @@ This was first done on 18 November 2026
 | --- | ---: | ---: | ---: |
 | The proofs as they were | 348 | 293 | 55 |
 | Those 55, against the proofs as they are | 55 | 52 | 3 |
+| All 348 again, against the proofs as they are | 348 | 345 | 3 |
 
 What the 55 showed:
 
@@ -84,6 +85,10 @@ Reading found what the bugs did not:
 - `claim` was proven to hand out a chunk that can be claimed. It is now
   proven to hand out the first one going round from the cursor, which is
   what a transfer relies on to read chunks in a row.
+
+The last row is the whole run made a second time, to see that nothing the
+old proofs noticed had slipped out of the new ones. It had not: the three
+left over are the same three.
 
 The three that are still not noticed change nothing, so no statement
 could notice them. Each turns `<` into `<=`, or `>` into `>=`, at a place
