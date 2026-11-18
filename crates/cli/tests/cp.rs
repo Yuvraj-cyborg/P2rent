@@ -1334,9 +1334,9 @@ async fn a_slow_server_and_two_machines_are_faster_than_the_server_alone() {
     assert!(std::fs::read(out.join("sample.bin")).unwrap() == file);
     assert_eq!(origins.len(), 1);
     assert_eq!(origins[0].unused, None);
-    // About half the time, and it is the server's pace that sets it: its
-    // first requests each take a share of the file before anything is
-    // known of its speed, and are waited for.
+    // About a fifth of the time. The machines take over what the server
+    // has still to send as soon as its speed is known, and what is waited
+    // for at the end is the chunks it was already sending.
     assert!(
         together < alone,
         "from all three it took {together:?}, and the server alone needs {alone:?}"

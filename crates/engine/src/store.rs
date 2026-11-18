@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 pub enum Put {
     /// The bytes are not the chunk. Nothing was written.
     Refused,
+    /// The chunk was there already: it came from somewhere else first.
+    /// Nothing was written.
+    Held,
     /// The chunk is stored.
     Stored,
     /// The chunk is stored, and it was the last of this file, which now has
@@ -263,7 +266,7 @@ impl Store {
             return Err(failure.clone());
         }
         if self.has(index) {
-            return Ok(Put::Stored);
+            return Ok(Put::Held);
         }
         let Some(sink) = &self.sink else {
             return Err(Failure::Fatal("this place is only read from".into()));

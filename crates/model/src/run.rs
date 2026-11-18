@@ -23,6 +23,17 @@
 //! its connection with it, so this is done only where it brings the end
 //! forward by more than [`WORTH_MICROS`]. A slow stream therefore takes
 //! little from a fast one, or nothing.
+//!
+//! A connection is worth what its stream would fetch with it. So one that
+//! is many times faster than the stream it takes from needs less of a
+//! gain: as many times less. A web server far away that sends a megabyte
+//! a second is then left with the chunks it is reading, and no more, when
+//! a machine near by could have the rest in a moment.
+//!
+//! The chunk a stream is reading can be fetched by another as well, where
+//! that brings it sooner by enough: see [`relieve`]. Whichever copy comes
+//! first is kept. A transfer then does not end by waiting for the slowest
+//! of its suppliers to finish what it happened to be reading.
 
 /// What is worth cutting an answer off for: bringing the end of what it
 /// carries forward by more than this.
@@ -80,9 +91,9 @@ pub fn length(free: u64, streams: u64, micros_each: u64, micros_left: u64) -> u6
 ///
 /// It is what the other can fetch by the time the first would get there:
 /// the two then end together. Sooner than the first would have ended by
-/// what the first takes for those chunks, and if that is not more than
-/// [`WORTH_MICROS`], none are taken over. Nothing is known of a stream
-/// whose `micros_each` is zero, and nothing is taken from it.
+/// what the first takes for those chunks, and if that is not more than is
+/// [`worth`] it, none are taken over. Nothing is known of a stream whose
+/// `micros_each` is zero, and nothing is taken from it.
 pub fn spare(left: u64, micros_each: u64, mine: u64) -> u64 {
     if micros_each == 0 {
         return 0;
@@ -99,11 +110,51 @@ pub fn spare(left: u64, micros_each: u64, mine: u64) -> u64 {
     );
     let part = (wide_left * theirs).div_ceil(both);
     let part = u64::try_from(part).unwrap_or(left).min(left);
-    if part.saturating_mul(micros_each) > WORTH_MICROS {
+    if part.saturating_mul(micros_each) > worth(micros_each, mine) {
         part
     } else {
         0
     }
+}
+
+/// What a stream that takes `mine` for a chunk has to bring the end
+/// forward by, in microseconds, to take over from one that takes
+/// `micros_each`: [`WORTH_MICROS`] from a stream that is as fast or
+/// faster, and as many times less from a slower one as that one is slower.
+///
+/// Taking over costs the other stream its connection, and a connection is
+/// worth what would be fetched with it. What a stream ten times slower
+/// would fetch in the two seconds a new connection may cost it is what
+/// this one fetches in a fifth of a second.
+pub fn worth(micros_each: u64, mine: u64) -> u64 {
+    if mine >= micros_each {
+        return WORTH_MICROS;
+    }
+    let scaled = u128::from(WORTH_MICROS) * u128::from(mine) / u128::from(micros_each.max(1));
+    u64::try_from(scaled).unwrap_or(WORTH_MICROS)
+}
+
+/// Whether a stream with nothing to do should fetch the chunk another is
+/// reading as well: that other takes `micros_each` for a chunk and has
+/// been reading this one for `waited`, and a chunk takes this stream
+/// `mine`. Never if either time is not known (zero).
+///
+/// The other is reckoned to need the rest of its `micros_each`, or, if it
+/// is past that, as long again as it has taken. This stream would have the
+/// chunk sooner by that less `mine`, and fetches it where that is more
+/// than is [`worth`] it. What the other was sent of the chunk is then for
+/// nothing, so a stream that is no faster does this only for a chunk that
+/// is long overdue.
+pub fn relieve(micros_each: u64, waited: u64, mine: u64) -> bool {
+    if micros_each == 0 || mine == 0 {
+        return false;
+    }
+    let left = if waited < micros_each {
+        micros_each - waited
+    } else {
+        waited
+    };
+    left.saturating_sub(mine) > worth(micros_each, mine)
 }
 
 #[cfg(test)]
@@ -112,6 +163,35 @@ mod tests {
 
     /// A millisecond.
     const MS: u64 = 1_000;
+
+    #[test]
+    fn a_chunk_that_is_being_read_is_fetched_by_a_much_faster_stream_too() {
+        // A chunk takes the reader eight seconds, and it has been at this
+        // one for one. A stream that takes 10 ms would have it seven
+        // seconds sooner.
+        assert!(relieve(8_000 * MS, 1_000 * MS, 10 * MS));
+        // Nearly done, there is nothing to gain: 5 ms are left.
+        assert!(!relieve(8_000 * MS, 7_995 * MS, 10 * MS));
+        // A stream that is as fast leaves it: the reader has a head start.
+        assert!(!relieve(8_000 * MS, 1_000 * MS, 8_000 * MS));
+        assert!(!relieve(250 * MS, 0, 250 * MS));
+        // One that is slower, all the more.
+        assert!(!relieve(250 * MS, 100 * MS, 1_000 * MS));
+    }
+
+    #[test]
+    fn a_chunk_that_is_long_overdue_is_fetched_by_a_stream_of_any_speed() {
+        // It should have taken 250 ms and has taken three seconds. It is
+        // reckoned to need three more, which is over two more than a
+        // stream of the same speed would take.
+        assert!(relieve(250 * MS, 3_000 * MS, 250 * MS));
+        // At two seconds it is not yet worth a second request.
+        assert!(!relieve(250 * MS, 2_000 * MS, 250 * MS));
+        // Nothing is done where a speed is not known.
+        assert!(!relieve(0, u64::MAX, 250 * MS));
+        assert!(!relieve(250 * MS, u64::MAX, 0));
+        assert!(relieve(1, u64::MAX, 1));
+    }
 
     #[test]
     fn a_first_run_is_half_an_even_share_of_what_is_free() {
@@ -205,6 +285,25 @@ mod tests {
     }
 
     #[test]
+    fn a_faster_stream_needs_less_of_a_gain() {
+        assert_eq!(worth(250 * MS, 250 * MS), WORTH_MICROS);
+        // A slower one needs the whole of it, however slow.
+        assert_eq!(worth(250 * MS, 1_000 * MS), WORTH_MICROS);
+        assert_eq!(worth(1, u64::MAX), WORTH_MICROS);
+        // One ten times faster needs a tenth.
+        assert_eq!(worth(250 * MS, 25 * MS), WORTH_MICROS / 10);
+        assert_eq!(worth(u64::MAX, 1), 0);
+
+        // Three chunks left to a stream that takes 100 ms for each. One as
+        // fast leaves them: under a third of a second is to be had. One a
+        // hundred times faster takes them all.
+        assert_eq!(spare(3, 100 * MS, 100 * MS), 0);
+        assert_eq!(spare(3, 100 * MS, MS), 3);
+        // The last chunk too: it is not being read yet.
+        assert_eq!(spare(1, 100 * MS, MS), 1);
+    }
+
+    #[test]
     fn a_fast_stream_takes_most_from_a_slow_one() {
         // Nine chunks left at a second each: one that is eight times
         // faster takes eight of them.
@@ -273,10 +372,54 @@ mod proofs {
         assert!(spared <= left);
         if spared > 0 {
             assert!(micros_each > 0);
-            assert!(spared.saturating_mul(micros_each) > WORTH_MICROS);
+            // A stream that is no faster has to gain the whole of what a
+            // connection is worth.
+            if mine == 0 || mine >= micros_each {
+                assert!(spared.saturating_mul(micros_each) > WORTH_MICROS);
+            }
         }
         if micros_each == 0 {
             assert!(spared == 0);
         }
+    }
+
+    /// A chunk that is being read is fetched a second time only by a
+    /// stream that would have it sooner, and never where a speed is not
+    /// known. A stream that is no faster does it only for a chunk that has
+    /// taken longer than a connection is worth beyond its own time.
+    #[kani::proof]
+    fn a_chunk_is_fetched_twice_only_to_have_it_sooner() {
+        let micros_each: u64 = kani::any();
+        let waited: u64 = kani::any();
+        let mine: u64 = kani::any();
+        if relieve(micros_each, waited, mine) {
+            assert!(micros_each > 0 && mine > 0);
+            let left = if waited < micros_each {
+                micros_each - waited
+            } else {
+                waited
+            };
+            assert!(mine < left);
+            if mine >= micros_each {
+                assert!(waited > WORTH_MICROS);
+            }
+        }
+    }
+
+    /// What a take-over has to gain is never more than a connection is
+    /// worth, is all of that for a stream that is no faster, and falls as
+    /// the stream gets faster.
+    #[kani::proof]
+    fn a_take_over_is_worth_less_to_no_stream_than_to_a_slower_one() {
+        let micros_each: u64 = kani::any();
+        let mine: u64 = kani::any();
+        let faster: u64 = kani::any();
+        kani::assume(faster <= mine);
+
+        assert!(worth(micros_each, mine) <= WORTH_MICROS);
+        if mine >= micros_each {
+            assert!(worth(micros_each, mine) == WORTH_MICROS);
+        }
+        assert!(worth(micros_each, faster) <= worth(micros_each, mine));
     }
 }
