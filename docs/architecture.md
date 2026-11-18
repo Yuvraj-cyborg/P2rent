@@ -552,3 +552,9 @@ chunk, because that waiter may have been stopped a moment before.
 - `tests/cli.rs` runs the compiled binary as separate processes, and kills
   a download at random moments to check that only whole files have their
   final names.
+- `cli/tests/cp.rs` does the same to a sync, from a folder and from a web
+  address, into a destination that holds an older version. Whenever the
+  sync is stopped, each file with its final name is the older version or
+  the newer one whole, and never part of each, and a sync that then runs
+  to its end leaves what the source holds. A source that cannot be read
+  halfway is the same case.
