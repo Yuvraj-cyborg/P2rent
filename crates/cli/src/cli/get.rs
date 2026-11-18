@@ -1,9 +1,8 @@
 use super::{Reach, ui};
 use anyhow::Context;
-use mux::net::Identity;
 use mux::swarm::{DownloadOptions, Node, Phase, Progress, Report, Ticket, TicketPeer};
 use mux::swarm::{announce, download};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,13 +36,11 @@ pub(super) struct Args {
     stall_timeout: u64,
 }
 
-pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
+pub(super) async fn run(args: Args, key: Option<&Path>) -> anyhow::Result<()> {
     let mut ticket = args.ticket;
     ticket.peers.extend(args.peers);
 
-    let node = Node::bind(identity, &args.reach.options())
-        .await
-        .context("cannot open a socket to listen on")?;
+    let node = super::node(key, &args.reach).await?;
     let options = DownloadOptions {
         max_peers: args.max_peers,
         stall_timeout: Duration::from_secs(args.stall_timeout),
@@ -71,7 +68,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
 async fn download_with_progress(
     node: &Arc<Node>,
     ticket: &Ticket,
-    out: &std::path::Path,
+    out: &Path,
     options: DownloadOptions,
 ) -> anyhow::Result<Report> {
     let progress = Arc::new(Progress::default());

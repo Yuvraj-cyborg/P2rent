@@ -30,6 +30,12 @@ pub(super) enum Exit {
 #[error("{0}")]
 pub(super) struct Misuse(pub(super) String);
 
+/// Ends a command that asks for what cannot be done, however often it is
+/// run: the places or the flags have to be written another way.
+pub(super) fn misuse<T>(why: impl Into<String>) -> anyhow::Result<T> {
+    Err(Misuse(why.into()).into())
+}
+
 impl Exit {
     /// How `error` ends a command: by the first cause in it that is a
     /// failure of a known kind.
