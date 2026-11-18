@@ -1,13 +1,15 @@
-use super::identity::{self, Identity};
-use super::proto::{self, Request, Response, Status};
-use super::tls;
+use super::identity::Identity;
+use super::proto::{self, ALPN, PeerInfo, Request, Response, Status};
 use crate::error::{Error, Result};
+use iroh::endpoint::{
+    MtuDiscoveryConfig, Path, QuicTransportConfig, RecvStream, SendStream, VarInt, presets,
+};
+use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr};
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
 use model::pace;
 use model::place::Arrived;
 use model::ticket::NodeId;
-use quinn::{RecvStream, SendStream, VarInt};
-use rustls::pki_types::CertificateDer;
+use noq_proto::congestion::Bbr3Config;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,14 +22,32 @@ const MAX_STREAMS_PER_CONNECTION: u32 = pace::MOST_REQUESTS + 8;
 const STREAM_WINDOW: u32 = 8 * 1024 * 1024;
 const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 
-/// Largest datagram to send or accept: what fits in a 9000-byte jumbo frame
+/// Largest datagram to try to send: what fits in a 9000-byte jumbo frame
 /// after the IPv6 and UDP headers.
 ///
 /// Most of the CPU cost of a transfer is paid per packet, so bigger packets
-/// are the cheapest speed-up there is. Connections still start at QUIC's safe
-/// minimum and only grow as far as path MTU discovery proves the route can
-/// carry, so this changes nothing on a standard 1500-byte network.
+/// are the cheapest speed-up there is. Connections start at QUIC's safe
+/// minimum and only grow as far as path MTU discovery proves the route and
+/// the other end can carry. An iroh endpoint takes datagrams of up to 1472
+/// bytes, and offers no way to raise that, so that is as far as they grow
+/// today.
 const MAX_DATAGRAM: u16 = 9000 - 40 - 8;
+
+/// How a node is reached when it cannot be dialled at an address: behind
+/// a router, for the most part.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Relays {
+    /// Through the public relays run by the makers of iroh. The node also
+    /// lists itself in their directory, and looks others up there, so that
+    /// a node id is enough to reach a node.
+    #[default]
+    Public,
+    /// Through the relay at this web address, and no directory: a ticket
+    /// has to say where a node is.
+    At(String),
+    /// Through no relay. A node is reached at an address or not at all.
+    Off,
+}
 
 /// How a connection decides how fast it may send.
 ///
@@ -40,82 +60,108 @@ pub enum Congestion {
     #[default]
     Cubic,
     /// Measures what the link carries and holds that rate, whatever is
-    /// lost. Many times faster where packets are lost, and somewhat faster
-    /// far away. Where a link's queue is short it leaves next to nothing
-    /// for a connection of the other kind that shares the link.
+    /// lost: BBR, in its third version. Many times faster where packets
+    /// are lost.
     Bbr,
 }
 
-/// A QUIC socket that both dials and accepts, authenticated as one node.
+/// How an endpoint is set up.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// The address to listen on. Every address, at a port the system
+    /// picks, if `None`.
+    pub listen: Option<SocketAddr>,
+    /// How the node is reached when it cannot be dialled.
+    pub relays: Relays,
+    /// Whether to open sockets at all. Without them, packets go only by
+    /// way of a relay, and no other node learns this one's address.
+    pub direct: bool,
+    /// How the node's connections decide how fast they may send.
+    pub congestion: Congestion,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            listen: None,
+            relays: Relays::default(),
+            direct: true,
+            congestion: Congestion::default(),
+        }
+    }
+}
+
+/// A socket that both dials and accepts, authenticated as one node.
+///
+/// A node is dialled by its id: the connection is made only with whoever
+/// holds the key that the id is the public half of.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
-    inner: quinn::Endpoint,
+    inner: iroh::Endpoint,
     node_id: NodeId,
+    /// Whether the node is to be reached through a relay.
+    relayed: bool,
 }
 
 impl Endpoint {
-    /// Must be called from within a Tokio runtime.
+    /// Opens the sockets, and begins to reach for a relay if there is to
+    /// be one.
     ///
     /// # Errors
     ///
-    /// Returns an error if the TLS configuration cannot be built or `addr` cannot be bound.
-    pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self> {
-        Self::bind_with(identity, addr, Congestion::default())
-    }
-
-    /// The same, with a say in how its connections decide how fast to
-    /// send.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the TLS configuration cannot be built or `addr` cannot be bound.
-    pub fn bind_with(
-        identity: &Identity,
-        addr: SocketAddr,
-        congestion: Congestion,
-    ) -> Result<Self> {
-        let (mut server, mut client) = tls::configs(identity)?;
-
-        let mut mtu_discovery = quinn::MtuDiscoveryConfig::default();
+    /// Returns an error if the address to listen on cannot be bound, or if
+    /// a relay's address is not one.
+    pub async fn bind(identity: &Identity, options: &Options) -> Result<Self> {
+        let mut mtu_discovery = MtuDiscoveryConfig::default();
         mtu_discovery.upper_bound(MAX_DATAGRAM);
-
-        let mut transport = quinn::TransportConfig::default();
-        transport
+        let idle_timeout = IDLE_TIMEOUT
+            .try_into()
+            .map_err(|_| Error::Transport("idle timeout out of range".into()))?;
+        let transport = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS_PER_CONNECTION))
             .max_concurrent_uni_streams(VarInt::from_u32(0))
-            .keep_alive_interval(Some(KEEP_ALIVE))
-            .max_idle_timeout(Some(
-                IDLE_TIMEOUT
-                    .try_into()
-                    .map_err(|_| Error::Transport("idle timeout out of range".into()))?,
-            ))
+            .keep_alive_interval(KEEP_ALIVE)
+            .max_idle_timeout(Some(idle_timeout))
             .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
             .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
             .send_window(u64::from(CONNECTION_WINDOW))
             .mtu_discovery_config(Some(mtu_discovery));
-        match congestion {
+        let transport = match options.congestion {
             // What the library does unless told otherwise.
-            Congestion::Cubic => {}
+            Congestion::Cubic => transport,
             Congestion::Bbr => {
-                let bbr = quinn::congestion::BbrConfig::default();
-                transport.congestion_controller_factory(Arc::new(bbr));
+                transport.congestion_controller_factory(Arc::new(Bbr3Config::default()))
             }
-        }
-        let transport = Arc::new(transport);
-        server.transport_config(transport.clone());
-        client.transport_config(transport);
+        };
+        let transport = transport.build();
 
-        let mut config = quinn::EndpointConfig::default();
-        config
-            .max_udp_payload_size(MAX_DATAGRAM)
+        let mut builder = match &options.relays {
+            Relays::Public => iroh::Endpoint::builder(presets::N0),
+            Relays::At(url) => iroh::Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::custom([relay_url(url)?])),
+            Relays::Off => iroh::Endpoint::builder(presets::Minimal),
+        };
+        builder = builder
+            .secret_key(identity.secret().clone())
+            .alpns(vec![ALPN.to_vec()])
+            .transport_config(transport);
+        if !options.direct {
+            builder = builder.clear_ip_transports();
+        } else if let Some(addr) = options.listen {
+            let unusable = |e: &dyn std::fmt::Display| Error::Transport(e.to_string());
+            builder = builder
+                .clear_ip_transports()
+                .bind_addr(addr)
+                .map_err(|e| unusable(&e))?;
+        }
+        let inner = builder
+            .bind()
+            .await
             .map_err(|e| Error::Transport(e.to_string()))?;
-        let socket = std::net::UdpSocket::bind(addr)?;
-        let mut inner =
-            quinn::Endpoint::new(config, Some(server), socket, Arc::new(quinn::TokioRuntime))?;
-        inner.set_default_client_config(client);
         Ok(Self {
             inner,
             node_id: identity.node_id(),
+            relayed: options.relays != Relays::Off,
         })
     }
 
@@ -124,34 +170,56 @@ impl Endpoint {
         self.node_id
     }
 
-    /// The address the socket is bound to.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Io`] if the operating system cannot report the address.
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.inner.local_addr()?)
+    /// The addresses the sockets are bound to: one for IPv4 and one for
+    /// IPv6, unless one address was asked for. None, if the endpoint has no
+    /// sockets.
+    pub fn local_addrs(&self) -> Vec<SocketAddr> {
+        self.inner.bound_sockets()
     }
 
-    /// Dials `addr` and succeeds only if the peer proves it is `expected`.
+    /// Waits until a relay has been reached. Returns at once if there is to
+    /// be none.
+    pub async fn online(&self) {
+        if self.relayed {
+            self.inner.online().await;
+        }
+    }
+
+    /// The relay this node is reached through, once one has been reached.
+    pub fn relay(&self) -> Option<String> {
+        let addr = self.inner.addr();
+        addr.relay_urls().next().map(ToString::to_string)
+    }
+
+    /// Dials `peer`. The connection is made only if whoever answers proves
+    /// to be that node.
+    ///
+    /// What is known of where the peer is, is tried first. With nothing
+    /// known, or nobody there, the node is looked up by its id, if this
+    /// endpoint looks nodes up.
     ///
     /// # Errors
     ///
-    /// Returns a transport error if the connection fails, and [`Error::IdentityMismatch`] if the
-    /// peer proves a different node id.
-    pub async fn connect(&self, addr: SocketAddr, expected: NodeId) -> Result<Connection> {
-        let inner = self.inner.connect(addr, "mux")?.await?;
-        let connection = Connection::authenticated(inner)?;
-        if connection.peer != expected {
-            connection
-                .inner
-                .close(VarInt::from_u32(1), b"unexpected node id");
-            return Err(Error::IdentityMismatch {
-                expected: expected.to_string(),
-                actual: connection.peer.to_string(),
-            });
+    /// Returns a transport error if the node cannot be reached, or if
+    /// whoever answers is another node.
+    pub async fn connect(&self, peer: &PeerInfo) -> Result<Connection> {
+        let expected = peer.node;
+        let id = EndpointId::from_bytes(expected.as_bytes())
+            .map_err(|e| Error::Identity(format!("{expected} is not the id of a node: {e}")))?;
+        let mut remote = EndpointAddr::new(id);
+        for &addr in &peer.addrs {
+            remote = remote.with_ip_addr(addr);
         }
-        Ok(connection)
+        if let Some(relay) = &peer.relay {
+            remote = remote.with_relay_url(relay_url(relay)?);
+        }
+        let inner = self.inner.connect(remote, ALPN).await.map_err(|e| {
+            Error::Transport(format!("cannot connect to node {}: {e}", expected.short()))
+        })?;
+        Ok(Connection {
+            inner,
+            peer: expected,
+        })
     }
 
     /// Waits for the next inbound connection attempt. Returns `None` once the
@@ -160,15 +228,16 @@ impl Endpoint {
         self.inner.accept().await.map(Incoming)
     }
 
-    /// Closes every connection and stops accepting new ones.
-    pub fn close(&self) {
-        self.inner.close(VarInt::from_u32(0), b"shutting down");
+    /// Closes every connection and stops accepting new ones. Returns once
+    /// the other ends have been told, or have not answered for a while.
+    pub async fn close(&self) {
+        self.inner.close().await;
     }
 }
 
 /// An inbound connection whose handshake has not completed yet.
 #[derive(Debug)]
-pub struct Incoming(quinn::Incoming);
+pub struct Incoming(iroh::endpoint::Incoming);
 
 impl Incoming {
     /// Completes the handshake. Run this off the accept loop so a slow or
@@ -176,49 +245,54 @@ impl Incoming {
     ///
     /// # Errors
     ///
-    /// Returns an error if the handshake fails or the peer presents no usable certificate.
+    /// Returns an error if the handshake fails.
     pub async fn establish(self) -> Result<Connection> {
-        Connection::authenticated(self.0.await?)
+        let inner = self.0.await.map_err(|e| Error::Transport(e.to_string()))?;
+        let peer = NodeId::from_bytes(*inner.remote_id().as_bytes());
+        Ok(Connection { inner, peer })
     }
 }
 
 /// An established connection to a peer whose node id is known.
 #[derive(Debug, Clone)]
 pub struct Connection {
-    inner: quinn::Connection,
+    inner: iroh::endpoint::Connection,
     peer: NodeId,
 }
 
 impl Connection {
-    fn authenticated(inner: quinn::Connection) -> Result<Self> {
-        let certificates = inner
-            .peer_identity()
-            .and_then(|identity| identity.downcast::<Vec<CertificateDer<'static>>>().ok())
-            .ok_or_else(|| Error::Identity("peer presented no certificate".into()))?;
-        let leaf = certificates
-            .first()
-            .ok_or_else(|| Error::Identity("peer presented no certificate".into()))?;
-        let peer = identity::node_of(leaf)?;
-        Ok(Self { inner, peer })
-    }
-
     /// The node id the peer proved during the handshake.
     pub fn peer(&self) -> NodeId {
         self.peer
     }
 
-    /// The peer's address as seen from this side. Peers dial and listen on
-    /// the same socket, so this is also where others can reach it.
-    pub fn remote_addr(&self) -> SocketAddr {
-        let addr = self.inner.remote_address();
-        // A dual-stack socket reports IPv4 peers as IPv4-mapped IPv6.
-        SocketAddr::new(addr.ip().to_canonical(), addr.port())
+    /// The peer, and where it is as seen from this side: the addresses the
+    /// connection goes straight to, and the relay it goes by way of. Peers
+    /// dial and listen on the same socket, so this is also where others can
+    /// reach it.
+    pub fn peer_info(&self) -> PeerInfo {
+        let mut info = PeerInfo::of(self.peer);
+        for path in self.inner.paths().iter() {
+            match path.remote_addr() {
+                // A dual-stack socket reports IPv4 peers as IPv4-mapped
+                // IPv6.
+                TransportAddr::Ip(addr) => {
+                    let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+                    info.addrs.push(addr);
+                }
+                TransportAddr::Relay(url) => info.relay = Some(url.to_string()),
+                _ => {}
+            }
+        }
+        info
     }
 
     /// The largest datagram the route to the peer is currently known to
     /// carry. Starts at QUIC's minimum and grows as discovery probes succeed.
-    pub fn path_mtu(&self) -> u16 {
-        self.inner.stats().path.current_mtu
+    pub fn path_mtu(&self) -> Option<u16> {
+        let paths = self.inner.paths();
+        let selected = paths.iter().find(Path::is_selected)?;
+        Some(selected.stats().current_mtu)
     }
 
     /// Closes the connection.
@@ -306,6 +380,12 @@ impl Connection {
             (other, _) => Err(unexpected(&other)),
         }
     }
+}
+
+/// Reads the web address of a relay.
+fn relay_url(text: &str) -> Result<RelayUrl> {
+    text.parse()
+        .map_err(|e| Error::Transport(format!("{text:?} is not the address of a relay: {e}")))
 }
 
 fn unexpected(response: &Response) -> Error {

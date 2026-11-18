@@ -12,7 +12,8 @@ mod ui;
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
-use mux::net::Identity;
+use mux::net::{Identity, Options, Relays};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tracing::Level;
@@ -48,7 +49,7 @@ enum Congestion {
     /// Halve the rate at each lost packet
     Cubic,
     /// Hold the rate the link carries, whatever is lost: much faster where
-    /// packets are lost, and harder on what else uses the link
+    /// packets are lost
     Bbr,
 }
 
@@ -57,6 +58,47 @@ impl From<Congestion> for mux::net::Congestion {
         match chosen {
             Congestion::Cubic => Self::Cubic,
             Congestion::Bbr => Self::Bbr,
+        }
+    }
+}
+
+/// How this machine and others reach each other.
+#[derive(clap::Args)]
+struct Reach {
+    /// Address to listen on [default: every address, at a port the system picks]
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<SocketAddr>,
+
+    /// Reach machines behind routers through this relay, in place of the
+    /// public ones
+    #[arg(long, value_name = "URL", conflicts_with = "no_relay")]
+    relay: Option<String>,
+
+    /// Use no relay and no directory: a machine is reached at an address or
+    /// not at all
+    #[arg(long)]
+    no_relay: bool,
+
+    /// How to decide how fast to send to other machines
+    #[arg(long, value_enum, default_value = "cubic", value_name = "HOW")]
+    congestion: Congestion,
+}
+
+impl Reach {
+    fn relays(&self) -> Relays {
+        match &self.relay {
+            Some(url) => Relays::At(url.clone()),
+            None if self.no_relay => Relays::Off,
+            None => Relays::Public,
+        }
+    }
+
+    fn options(&self) -> Options {
+        Options {
+            listen: self.listen,
+            relays: self.relays(),
+            congestion: self.congestion.into(),
+            ..Options::default()
         }
     }
 }

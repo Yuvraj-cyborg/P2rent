@@ -22,11 +22,10 @@ mod timing;
 
 use ::fs as store;
 use model::artifact::DEFAULT_CHUNK_SIZE;
-use peer::net::Identity;
+use peer::net::{Identity, Options, Relays};
 use peer::swarm::{DownloadOptions, Node, Progress, Ticket, download};
 use std::fs::File;
 use std::io::Write;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,7 +58,12 @@ fn main() {
     println!("index     {}", rate(size, index_time));
 
     // Seeders stay up for the whole benchmark, each on its own runtime.
-    let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    // Reached at one local address, and through no relay.
+    let localhost = Options {
+        listen: Some("127.0.0.1:0".parse().unwrap()),
+        relays: Relays::Off,
+        ..Options::default()
+    };
     let mut ticket = Ticket {
         artifact: artifact.id(),
         peers: Vec::new(),
@@ -68,10 +72,10 @@ fn main() {
     for _ in 0..seeders {
         let runtime = Runtime::new().expect("cannot start a runtime");
         let node = runtime
-            .block_on(async { Node::bind(&Identity::generate()?, localhost) })
+            .block_on(Node::bind(&Identity::generate(), &localhost))
             .expect("cannot start a seeder");
         node.seed(artifact.clone(), indexed.root.clone());
-        let addr = node.local_addr().unwrap().to_string();
+        let addr = node.local_addrs()[0].to_string();
         ticket
             .peers
             .extend(node.ticket(artifact.id(), &[addr]).peers);
@@ -87,7 +91,7 @@ fn main() {
         let cpu_before = cpu_time();
         let report = runtime
             .block_on(async {
-                let node = Node::bind(&Identity::generate()?, localhost)?;
+                let node = Node::bind(&Identity::generate(), &localhost).await?;
                 let report = download(
                     &node,
                     &ticket,
@@ -96,7 +100,7 @@ fn main() {
                     Arc::new(Progress::default()),
                 )
                 .await;
-                node.shutdown();
+                node.shutdown().await;
                 report
             })
             .expect("download failed");
@@ -108,7 +112,7 @@ fn main() {
     timed.report();
 
     for (runtime, node) in seeding {
-        node.shutdown();
+        runtime.block_on(node.shutdown());
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
 }

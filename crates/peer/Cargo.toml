@@ -1,6 +1,6 @@
 [package]
 name = "peer"
-description = "Machine-to-machine transfer for mux: node identity, QUIC and the swarm"
+description = "Machine-to-machine transfer for mux: node identity, connections and the swarm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,30 +12,24 @@ default = ["fast-apple-datapath"]
 # Send and receive UDP packets in batches on macOS. This uses sendmsg_x and
 # recvmsg_x, which Apple does not document as public API. If a future macOS
 # breaks them, build with `--no-default-features`.
-fast-apple-datapath = ["quinn-udp/fast-apple-datapath"]
-
-# `quinn-udp` is never imported: it is listed so that the
-# `fast-apple-datapath` feature can switch on its feature of the same name.
-[package.metadata.cargo-machete]
-ignored = ["quinn-udp"]
+fast-apple-datapath = ["iroh/fast-apple-datapath"]
 
 [dependencies]
 model.workspace = true
 engine.workspace = true
 fs.workspace = true
 dirs.workspace = true
+iroh.workspace = true
+noq-proto.workspace = true
 postcard.workspace = true
-quinn.workspace = true
-quinn-udp.workspace = true
-rcgen.workspace = true
-rustls.workspace = true
-rustls-webpki.workspace = true
 serde.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# A relay to run inside a test.
+iroh-relay.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 

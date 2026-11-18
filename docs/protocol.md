@@ -1,8 +1,9 @@
 # Protocol
 
-This describes protocol version 3, negotiated with the ALPN token `mux/3`.
-Version 2 was the same protocol under the project's former name, p2rent,
-with the token `p2rent/2`. The two do not interoperate.
+This describes protocol version 4, negotiated with the ALPN token `mux/4`.
+Version 3 carried the same messages over connections authenticated with
+certificates, and version 2 was that protocol under the project's former
+name, p2rent, with the token `p2rent/2`. No two versions interoperate.
 
 ## Tickets
 
@@ -19,16 +20,14 @@ Unknown query parameters are ignored.
 
 ## Transport and identity
 
-QUIC with TLS 1.3 only. Both sides present a self-signed X.509 certificate
-whose subject public key is their Ed25519 key. The handshake signature must
-verify under that key; no other property of the certificate is checked. The
-dialling side closes the connection if the peer's key is not the node id it
-expected.
+QUIC with TLS 1.3 only, as [iroh](https://github.com/n0-computer/iroh)
+makes it. Each side presents its Ed25519 public key in place of a
+certificate ([RFC 7250](https://www.rfc-editor.org/rfc/rfc7250)), and the
+handshake signature must verify under that key. A node is dialled by its
+id, and the handshake fails if whoever answers holds another key.
 
-Nodes accept datagrams of up to 8952 bytes, which is what a 9000-byte jumbo
-frame holds after the IPv6 and UDP headers. Connections start at QUIC's
-1200-byte minimum and grow only as far as path MTU discovery confirms, so a
-standard 1500-byte route behaves as before.
+Nodes accept datagrams of up to 1472 bytes. Connections start at QUIC's
+1200-byte minimum and grow only as far as path MTU discovery confirms.
 
 ## Framing
 
@@ -62,10 +61,11 @@ for byte.
 
 - `have` is `All` or a bitfield with one bit per chunk, least significant bit
   first within each byte.
-- `peers` lists up to 32 other participants as `(node id, socket address)`,
-  most recently seen first. A participant is any node that sent a `Status`
-  request for the content in the last two minutes; the address is the one
-  observed on that connection.
+- `peers` lists up to 32 other participants, most recently seen first. Each
+  is `(node id, socket addresses, relay)`. A participant is any node that
+  sent a `Status` request for the content in the last two minutes. The
+  addresses and the relay are those its connection was seen to go by, and
+  either may be missing: the node id is always enough to try.
 - A `Chunk` response whose length differs from the length implied by the
   manifest is a protocol error.
 

@@ -1,7 +1,7 @@
-use super::ui;
+use super::{Reach, ui};
 use anyhow::{Context, bail};
 use mux::artifact::{DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
-use mux::net::Identity;
+use mux::net::{Identity, Relays};
 use mux::store;
 use mux::swarm::{Node, Share};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -10,28 +10,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// How long to wait for a relay before printing a ticket without one.
+const RELAY_WAIT: Duration = Duration::from_secs(5);
+
 #[derive(clap::Args)]
 pub(super) struct Args {
     /// Files or directories to offer
     #[arg(required = true, value_name = "PATH")]
     paths: Vec<PathBuf>,
 
-    /// Address to listen on
-    #[arg(long, default_value = "0.0.0.0:4433", value_name = "ADDR")]
-    listen: SocketAddr,
+    #[command(flatten)]
+    reach: Reach,
 
-    /// Address other machines should dial, if it differs from what this
-    /// machine sees (repeatable)
+    /// Address to put in the ticket for other machines to dial (repeatable)
+    /// [default: this machine's own, if no relay is used]
     #[arg(long, value_name = "HOST[:PORT]")]
     advertise: Vec<String>,
 
     /// Chunk size, between 4K and 16M
     #[arg(long, default_value = "1M", value_parser = ui::parse_size, value_name = "SIZE")]
     chunk_size: u32,
-
-    /// How to decide how fast to send
-    #[arg(long, value_enum, default_value = "cubic", value_name = "HOW")]
-    congestion: super::Congestion,
 }
 
 pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
@@ -45,10 +43,24 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     }
 
     // Bind first so a busy port is reported before any hashing starts.
-    let node = Node::bind_with(identity, args.listen, args.congestion.into())
-        .with_context(|| format!("cannot listen on {}", args.listen))?;
-    let bound = node.local_addr()?;
-    let advertised = advertised_addresses(&args.advertise, bound);
+    let relays = args.reach.relays();
+    let node = Node::bind(identity, &args.reach.options())
+        .await
+        .context("cannot open a socket to listen on")?;
+    let bound = node.local_addrs();
+    // With no relay, a ticket has to say where this machine is.
+    let detect = relays == Relays::Off;
+    let advertised = advertised_addresses(&args.advertise, &bound, detect);
+    if !detect
+        && tokio::time::timeout(RELAY_WAIT, node.online())
+            .await
+            .is_err()
+    {
+        eprintln!(
+            "note: no relay answered within {} seconds; a machine behind a router may not reach this one",
+            RELAY_WAIT.as_secs()
+        );
+    }
 
     let mut shares: Vec<Arc<Share>> = Vec::new();
     for path in &args.paths {
@@ -66,12 +78,18 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     }
 
     eprintln!("node     {}", node.node_id());
+    let listed = |addrs: &[String]| match addrs {
+        [] => "nothing".to_owned(),
+        addrs => addrs.join(", "),
+    };
+    let bound: Vec<String> = bound.iter().map(ToString::to_string).collect();
     eprintln!(
-        "listen   {bound}  (advertised as {})",
-        advertised.join(", ")
+        "listen   {}  (advertised as {})",
+        listed(&bound),
+        listed(&advertised)
     );
     serve_until_interrupted(&shares).await;
-    node.shutdown();
+    node.shutdown().await;
     Ok(())
 }
 
@@ -136,25 +154,32 @@ async fn serve_until_interrupted(shares: &[Arc<Share>]) {
     eprintln!("stopped after uploading {}", ui::bytes(uploaded));
 }
 
-/// The `host:port` strings to put in tickets.
-fn advertised_addresses(requested: &[String], bound: SocketAddr) -> Vec<String> {
-    if requested.is_empty() {
-        let ip = if bound.ip().is_unspecified() {
-            primary_ip().unwrap_or_else(|| {
-                eprintln!(
-                    "note: could not detect this machine's address; pass --advertise so other machines can reach it"
-                );
-                IpAddr::from([127, 0, 0, 1])
-            })
-        } else {
-            bound.ip()
-        };
-        return vec![SocketAddr::new(ip, bound.port()).to_string()];
+/// The `host:port` strings to put in tickets: those asked for, at the port
+/// listened on if they name none. With none asked for, and if told to
+/// `detect`, the address this machine has on its network.
+fn advertised_addresses(requested: &[String], bound: &[SocketAddr], detect: bool) -> Vec<String> {
+    // A machine is told an IPv4 address unless it listens on IPv6 alone.
+    let Some(bound) = bound.iter().find(|addr| addr.is_ipv4()).or(bound.first()) else {
+        return requested.to_vec();
+    };
+    if !requested.is_empty() {
+        let with_port = |entry: &String| with_default_port(entry, bound.port());
+        return requested.iter().map(with_port).collect();
     }
-    requested
-        .iter()
-        .map(|entry| with_default_port(entry, bound.port()))
-        .collect()
+    if !detect {
+        return Vec::new();
+    }
+    let ip = if bound.ip().is_unspecified() {
+        primary_ip().unwrap_or_else(|| {
+            eprintln!(
+                "note: could not detect this machine's address; pass --advertise so other machines can reach it"
+            );
+            IpAddr::from([127, 0, 0, 1])
+        })
+    } else {
+        bound.ip()
+    };
+    vec![SocketAddr::new(ip, bound.port()).to_string()]
 }
 
 fn with_default_port(entry: &str, port: u16) -> String {
@@ -205,7 +230,27 @@ mod tests {
 
     #[test]
     fn a_specific_listen_address_is_advertised_as_is() {
-        let bound: SocketAddr = "192.168.1.20:4433".parse().unwrap();
-        assert_eq!(advertised_addresses(&[], bound), ["192.168.1.20:4433"]);
+        let bound: [SocketAddr; 1] = ["192.168.1.20:4433".parse().unwrap()];
+        assert_eq!(
+            advertised_addresses(&[], &bound, true),
+            ["192.168.1.20:4433"]
+        );
+    }
+
+    #[test]
+    fn with_a_relay_only_what_was_asked_for_is_advertised() {
+        let bound: [SocketAddr; 2] = [
+            "[::]:7000".parse().unwrap(),
+            "0.0.0.0:4433".parse().unwrap(),
+        ];
+        assert_eq!(advertised_addresses(&[], &bound, false), [""; 0]);
+        // What is asked for gets the port of the IPv4 socket.
+        let asked = ["seed.example".to_owned(), "10.0.0.5:9000".to_owned()];
+        assert_eq!(
+            advertised_addresses(&asked, &bound, false),
+            ["seed.example:4433", "10.0.0.5:9000"]
+        );
+        // With no socket there is no port to add.
+        assert_eq!(advertised_addresses(&asked, &[], true), asked);
     }
 }

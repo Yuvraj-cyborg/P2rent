@@ -3,7 +3,7 @@
 use model::Error;
 use model::artifact::Hash;
 use model::location::{Location, Protocol};
-use model::ticket::{NodeId, Ticket, TicketPeer};
+use model::ticket::{NodeId, Ticket, TicketPeer, Whereabouts};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use std::fmt::Write;
@@ -49,11 +49,23 @@ fn host() -> impl Strategy<Value = String> {
     ]
 }
 
+/// Where a ticket may say a peer is: at an address, by way of a relay, or
+/// nothing at all.
+fn whereabouts() -> impl Strategy<Value = Option<Whereabouts>> {
+    let address = (host(), any::<u16>())
+        .prop_map(|(host, port)| Whereabouts::Address(format!("{host}:{port}")));
+    let relay = (any::<bool>(), host(), proptest::option::of(any::<u16>())).prop_map(
+        |(secure, host, port)| {
+            let scheme = if secure { "https" } else { "http" };
+            let port = port.map_or(String::new(), |port| format!(":{port}"));
+            Whereabouts::Relay(format!("{scheme}://{host}{port}/"))
+        },
+    );
+    proptest::option::of(prop_oneof![address, relay])
+}
+
 fn ticket() -> impl Strategy<Value = Ticket> {
-    let peer = (node(), host(), any::<u16>()).prop_map(|(node, host, port)| TicketPeer {
-        node,
-        addr: format!("{host}:{port}"),
-    });
+    let peer = (node(), whereabouts()).prop_map(|(node, at)| TicketPeer { node, at });
     (hash(), vec(peer, 0..5)).prop_map(|(artifact, peers)| Ticket { artifact, peers })
 }
 

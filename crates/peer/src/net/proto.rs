@@ -7,16 +7,16 @@
 //! postcard-encoded message.
 
 use crate::error::{Error, Result};
+use iroh::endpoint::{RecvStream, SendStream};
 use model::artifact::{Bitfield, Hash};
 use model::place::Arrived;
 use model::ticket::NodeId;
-use quinn::{RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Protocol identifier negotiated during the TLS handshake.
-pub const ALPN: &[u8] = b"mux/3";
+pub const ALPN: &[u8] = b"mux/4";
 
 /// Requests are tiny; anything larger is a misbehaving peer.
 pub const MAX_REQUEST_BYTES: usize = 1024;
@@ -103,14 +103,38 @@ impl Have {
     }
 }
 
-/// How to reach another participant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Another participant: its node id, and what is known of where it is.
+///
+/// The id is enough to reach a node where nodes are looked up by id.
+/// What is known of where it is, is tried first.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerInfo {
     /// The participant's node id.
     pub node: NodeId,
-    /// Where it can be dialled. Only the IP address and port are sent: an
-    /// IPv6 scope id or flow label is local to one machine.
-    pub addr: SocketAddr,
+    /// Addresses it can be dialled at. Only the IP address and port are
+    /// sent: an IPv6 scope id or flow label is local to one machine.
+    pub addrs: Vec<SocketAddr>,
+    /// The web address of a relay it is reached through.
+    pub relay: Option<String>,
+}
+
+impl PeerInfo {
+    /// A participant of which only the id is known.
+    pub fn of(node: NodeId) -> Self {
+        Self {
+            node,
+            addrs: Vec::new(),
+            relay: None,
+        }
+    }
+
+    /// A participant that can be dialled at `addr`.
+    pub fn at(node: NodeId, addr: SocketAddr) -> Self {
+        Self {
+            addrs: vec![addr],
+            ..Self::of(node)
+        }
+    }
 }
 
 /// Writes one length-prefixed message.
