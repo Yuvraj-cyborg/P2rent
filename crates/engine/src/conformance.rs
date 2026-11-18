@@ -204,7 +204,7 @@ impl Source for Memory {
         ready(Ok(Description::of(&self.tree)))
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+    fn open(&self, file: usize, offset: u64, _len: u64) -> Pending<'_, Box<dyn Reader>> {
         let reader: Box<dyn Reader> = Box::new(MemoryReader {
             place: self.clone(),
             file,
@@ -791,7 +791,7 @@ pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wr
             continue;
         }
         // Read in order, in pieces of uneven sizes, a file is its bytes.
-        let reader = source.open(file, 0).await;
+        let reader = source.open(file, 0, bytes.len() as u64).await;
         let mut reader = reader.map_err(|e| wrong("opening a file", &e))?;
         let arrived = Arrived::default();
         let mut read = Vec::new();
@@ -817,12 +817,24 @@ pub async fn check_source(source: &dyn Source, sample: &Sample) -> Result<(), Wr
         let middle = bytes.len() / 2;
         let rest = u32::try_from(bytes.len() - middle).unwrap_or(u32::MAX);
         if random || middle == 0 {
-            let reader = source.open(file, middle as u64).await;
+            let reader = source.open(file, middle as u64, u64::from(rest)).await;
             let mut reader = reader.map_err(|e| wrong("opening part of the way in", &e))?;
             let tail = reader.read(rest, &arrived).await;
             ensure(
                 tail.as_deref() == Ok(&bytes[middle..]),
                 "the rest of a file reads wrong",
+            )?;
+        }
+        // Opened for a part that ends before the file does, it gives that
+        // part.
+        let (from, len) = (bytes.len() / 4, bytes.len() / 2);
+        if random && len > 0 {
+            let reader = source.open(file, from as u64, len as u64).await;
+            let mut reader = reader.map_err(|e| wrong("opening a part in the middle", &e))?;
+            let inside = reader.read(u32::try_from(len).unwrap_or(u32::MAX), &arrived);
+            ensure(
+                inside.await.as_deref() == Ok(&bytes[from..from + len]),
+                "a part in the middle of a file reads wrong",
             )?;
         }
         let range = source.read(file, middle as u64, rest).await;

@@ -264,9 +264,12 @@ A digest of the whole file is given by the user, or by the server in a
 `Repr-Digest` or `Digest` header. With one the transfer is *verified*, and
 without one it is *consistent*.
 
-A request is for the rest of the file from where it starts, and carries a
-run of chunks. A server that does not say how large its file is cannot be
-used. Redirects are followed, a proxy named in the environment is used, and
+A request is for a run of chunks and ends where the run ends. The answer
+is then over when the last of them has been read, nothing is sent that is
+not read, and the connection carries the next request. The first request
+of all asks for one byte, to learn how large the file is, and what follows
+goes over the connection it made. A server that does not say how large its
+file is cannot be used. Redirects are followed, a proxy named in the environment is used, and
 certificates are checked against those the system trusts. `headers.rs`
 reads what servers send, and is fuzzed.
 
@@ -368,15 +371,17 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
 whom else it knows, and asked for a chunk. The engine does the rest, and
 does the same for a supplier that is a web server or a folder.
 
-Any `Source` is a supplier through `engine::supplier`. It keeps a reader
-open after each chunk, and whoever asks for the chunk that follows reads on
-from it. For a web server that is one request for a long run of chunks and
-not one for each. A reader is closed as soon as the pipeline that was
-reading from it goes elsewhere: left open, a request for the rest of a
-file goes on being sent what nobody reads, over a link that others need.
-A source that cannot be opened part of the way in is one
-stream: the engine then runs a single pipeline over it, from the first
-chunk that is missing.
+Any `Source` is a supplier through `engine::supplier`. Asked for a chunk,
+it is told how many of the chunks after it are to be asked for next. It
+opens a reader for that chunk and those, keeps it open after each, and
+whoever asks for the chunk that follows reads on from it. For a web server
+that is one request for a run of chunks and not one for each, and a
+request that ends where the run does. A reader is closed when its last
+chunk has been read, or when it is said that the rest will not be asked
+for: left open, a request goes on being sent what nobody reads, over a
+link that others need. A source that cannot be opened part of the way in
+is one stream: the engine then runs a single pipeline over it, from the
+first chunk that is missing.
 
 ## Transfer
 
@@ -384,7 +389,7 @@ chunk that is missing.
 
 ```
 manager ──► one task per supplier, each with N pipelines
-            pipeline: claim chunk → fetch → hand to the store
+            pipeline: reserve a run of chunks → fetch each → hand it to the store
             store: hash → write → last chunk of a file → commit it
 ```
 
@@ -420,28 +425,56 @@ been dropped, so that nobody is left who could deliver: then it ends at
 once, saying what the last one was dropped for, once the chunks that had
 already arrived are stored.
 
-A pipeline reserves a chunk with a `Claim`. Dropping a claim without
-completing it returns the chunk to the pool, so cancellation and errors
-cannot strand a chunk. The schedule records which supplier is fetching each
+A pipeline reserves a run of chunks in a row and takes them one at a time.
+Each chunk it has taken is a `Claim`. Dropping a claim without completing
+it, or a run with chunks not yet taken, returns those chunks to the pool,
+so cancellation and errors cannot strand a chunk. The schedule records which supplier is fetching each
 chunk. It is proven that only that supplier can settle the chunk, and that a
 chunk becomes done in one way only: its fetcher reports it verified. Once a
 chunk has arrived, storing it, counting it and marking it done are one step
 that runs to its end whatever becomes of the supplier.
 
-Pipelines start scanning at an offset derived from the ids of the two ends,
-so ends that start together collect different chunks first and then
-exchange them. A copy from a source has nobody to exchange with, and starts
-at the first chunk.
+The pipelines of a supplier look for chunks from one place and take them
+in a row between them. That place starts at an offset derived from the ids
+of the two ends, so ends that start together collect different chunks
+first and then exchange them. A copy from a source has nobody to exchange
+with, and starts at the first chunk.
 
-How many pipelines a supplier has depends on what a request costs it.
+How many pipelines a supplier has, and how long their runs are, depends on
+what a request costs it.
 
+- Where every request travels on one connection, as to another machine, a
+  run is one chunk, and the number of pipelines follows how long a chunk
+  takes to come (`model::pace`). It starts at one. A chunk that comes
+  within two seconds adds one, and a chunk that takes more than eight
+  takes one away.
 - Where each request is a connection of its own, as to a web server, there
-  are `requests_per_supplier` of them, spread evenly round the chunks.
-- Where every request travels on one connection, as to another machine, the
-  number follows how long a chunk takes to come (`model::pace`). It starts
-  at one. A chunk that comes within two seconds adds one, and a chunk that
-  takes more than eight takes one away. These pipelines take the chunks in
-  a row between them.
+  are `requests_per_supplier` pipelines, and a run is what one request
+  asks for (`model::run`). Between two requests a connection carries
+  nothing for a round trip, so a pipeline should make few. And a pipeline
+  with nothing left to take stands idle while the others finish, so they
+  should end together. Both are had by sharing out the work by speed: a
+  pipeline's first run is half of an even share of what is free, which
+  shows how fast it is, and each run after that is what it would fetch in
+  the time the whole transfer still needs. If speeds hold, that is two
+  requests for each pipeline.
+- Speeds do not always hold. A pipeline with nothing to do takes over the
+  far end of what another has reserved and not yet come to: as much as it
+  could fetch by the time that other would get there, so that the two end
+  together. The answer the other is reading then goes on past where it
+  now stops and is cut off there. That costs the other its connection,
+  and its next request starts slowly on a new one, so this is done only
+  where it brings the end forward by more than two seconds. A slow
+  pipeline therefore takes little from a fast one, or nothing, and a fast
+  one takes most from a slow one. A run that has brought nothing for two
+  seconds is reckoned at how long it has been, so one that has stopped is
+  taken over whole in the end.
+
+Before [#84](https://github.com/yuvichh/mux/issues/84) a request was for
+the rest of the file, and a pipeline that ran into what another had
+fetched dropped its connection and began elsewhere. Far from the server
+four pipelines were slower than one: the server sent a quarter more than
+the file, and each new connection started slowly.
 
 A request takes a round trip before its first byte comes back. With a set
 few requests in flight, a fast route to a far machine stood idle for most

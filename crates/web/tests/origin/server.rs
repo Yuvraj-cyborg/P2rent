@@ -3,10 +3,13 @@
 //! It speaks just enough HTTP/1.1 to answer a `GET`, and is written out by
 //! hand so that a test can make it do what no real server library will:
 //! stop in the middle of a file, answer with the wrong part of it, or
-//! start serving another version halfway through.
+//! start serving another version halfway through. A connection carries one
+//! request after another, as long as each answer said how long it was and
+//! was sent whole.
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -65,6 +68,10 @@ struct State {
     fault: Mutex<Option<(Fault, usize)>>,
     /// What each request asked for: the `Range` header, or nothing.
     asked: Mutex<Vec<Option<String>>>,
+    /// How many connections were made.
+    connections: AtomicUsize,
+    /// How many bytes of the file were sent, all told.
+    sent: AtomicUsize,
 }
 
 impl Server {
@@ -75,11 +82,15 @@ impl Server {
             behaviour: Mutex::new(behaviour),
             fault: Mutex::new(None),
             asked: Mutex::default(),
+            connections: AtomicUsize::new(0),
+            sent: AtomicUsize::new(0),
         });
         let serving = state.clone();
         tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(answer(stream, serving.clone()));
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let state = serving.clone();
+                state.connections.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move { while answer(&mut stream, &state).await {} });
             }
         });
         Self { addr, state }
@@ -108,11 +119,22 @@ impl Server {
     pub(crate) fn asked(&self) -> Vec<Option<String>> {
         self.state.asked.lock().unwrap().clone()
     }
+
+    /// How many connections have been made so far.
+    pub(crate) fn connections(&self) -> usize {
+        self.state.connections.load(Ordering::Relaxed)
+    }
+
+    /// How many bytes of the file have been sent so far, all told.
+    pub(crate) fn sent(&self) -> usize {
+        self.state.sent.load(Ordering::Relaxed)
+    }
 }
 
-async fn answer(mut stream: TcpStream, state: Arc<State>) {
-    let Some(request) = read_head(&mut stream).await else {
-        return;
+/// Answers one request. Returns whether the connection can carry another.
+async fn answer(stream: &mut TcpStream, state: &State) -> bool {
+    let Some(request) = read_head(stream).await else {
+        return false;
     };
     let header = |name: &str| {
         request.lines().find_map(|line| {
@@ -137,13 +159,13 @@ async fn answer(mut stream: TcpStream, state: Arc<State>) {
             "HTTP/1.1 302 Found\r\nLocation: {onward}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let _ = stream.write_all(head.as_bytes()).await;
-        return;
+        return false;
     }
     if let Some(status) = behaviour.status {
         let head =
             format!("HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let _ = stream.write_all(head.as_bytes()).await;
-        return;
+        return false;
     }
 
     let size = behaviour.file.len();
@@ -201,16 +223,27 @@ async fn answer(mut stream: TcpStream, state: Arc<State>) {
     if behaviour.ranges {
         head.push_str("Accept-Ranges: bytes\r\n");
     }
-    head.push_str("Connection: close\r\n\r\n");
+    // An answer that does not say how long it is ends where the connection
+    // does.
+    if behaviour.no_length {
+        head.push_str("Connection: close\r\n");
+    }
+    head.push_str("\r\n");
     if stream.write_all(head.as_bytes()).await.is_err() {
-        return;
+        return false;
     }
 
-    send(&mut stream, body, &state).await;
+    let whole = send(stream, body, state).await;
+    if !whole || behaviour.no_length {
+        let _ = stream.shutdown().await;
+        return false;
+    }
+    true
 }
 
 /// Sends the body of an answer, as far as the fault that is due lets it.
-async fn send(stream: &mut TcpStream, body: &[u8], state: &State) {
+/// Returns whether all of it was sent.
+async fn send(stream: &mut TcpStream, body: &[u8], state: &State) -> bool {
     // A fault is spent only on an answer that has more body than a byte:
     // the first request of a transfer asks for one byte to learn the size.
     let fault = (body.len() > 1)
@@ -228,14 +261,15 @@ async fn send(stream: &mut TcpStream, body: &[u8], state: &State) {
     // In pieces, so that a reader that stops is noticed and not sent to.
     for piece in sending.chunks(16 * 1024) {
         if stream.write_all(piece).await.is_err() {
-            return;
+            return false;
         }
+        state.sent.fetch_add(piece.len(), Ordering::Relaxed);
     }
     if let Some(Fault::Stall(_)) = fault {
         let _ = stream.flush().await;
         tokio::time::sleep(Duration::from_secs(600)).await;
     }
-    let _ = stream.shutdown().await;
+    fault.is_none()
 }
 
 /// Reads a request as far as the empty line that ends its headers.
