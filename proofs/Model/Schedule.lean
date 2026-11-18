@@ -358,6 +358,18 @@ def claimable (chunks : List ChunkState) (available : Bitfield) (i : Nat) : Prop
   chunks[i]? = some ChunkState.Missing ∧ available.bit i = true
 
 open artifact.bitfield in
+/-- `chosen` is the first chunk that can be claimed, going round the ring
+from `start`: it is `passed` places on, and none of the places passed on
+the way could be claimed. -/
+def firstFrom (chunks : List ChunkState) (available : Bitfield) (start chosen : Nat) : Prop :=
+  ∃ passed, passed < chunks.length ∧ chosen = ringAt chunks.length start passed ∧
+    ∀ k, k < passed → ¬ claimable chunks available (ringAt chunks.length start k)
+
+/-- The place after `i` on a ring of `total` places. -/
+def ringNext (total i : Nat) : Nat :=
+  if i + 1 = total then 0 else i + 1
+
+open artifact.bitfield in
 /-- What is true each time round the search loop in `claim`: the position
 is where it should be on the ring, and nothing looked at so far could be
 claimed. -/
@@ -379,7 +391,9 @@ theorem schedule.Schedule.claim_loop.spec (v : alloc.vec.Vec ChunkState) (owner 
       | some chosen =>
         claimable v.val available chosen.val ∧
         v'.val = v.val.set chosen.val (ChunkState.InFlight owner) ∧
-        cursor'.val < v.val.length
+        cursor'.val < v.val.length ∧
+        firstFrom v.val available start chosen.val ∧
+        cursor'.val = ringNext v.val.length chosen.val
       | none =>
         v' = v ∧ cursor' = cursor ∧ ∀ i, ¬ claimable v.val available i ⦄ := by
   unfold schedule.Schedule.claim_loop
@@ -451,7 +465,8 @@ theorem schedule.Schedule.claim_loop.spec (v : alloc.vec.Vec ChunkState) (owner 
           have hget : v.val[at_.val]? = some ChunkState.Missing := by
             rw [List.getElem?_eq_getElem hatlt]
             simp_all
-          refine ⟨ ⟨ hget, by rw [← hoffered]; exact hisoffered ⟩, ?_, hnextlt ⟩
+          refine ⟨ ⟨ hget, by rw [← hoffered]; exact hisoffered ⟩, ?_, hnextlt,
+            ⟨ looked.val, hlooked, hat, hnone ⟩, by rw [hnextval, hring]; rfl ⟩
           simp [hback, hslot]
         · rename_i hnotoffered
           step as ⟨ looked', hlooked' ⟩
@@ -488,11 +503,12 @@ theorem none_missing_when_all_done (chunks : List ChunkState) (h : notDone chunk
   exact absurd (h ChunkState.Missing hmem) (by simp)
 
 open artifact.bitfield in
-/-- `claim` hands out a chunk only if that chunk is missing and the
-supplier holds it. It then marks exactly that chunk as being fetched by the
-claimant and moves the cursor to a valid position. It returns nothing only when no chunk
-at all could be claimed, and then changes nothing. The count stays right
-either way, and the call cannot fail. -/
+/-- `claim` hands out the first chunk, going round from the cursor, that is
+missing and that the supplier holds. It marks exactly that chunk as being
+fetched by the claimant and moves the cursor to the place after it. It
+returns nothing only when no chunk at all could be claimed, and then
+changes nothing. The count stays right either way, and the call cannot
+fail. -/
 @[step]
 theorem schedule.Schedule.claim.spec (s : Schedule) (owner : U32) (available : Bitfield)
     (cursor : U64) (hs : s.Counted) (hsized : available.Sized) :
@@ -503,7 +519,9 @@ theorem schedule.Schedule.claim.spec (s : Schedule) (owner : U32) (available : B
       | some chosen =>
         claimable s.chunks.val available chosen.val ∧
         s'.chunks.val = s.chunks.val.set chosen.val (ChunkState.InFlight owner) ∧
-        s'.remaining = s.remaining ∧ cursor'.val < s.chunks.val.length
+        s'.remaining = s.remaining ∧ cursor'.val < s.chunks.val.length ∧
+        firstFrom s.chunks.val available (cursor.val % s.chunks.val.length) chosen.val ∧
+        cursor'.val = ringNext s.chunks.val.length chosen.val
       | none =>
         s' = s ∧ cursor' = cursor ∧ ∀ i, ¬ claimable s.chunks.val available i ⦄ := by
   unfold schedule.Schedule.claim
@@ -535,11 +553,14 @@ theorem schedule.Schedule.claim.spec (s : Schedule) (owner : U32) (available : B
       index.val hsized htotal hindexlt hinv as ⟨ found, chunks', cursor', hpost ⟩
     cases found with
     | some chosen =>
-      obtain ⟨ hclaim, hchunks, hcursor ⟩ := hpost
+      obtain ⟨ hclaim, hchunks, hcursor, hfirst, hafter ⟩ := hpost
       -- A missing chunk and one being fetched both count as not done.
       have hcount := notDone_set s.chunks.val chosen.val ChunkState.Missing
         (ChunkState.InFlight owner) hclaim.1
-      refine ⟨ ?_, hclaim, hchunks, hcursor ⟩
+      have hfrom : index.val = cursor.val % s.chunks.val.length := by
+        rw [hindex, htotal]
+      rw [hfrom] at hfirst
+      refine ⟨ ?_, hclaim, hchunks, hcursor, hfirst, hafter ⟩
       simp only [schedule.Schedule.Counted] at hs ⊢
       simp at hcount
       rw [hchunks, hcount]
@@ -587,5 +608,20 @@ theorem schedule.Schedule.state.spec (s : Schedule) (index : U64) :
         scalar_tac
       · scalar_tac
     simp [List.getElem?_eq_none hpast]
+
+/-- `is_empty` says whether the transfer has no chunks at all. -/
+@[step]
+theorem schedule.Schedule.is_empty.spec (s : Schedule) :
+    schedule.Schedule.is_empty s ⦃ r => r = decide (s.chunks.val.length = 0) ⦄ := by
+  unfold schedule.Schedule.is_empty
+  step*
+
+/-- `remaining` gives the number of chunks that are not done yet. -/
+@[step]
+theorem schedule.Schedule.impl.remaining.spec (s : Schedule) (hs : s.Counted) :
+    schedule.Schedule.impl.remaining s ⦃ r => r.val = notDone s.chunks.val ⦄ := by
+  unfold schedule.Schedule.impl.remaining
+  simp only [WP.spec_ok]
+  exact hs
 
 end model
