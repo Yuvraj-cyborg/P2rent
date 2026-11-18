@@ -710,3 +710,180 @@ fn a_copy_that_goes_on_offering_serves_the_next_machine() {
     assert!(said.contains("from 1 machine"), "{said}");
     assert_eq!(files_under(&third.join("tree")), files_under(&source));
 }
+
+/// Runs a sync against the same live peer, and returns its JSON events.
+fn sync_ticket(
+    key: &Path,
+    ticket: &str,
+    to: &Path,
+    flags: &[&str],
+    exit: i32,
+) -> Vec<serde_json::Value> {
+    let output = with_ticket(key, ["--json", "sync"], ticket)
+        .arg(to)
+        .args(flags)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(exit),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn ticket_sync_plans_then_pulls_only_the_missing_chunks_into_the_named_folder() {
+    const CHUNK: usize = 64 * 1024;
+    const INSERT: usize = 4096;
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("offered");
+    let to = tmp.path().join("renamed");
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    std::fs::create_dir_all(source.join("empty-dir")).unwrap();
+    let key = tmp.path().join("receiver.key");
+
+    // The selected file starts after unselected chunks in the manifest.
+    std::fs::write(source.join("a"), vec![17; CHUNK * 2]).unwrap();
+    let old: Vec<_> = (1..=12u8)
+        .flat_map(|n| std::iter::repeat_n(n, CHUNK))
+        .collect();
+    let mut new = old.clone();
+    new.splice(CHUNK * 3..CHUNK * 3, std::iter::repeat_n(81, INSERT));
+    std::fs::write(source.join("nested/b"), &new).unwrap();
+    std::fs::write(source.join("z"), b"same bytes, older timestamp").unwrap();
+    let (_seed, ticket) = seed(&tmp.path().join("sender.key"), &source);
+
+    let plan = sync_ticket(&key, &ticket, &to, &["--dry-run"], 0);
+    assert_eq!(plan.last().unwrap()["event"], "sync_plan");
+    assert!(!to.exists());
+    sync_ticket(&key, &ticket, &to, &[], 0);
+    assert_eq!(files_under(&to), files_under(&source));
+    assert!(to.join("empty-dir").is_dir());
+
+    std::fs::write(to.join("nested/b"), &old).unwrap();
+    let old_time = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(to.join("z"))
+        .unwrap()
+        .set_modified(old_time)
+        .unwrap();
+    std::fs::write(to.join("extra"), b"local").unwrap();
+    let before = files_under(&to);
+    let plan = sync_ticket(&key, &ticket, &to, &["--dry-run", "--delete"], 0);
+    let planned = plan.last().unwrap();
+    assert_eq!(planned["replace"], 2);
+    assert_eq!(planned["remove"], 1);
+    assert_eq!(files_under(&to), before);
+
+    let lines = sync_ticket(&key, &ticket, &to, &["--delete"], 0);
+    let mut committed: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "file")
+        .map(|line| Path::new(line["path"].as_str().unwrap()).to_owned())
+        .collect();
+    committed.sort();
+    assert_eq!(committed, [to.join("nested/b"), to.join("z")]);
+    let done = lines.last().unwrap();
+    assert_eq!(done["event"], "synced");
+    assert_eq!(done["fetched"], CHUNK + INSERT);
+    assert_eq!(
+        done["kept"],
+        new.len() - CHUNK - INSERT + b"same bytes, older timestamp".len()
+    );
+    let trash = Path::new(done["trash"].as_str().unwrap());
+    assert_eq!(std::fs::read(trash.join("nested/b")).unwrap(), old);
+    assert_eq!(std::fs::read(trash.join("extra")).unwrap(), b"local");
+    assert_eq!(
+        trash.join("z").metadata().unwrap().modified().unwrap(),
+        old_time
+    );
+    let mut live = files_under(&to);
+    live.retain(|name, _| !name.starts_with(".mux-trash/"));
+    assert_eq!(live, files_under(&source));
+    let again = sync_ticket(&key, &ticket, &to, &["--delete"], 0);
+    assert_eq!(again.len(), 1, "{again:?}");
+    assert_eq!(again[0]["bytes"], 0);
+    assert_eq!(again[0]["fetched"], 0);
+}
+
+#[test]
+fn ticket_sync_preserves_blocked_paths_and_stops_before_mass_deletion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let to = tmp.path().join("out");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("conflict"), b"snapshot").unwrap();
+    std::fs::write(source.join("new"), b"from peer").unwrap();
+    std::fs::create_dir_all(to.join("conflict")).unwrap();
+    for name in ["conflict/mine", "one", "two", "three", "four"] {
+        std::fs::write(to.join(name), name).unwrap();
+    }
+    let (_seed, ticket) = seed(&tmp.path().join("sender.key"), &source);
+    let key = tmp.path().join("receiver.key");
+    let before = files_under(&to);
+    let refused = sync_ticket(&key, &ticket, &to, &["--delete"], 1);
+    assert!(
+        refused.last().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("--force")
+    );
+    assert_eq!(files_under(&to), before);
+    assert!(!to.join(".mux-trash").exists());
+
+    let blocked = sync_ticket(&key, &ticket, &to, &[], 1);
+    let done = blocked
+        .iter()
+        .find(|event| event["event"] == "synced")
+        .unwrap();
+    assert_eq!(done["blocked"], 1);
+    assert_eq!(done["fetched"], b"from peer".len());
+    assert_eq!(
+        std::fs::read(to.join("conflict/mine")).unwrap(),
+        b"conflict/mine"
+    );
+    assert_eq!(std::fs::read(to.join("new")).unwrap(), b"from peer");
+    sync_ticket(
+        &key,
+        &ticket,
+        &to,
+        &["--delete", "--force", "--no-trash"],
+        0,
+    );
+    assert_eq!(files_under(&to), files_under(&source));
+}
+
+#[cfg(unix)]
+#[test]
+fn ticket_sync_preserves_files_when_the_destination_or_trash_is_a_link() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("offered");
+    let to = tmp.path().join("chosen");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&to).unwrap();
+    std::fs::write(to.join("mine"), b"local").unwrap();
+    let (_seed, ticket) = seed(&tmp.path().join("sender.key"), &source);
+    let key = tmp.path().join("receiver.key");
+    let alias = tmp.path().join("alias");
+    symlink(&to, &alias).unwrap();
+    let alias = format!("{}/", alias.display());
+    let flags = ["--delete", "--force"];
+    sync_ticket(&key, &ticket, Path::new(&alias), &flags, 1);
+    assert_eq!(std::fs::read(to.join("mine")).unwrap(), b"local");
+    let outside = tmp.path().join("elsewhere");
+    std::fs::create_dir(&outside).unwrap();
+    symlink(&outside, to.join(".mux-trash")).unwrap();
+    sync_ticket(&key, &ticket, &to, &flags, 1);
+    assert_eq!(std::fs::read(to.join("mine")).unwrap(), b"local");
+    assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
+}

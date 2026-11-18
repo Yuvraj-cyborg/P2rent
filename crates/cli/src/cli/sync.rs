@@ -13,13 +13,13 @@ use mux::Location;
 use mux::artifact::Tree;
 use mux::engine;
 use mux::mirror::Step;
-use mux::sync::{Looked, Options, look, sync};
+use mux::sync::{Input, Looked, Options};
 use std::path::Path;
 use std::time::Duration;
 
 #[derive(clap::Args)]
 pub(super) struct Args {
-    /// The place to match: a web address, a file or a folder
+    /// The place to match: a ticket, web address, file or folder
     #[arg(value_name = "SOURCE")]
     source: String,
 
@@ -37,6 +37,9 @@ pub(super) struct Args {
 
     #[command(flatten)]
     care: Care,
+
+    #[command(flatten)]
+    reach: super::Reach,
 
     /// The most parts of a file to fetch at once from the source
     #[arg(long, default_value_t = 8, value_name = "N")]
@@ -69,10 +72,14 @@ enum Told<'a> {
     Planned,
     /// It was carried out, and what it took away is in `trash`, if it took
     /// anything away and kept it.
-    Done { trash: Option<&'a str> },
+    Done {
+        trash: Option<&'a str>,
+        fetched: u64,
+        kept: u64,
+    },
 }
 
-pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
+pub(super) async fn run(args: &Args, json: bool, key: Option<&Path>) -> anyhow::Result<()> {
     let source = mux::locate(&args.source)?;
     let Location::Local(to) = mux::locate(&args.destination)? else {
         return misuse(format!(
@@ -80,17 +87,30 @@ pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
             args.destination
         ));
     };
+    let to = Path::new(&to);
+    if let Location::Ticket(ticket) = &source {
+        let node = super::node(key, &args.reach).await?;
+        let result = async {
+            let input = Input::ticket(&node, ticket).await?;
+            run_from(args, json, to, input).await
+        }
+        .await;
+        node.shutdown().await;
+        return result;
+    }
     // The destination is what is made to match, not a folder to put a
     // copy in: so it is written here as a folder, for the check that it
     // does not lie inside the source.
-    let inside = format!("{to}/");
+    let inside = format!("{}/", to.display());
     let sources = cp::sources(&source, Some(&inside), None, &[])
         .await
         .with_context(|| format!("cannot look at {source}"))?;
-    let to = Path::new(&to);
+    run_from(args, json, to, Input::places(&sources)).await
+}
 
+async fn run_from(args: &Args, json: bool, to: &Path, input: Input<'_>) -> anyhow::Result<()> {
     if args.dry_run {
-        let looked = look(&sources, to, args.delete).await?;
+        let looked = input.look(to, args.delete).await?;
         say(args, json, &looked, Told::Planned);
         if let Some(why) = looked.stopped(args.care.force) {
             eprintln!("note: a sync would stop here: {why}");
@@ -110,13 +130,30 @@ pub(super) async fn run(args: &Args, json: bool) -> anyhow::Result<()> {
     };
     let folder = to.parent().unwrap_or(Path::new("."));
     let showing = Shown::new(json, &args.source, &args.destination, folder);
-    let synced = sync(sources, to, &options, showing.observer()).await;
+    let synced = input
+        .sync(to, &options, showing.observer(), |tree| {
+            showing.copying(tree);
+        })
+        .await;
     showing.done();
     let synced = synced?;
 
     let trash = synced.trash.as_deref().map(Path::to_string_lossy);
     let trash = trash.as_deref();
-    say(args, json, &synced.looked, Told::Done { trash });
+    let (fetched, kept) = synced
+        .copied
+        .as_ref()
+        .map_or((0, 0), |copied| (copied.fetched, copied.resumed));
+    say(
+        args,
+        json,
+        &synced.looked,
+        Told::Done {
+            trash,
+            fetched,
+            kept,
+        },
+    );
     let blocked = synced.looked.plan.count(Step::Blocked);
     if blocked > 0 {
         bail!(
@@ -176,7 +213,11 @@ fn say(args: &Args, json: bool, looked: &Looked, told: Told<'_>) {
         let (remove, keep) = (count(Step::Remove), count(Step::Keep));
         let blocked = count(Step::Blocked);
         tell::say(&match told {
-            Told::Done { trash } => Line::Synced {
+            Told::Done {
+                trash,
+                fetched,
+                kept,
+            } => Line::Synced {
                 source,
                 destination,
                 add,
@@ -186,6 +227,8 @@ fn say(args: &Args, json: bool, looked: &Looked, told: Told<'_>) {
                 keep,
                 blocked,
                 bytes,
+                fetched,
+                kept,
                 trash,
             },
             Told::Planned => Line::SyncPlan {
@@ -208,11 +251,17 @@ fn say(args: &Args, json: bool, looked: &Looked, told: Told<'_>) {
     }
     // The same counts, as what was done or as what would be.
     let words = match told {
-        Told::Done { .. } => ["added", "replaced", "touched", "removed", "brought"],
-        Told::Planned => ["would add", "replace", "touch", "remove", "to bring"],
+        Told::Done { .. } => ["added", "replaced", "touched", "removed"],
+        Told::Planned => ["would add", "replace", "touch", "remove"],
+    };
+    let transfer = match told {
+        Told::Done { fetched, kept, .. } => {
+            format!("{} fetched, {} reused", ui::bytes(fetched), ui::bytes(kept))
+        }
+        Told::Planned => format!("{} to bring", ui::bytes(bytes)),
     };
     eprintln!(
-        "{} {}, {} {}, {} {} and {} {}, and kept {}  ({} {})",
+        "{} {}, {} {}, {} {} and {} {}, and kept {}  ({transfer})",
         words[0],
         count(Step::Add),
         words[1],
@@ -222,11 +271,11 @@ fn say(args: &Args, json: bool, looked: &Looked, told: Told<'_>) {
         words[3],
         count(Step::Remove),
         count(Step::Keep),
-        ui::bytes(bytes),
-        words[4],
     );
     match told {
-        Told::Done { trash: Some(trash) } => {
+        Told::Done {
+            trash: Some(trash), ..
+        } => {
             eprintln!("what was replaced or removed is in {trash}");
         }
         Told::Planned if count(Step::Blocked) > 0 => eprintln!(
