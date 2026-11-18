@@ -8,7 +8,10 @@
 //! a time. Where each request is a connection of its own, the run is what
 //! one request asks for. The far end of what a fetcher has reserved and
 //! not yet taken can be taken over by another that has nothing to do and
-//! would get there sooner: see [`model::run`].
+//! would get there sooner: see [`model::run`]. So can the chunk it is
+//! reading. That one is then being fetched twice, and belongs to whoever
+//! took it over: the first copy to come is stored, and the chunk is done
+//! when its owner's has come.
 
 use model::artifact::Bitfield;
 use model::run;
@@ -51,6 +54,9 @@ struct Reading {
     end: u64,
     /// Whether another fetcher took over the end of the run.
     cut: bool,
+    /// Whether the last chunk taken, the one before `next`, has been asked
+    /// for and has not come, and is still this run's to fetch.
+    fetching: bool,
     /// Whether the run is what one request asks for, and not a chunk that
     /// is a request of its own.
     stream: bool,
@@ -86,6 +92,16 @@ impl Reading {
     /// fetcher that takes `mine` for a chunk: see [`run::spare`].
     fn spare(&self, now: u64, mine: u64) -> u64 {
         run::spare(self.left(), self.each(now), mine)
+    }
+
+    /// The chunk that is being read, if a fetcher that takes `mine` for a
+    /// chunk should fetch it as well at time `now`, and how long that is
+    /// reckoned to save: see [`run::relieve`].
+    fn relief(&self, now: u64, mine: u64) -> Option<(u64, u64)> {
+        let waited = now.saturating_sub(self.since);
+        let each = self.each(now);
+        let relieved = self.fetching && run::relieve(each, waited, mine);
+        relieved.then(|| (waited.max(each), self.next - 1))
     }
 }
 
@@ -223,8 +239,73 @@ impl Claims {
                 next: first,
                 end,
                 cut: false,
+                fetching: false,
                 stream: matches!(size, Size::Run { .. }),
                 micros_each: lately,
+                since: now,
+            },
+        ));
+        drop(state);
+        Some(Reserved {
+            claims: claims.clone(),
+            number,
+        })
+    }
+
+    /// Takes over, for `owner`, a chunk that another fetcher is reading:
+    /// one that `available` holds and that `owner`, which takes `mine`
+    /// microseconds for a chunk, would have sooner by enough
+    /// ([`run::relieve`]). Of those, the one that saves most time. For a
+    /// fetcher that has nothing free to reserve and nothing to take over
+    /// from the end of a run. `now` is the time, in microseconds since the
+    /// transfer started.
+    ///
+    /// The chunk is `owner`'s from here on. The fetcher that was reading
+    /// it is not stopped: if its copy comes first, that is the one stored,
+    /// and nothing more comes of the other.
+    pub(crate) fn relieve(
+        claims: &Shared,
+        owner: Owner,
+        available: &Bitfield,
+        now: u64,
+        mine: u64,
+    ) -> Option<Reserved> {
+        let mut state = claims.state();
+        let best = state
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, reading))| reading.owner != owner)
+            .filter_map(|(place, (_, reading))| {
+                let (saved, index) = reading.relief(now, mine)?;
+                available.get(index).then_some((saved, place, index))
+            })
+            .max();
+        let (_, place, index) = best?;
+        let reading = &mut state.runs[place].1;
+        let was = reading.owner;
+        reading.fetching = false;
+        if !state.schedule.settle(index, was, Outcome::Failed) {
+            return None;
+        }
+        // The chunk is missing for this instant only, and the cursor is on
+        // it: it is the one this claims.
+        let mut cursor = index;
+        let claimed = state.schedule.claim(owner, available, &mut cursor);
+        debug_assert_eq!(claimed, Some(index));
+        claimed?;
+        let number = state.numbers;
+        state.numbers += 1;
+        state.runs.push((
+            number,
+            Reading {
+                owner,
+                next: index,
+                end: index + 1,
+                cut: false,
+                fetching: false,
+                stream: false,
+                micros_each: 0,
                 since: now,
             },
         ));
@@ -333,6 +414,7 @@ impl Reserved {
         }
         let index = reading.next;
         reading.next += 1;
+        reading.fetching = true;
         let (owner, following) = (reading.owner, reading.left());
         drop(state);
         let claim = Claim {
@@ -346,11 +428,50 @@ impl Reserved {
 
     /// Takes in that a chunk of the run has come, at time `now`, and took
     /// `micros_each`.
+    ///
+    /// The first time, fetchers with nothing to do are told to look again:
+    /// nothing is taken over from a run of which nothing is known, and now
+    /// something is. Left to find out by themselves they would look in
+    /// their own time, and a transfer would end that much later.
     pub(crate) fn learn(&self, micros_each: u64, now: u64) {
-        let mut state = self.claims.state();
-        if let Some((_, reading)) = state.runs.iter_mut().find(|(n, _)| *n == self.number) {
-            reading.micros_each = micros_each;
-            reading.since = now;
+        let first = {
+            let mut state = self.claims.state();
+            let reading = state.runs.iter_mut().find(|(n, _)| *n == self.number);
+            reading.is_some_and(|(_, reading)| {
+                let first = reading.micros_each == 0 && micros_each > 0;
+                reading.micros_each = micros_each;
+                reading.since = now;
+                reading.fetching = false;
+                first
+            })
+        };
+        if first {
+            (self.claims.wake)();
+        }
+    }
+}
+
+impl Reserved {
+    /// Takes in how long a chunk of the run looks like taking, going by
+    /// how much of its first has come: `micros_each`. It counts only
+    /// until the first chunk has come whole, and from then on what
+    /// [`Reserved::learn`] is told does. A run whose first chunk is slow
+    /// is then known to be slow before that chunk is there, and fetchers
+    /// with nothing to do are told, as when it is first learned.
+    pub(crate) fn reckon(&self, micros_each: u64) {
+        let first = {
+            let mut state = self.claims.state();
+            let reading = state.runs.iter_mut().find(|(n, _)| *n == self.number);
+            reading.is_some_and(|(_, reading)| {
+                let first = reading.micros_each == 0 && micros_each > 0;
+                if first {
+                    reading.micros_each = micros_each;
+                }
+                first
+            })
+        };
+        if first {
+            (self.claims.wake)();
         }
     }
 }
@@ -645,6 +766,102 @@ mod tests {
         let Next::Cut(1) = stuck.next() else {
             panic!("nothing is left of the run");
         };
+    }
+
+    /// Nothing is taken over from a run of which nothing is known. So when
+    /// the first chunk of one has come, whoever has nothing to do is told:
+    /// there may be something to take over now.
+    #[test]
+    fn fetchers_with_nothing_to_do_are_told_when_a_run_first_learns_its_speed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let told = std::sync::Arc::new(AtomicUsize::new(0));
+        let counting = told.clone();
+        let claims = Claims::new(&Bitfield::new(8), move || {
+            counting.fetch_add(1, Ordering::Relaxed);
+        });
+        let held = Bitfield::full(8);
+        let mut slow = Claims::reserve(&claims, 1, &held, &mut 0, run(1), 0).unwrap();
+        let Next::Chunk(_fetching, 7) = slow.next() else {
+            panic!("the run has eight chunks");
+        };
+        // A fetcher a hundred times faster may take nothing yet.
+        let quick = 3 * MS;
+        assert!(!claims.spare(&held, 300 * MS, quick));
+        assert_eq!(told.load(Ordering::Relaxed), 0);
+
+        slow.learn(300 * MS, 300 * MS);
+        assert_eq!(told.load(Ordering::Relaxed), 1);
+        // Now it takes all seven that are not being read: it would have
+        // them in a fiftieth of a second, and the run in two.
+        assert!(claims.spare(&held, 300 * MS, quick));
+        assert_eq!(states(&claims).iter().filter(|&&s| s == Missing).count(), 7);
+        // Told of that too, and of nothing more when the next chunk comes.
+        let before = told.load(Ordering::Relaxed);
+        slow.learn(280 * MS, 600 * MS);
+        assert_eq!(told.load(Ordering::Relaxed), before);
+    }
+
+    /// A chunk that is being read is taken over by a fetcher that would
+    /// have it far sooner. It is then the taker's: done when the taker's
+    /// copy is stored, whatever becomes of the reader's.
+    #[test]
+    fn a_chunk_that_is_being_read_is_taken_over_by_a_much_faster_fetcher() {
+        let claims = Claims::new(&Bitfield::new(2), || {});
+        let held = Bitfield::full(2);
+        let mut slow = Claims::reserve(&claims, 1, &held, &mut 0, run(1), 0).unwrap();
+        let quick = 10 * MS;
+        // Nothing is being read yet.
+        assert!(Claims::relieve(&claims, 2, &held, 500 * MS, quick).is_none());
+        let Next::Chunk(reading, 1) = slow.next() else {
+            panic!("the run has two chunks");
+        };
+        // Nor is anything known of the reader, half a second in.
+        assert!(Claims::relieve(&claims, 2, &held, 500 * MS, quick).is_none());
+        // By what has come of the chunk, it looks like taking eight
+        // seconds. Its own supplier leaves it, and so does a fetcher that
+        // does not hold it. One that is quick takes it.
+        slow.reckon(8_000 * MS);
+        assert!(Claims::relieve(&claims, 1, &held, 500 * MS, quick).is_none());
+        assert!(Claims::relieve(&claims, 2, &Bitfield::new(2), 500 * MS, quick).is_none());
+        let mut taken = Claims::relieve(&claims, 2, &held, 500 * MS, quick).unwrap();
+        assert_eq!(states(&claims), [InFlight(2), InFlight(1)]);
+        // Once, and not again from the one who took it.
+        assert!(Claims::relieve(&claims, 3, &held, 500 * MS, quick).is_none());
+        let Next::Chunk(mine, 0) = taken.next() else {
+            panic!("the chunk that was taken over is there to take");
+        };
+        assert_eq!(mine.index, 0);
+
+        // The reader's copy comes first. The chunk is not the reader's to
+        // settle, and is done when the taker's has come.
+        claims.complete(reading);
+        assert_eq!(states(&claims), [InFlight(2), InFlight(1)]);
+        claims.complete(mine);
+        assert_eq!(states(&claims)[0], ChunkState::Done);
+        // The rest of the reader's run is still its own.
+        let Next::Chunk(next, 0) = slow.next() else {
+            panic!("one chunk of the run is left");
+        };
+        assert_eq!(next.index, 1);
+    }
+
+    /// The chunk that is taken over is the one that saves most time.
+    #[test]
+    fn of_two_chunks_being_read_the_one_longest_in_coming_is_taken_over() {
+        let claims = Claims::new(&Bitfield::new(2), || {});
+        let held = Bitfield::full(2);
+        let mut cursor = 0;
+        let mut early = Claims::reserve(&claims, 1, &held, &mut cursor, Size::One, 0).unwrap();
+        let mut late =
+            Claims::reserve(&claims, 2, &held, &mut cursor, Size::One, 4_000 * MS).unwrap();
+        let (Next::Chunk(_first, 0), Next::Chunk(_second, 0)) = (early.next(), late.next()) else {
+            panic!("each run has its chunk");
+        };
+        // Neither has brought anything. One has been awaited for five
+        // seconds, the other for one: only the first is reckoned stuck.
+        let taken = Claims::relieve(&claims, 3, &held, 5_000 * MS, 10 * MS).unwrap();
+        drop(taken);
+        assert_eq!(states(&claims), [Missing, InFlight(2)]);
     }
 
     #[test]
@@ -978,5 +1195,72 @@ mod interleavings {
             assert_eq!(read + fetched, CHUNKS);
             finish(&claims, &held);
         });
+    }
+
+    /// One fetcher reads a chunk. Another takes that chunk over while it
+    /// is being read, so that two are fetching it. Each then stores its
+    /// copy or gives up, in either order. Under every interleaving the
+    /// chunk is done exactly if whoever owned it at the end stored it,
+    /// what the other did changes nothing, and afterwards nothing is left
+    /// reserved.
+    #[test]
+    fn a_chunk_taken_over_while_it_is_read_is_never_stranded() {
+        for (reader_stores, other_stores) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            loom::model(move || {
+                let claims = Claims::new(&Bitfield::new(1), || {});
+                let all = Bitfield::full(1);
+                let mut reading = Claims::reserve(&claims, 0, &all, &mut 0, Size::One, 0).unwrap();
+
+                let reader = thread::spawn({
+                    let claims = claims.clone();
+                    move || {
+                        let Next::Chunk(claim, 0) = reading.next() else {
+                            panic!("a run that was reserved has a chunk");
+                        };
+                        if reader_stores {
+                            claims.complete(claim);
+                        }
+                    }
+                });
+                let other = thread::spawn({
+                    let claims = claims.clone();
+                    move || {
+                        // Long after the chunk was asked for, by a fetcher
+                        // that is quick: worth fetching a second time.
+                        let all = Bitfield::full(1);
+                        let Some(mut taken) = Claims::relieve(&claims, 1, &all, u64::MAX, 1) else {
+                            return false;
+                        };
+                        let Next::Chunk(claim, 0) = taken.next() else {
+                            panic!("a chunk that was taken over is there to take");
+                        };
+                        if other_stores {
+                            claims.complete(claim);
+                        }
+                        true
+                    }
+                });
+                reader.join().unwrap();
+                let took_over = other.join().unwrap();
+
+                // It is done exactly if its owner at the end stored it.
+                let done = if took_over {
+                    other_stores
+                } else {
+                    reader_stores
+                };
+                let state = claims.state();
+                let expected = if done {
+                    ChunkState::Done
+                } else {
+                    ChunkState::Missing
+                };
+                assert_eq!(state.schedule.state(0), Some(expected));
+                assert_eq!(state.schedule.is_complete(), done);
+                assert!(state.runs.is_empty());
+            });
+        }
     }
 }
