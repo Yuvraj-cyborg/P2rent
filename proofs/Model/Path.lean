@@ -194,11 +194,27 @@ theorem artifact.path.precedes.spec (a b : Slice U8) :
 def Separator (b : U8) : Prop :=
   b = 47#u8 ∨ b = 92#u8 ∨ b = 58#u8 ∨ b = 0#u8
 
+/-- A capital letter as its small letter, and any other byte as itself. -/
+def lowerOf (b : U8) : Nat :=
+  if 65 ≤ b.val ∧ b.val ≤ 90 then b.val + 32 else b.val
+
+/-- What is added to a file's name while it is being written: `.mux-part`. -/
+def partSuffix : List U8 :=
+  [46#u8, 109#u8, 117#u8, 120#u8, 45#u8, 112#u8, 97#u8, 114#u8, 116#u8]
+
+/-- A name that ends with the suffix of a part file, in any letter case. A
+file of such a name could be taken for the part file of another. -/
+def PartName (n : List U8) : Prop :=
+  9 ≤ n.length ∧
+  ∀ k, k < 9 → lowerOf (n.getD (n.length - 9 + k) 0#u8) = (partSuffix.getD k 0#u8).val
+
 /-- A name that means one level down, inside the directory it is in, on
-every platform: it is not empty, not too long, not `.` or `..`, and holds no
-separator. -/
+every platform, and that no part file has: it is not empty, not too long,
+not `.` or `..`, holds no separator, and does not end as a part file's name
+does. -/
 def SafeName (n : List U8) : Prop :=
-  n ≠ [] ∧ n.length ≤ 246 ∧ n ≠ [46#u8] ∧ n ≠ [46#u8, 46#u8] ∧ ∀ x ∈ n, ¬ Separator x
+  n ≠ [] ∧ n.length ≤ 246 ∧ n ≠ [46#u8] ∧ n ≠ [46#u8, 46#u8] ∧
+  (∀ x ∈ n, ¬ Separator x) ∧ ¬ PartName n
 
 @[step]
 theorem artifact.path.is_separator.spec (b : U8) :
@@ -212,25 +228,29 @@ theorem artifact.path.is_separator.spec (b : U8) :
       · simp_all [Separator]
       · simp_all [Separator]
 
-/-- `is_current` recognises `.`, and cannot fail. -/
+/-- `is_current` says yes exactly for `.`, and cannot fail. -/
 @[step]
 theorem artifact.path.is_current.spec (n : Slice U8) :
-    artifact.path.is_current n ⦃ r => n.val = [46#u8] → r = true ⦄ := by
+    artifact.path.is_current n ⦃ r => r = true ↔ n.val = [46#u8] ⦄ := by
   simp only [artifact.path.is_current]
   split
   · rename_i hlen
     simp only [WP.spec_ok]
-    intro hdot
-    have hone : n.val.length = 1 := by
-      rw [hdot]
-      rfl
-    scalar_tac
+    constructor
+    · intro h
+      cases h
+    · intro hdot
+      have hone : n.val.length = 1 := by
+        rw [hdot]
+        rfl
+      scalar_tac
   · rename_i hlen
     have hone : n.val.length = 1 := by scalar_tac
+    obtain ⟨ one, hsingle ⟩ := List.length_eq_one_iff.mp hone
     step as ⟨ first, hfirst ⟩
-    intro hdot
-    simp [hdot] at hfirst
-    simp [hfirst]
+    simp only [hsingle, List.getElem_cons_zero] at hfirst
+    rw [hsingle, hfirst]
+    simp
 
 /-- `is_parent` says yes exactly for `..`, and cannot fail. -/
 @[step]
@@ -273,25 +293,48 @@ theorem artifact.path.is_parent.spec (n : Slice U8) :
       rw [hpair, htwo', hfirst]
       simp
 
-/-- `lower` cannot fail: a capital letter plus 32 is still a byte. -/
+/-- `lower` gives a capital letter as its small letter and any other byte
+as itself. It cannot fail: a capital letter plus 32 is still a byte. -/
 @[step]
-theorem artifact.path.lower.spec (b : U8) : artifact.path.lower b ⦃ _ => True ⦄ := by
+theorem artifact.path.lower.spec (b : U8) :
+    artifact.path.lower b ⦃ r => r.val = lowerOf b ⦄ := by
   unfold artifact.path.lower
   split
-  · simp
-  · split
-    · simp
-    · step as ⟨ r, hr ⟩
+  · rename_i hbelow
+    have : b.val < 65 := by scalar_tac
+    simp only [WP.spec_ok, lowerOf]
+    split <;> omega
+  · rename_i hnotbelow
+    split
+    · rename_i habove
+      have : 90 < b.val := by scalar_tac
+      simp only [WP.spec_ok, lowerOf]
+      split <;> omega
+    · rename_i hnotabove
+      have hcapital : 65 ≤ b.val ∧ b.val ≤ 90 := by scalar_tac
+      step as ⟨ r, hr ⟩
+      simp only [lowerOf, hcapital, and_self, ↓reduceIte]
+      scalar_tac
+
+/-- The suffix as the code holds it is the suffix as it is written here. -/
+theorem part_suffix_val : artifact.path.PART_SUFFIX.val = partSuffix := by
+  unfold artifact.path.PART_SUFFIX
+  rfl
 
 theorem artifact.path.is_part_name_loop.spec (n : Slice U8) (start at_ : Usize)
-    (hinv : start.val + 9 = n.val.length ∧ at_.val ≤ 9) :
-    artifact.path.is_part_name_loop n start at_ ⦃ _ => True ⦄ := by
+    (hinv : start.val + 9 = n.val.length ∧ at_.val ≤ 9 ∧
+      ∀ k, k < at_.val →
+        lowerOf (n.val.getD (start.val + k) 0#u8) = (partSuffix.getD k 0#u8).val) :
+    artifact.path.is_part_name_loop n start at_ ⦃ r => r = true ↔ PartName n.val ⦄ := by
   unfold artifact.path.is_part_name_loop
   apply loop.spec_decr_nat
     (measure := fun (i : Usize) => 9 - i.val)
-    (inv := fun (i : Usize) => start.val + 9 = n.val.length ∧ i.val ≤ 9)
+    (inv := fun (i : Usize) => start.val + 9 = n.val.length ∧ i.val ≤ 9 ∧
+      ∀ k, k < i.val →
+        lowerOf (n.val.getD (start.val + k) 0#u8) = (partSuffix.getD k 0#u8).val)
   · intro i hstate
-    obtain ⟨ hstart, hle ⟩ := hstate
+    obtain ⟨ hstart, hle, hmatch ⟩ := hstate
+    have hfrom : n.val.length - 9 = start.val := by omega
     simp only [artifact.path.is_part_name_loop.body]
     step as ⟨ suffix, hsuffix ⟩
     have hnine : suffix.val.length = 9 := by
@@ -302,26 +345,70 @@ theorem artifact.path.is_part_name_loop.spec (n : Slice U8) (start at_ : Usize)
       have hin : i.val < 9 := by scalar_tac
       step as ⟨ place, hplace ⟩
       step as ⟨ byte, hbyte ⟩
-      step as ⟨ small ⟩
+      step as ⟨ small, hsmall ⟩
       step as ⟨ wanted, hwanted ⟩
+      have hplacelt : place.val < n.val.length := by scalar_tac
+      have hhere : n.val.getD (start.val + i.val) 0#u8 = byte := by
+        rw [← hplace]
+        simp [List.getD_eq_getElem?_getD, hplacelt, hbyte]
+      have hthere : partSuffix.getD i.val 0#u8 = wanted := by
+        rw [← part_suffix_val]
+        have hilt : i.val < artifact.path.PART_SUFFIX.val.length := by
+          rw [part_suffix_val]
+          exact hin
+        rw [hwanted, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hilt]
+        rfl
       split
-      · simp only [WP.spec_ok]
-      · step as ⟨ next, hnext ⟩
-        exact ⟨ hstart, by scalar_tac, by scalar_tac ⟩
-    · simp only [WP.spec_ok]
+      · rename_i hdiffer
+        -- This byte is not the suffix's, so the name does not end with it.
+        have hne : small.val ≠ wanted.val := by scalar_tac
+        simp only [WP.spec_ok]
+        constructor
+        · intro h
+          cases h
+        · intro hpart
+          have hhit := hpart.2 i.val hin
+          rw [hfrom, hhere, hthere, ← hsmall] at hhit
+          exact absurd hhit hne
+      · rename_i hsame
+        have heq : small.val = wanted.val := by scalar_tac
+        step as ⟨ next, hnext ⟩
+        refine ⟨ hstart, by scalar_tac, ?_, by scalar_tac ⟩
+        intro k hk
+        by_cases hprev : k < i.val
+        · exact hmatch k hprev
+        · have hki : k = i.val := by scalar_tac
+          rw [hki, hhere, hthere, ← hsmall]
+          exact heq
+    · rename_i hend
+      have hall : i.val = 9 := by scalar_tac
+      simp only [WP.spec_ok, true_iff]
+      refine ⟨ by omega, ?_ ⟩
+      intro k hk
+      rw [hfrom]
+      exact hmatch k (by omega)
   · exact hinv
 
-/-- `is_part_name` cannot fail, whatever the name. -/
+/-- `is_part_name` says yes exactly for a name that ends with the suffix of
+a part file, in any letter case. It cannot fail, whatever the name. -/
 @[step]
 theorem artifact.path.is_part_name.spec (n : Slice U8) :
-    artifact.path.is_part_name n ⦃ _ => True ⦄ := by
+    artifact.path.is_part_name n ⦃ r => r = true ↔ PartName n.val ⦄ := by
   simp only [artifact.path.is_part_name]
   step as ⟨ suffix, hsuffix ⟩
   have hnine : suffix.val.length = 9 := by
     rw [hsuffix]
     scalar_tac
   split
-  · simp only [WP.spec_ok]
+  · rename_i hshort
+    have : n.val.length < 9 := by scalar_tac
+    simp only [WP.spec_ok]
+    constructor
+    · intro h
+      cases h
+    · intro hpart
+      have := hpart.1
+      omega
   · rename_i hlong
     step as ⟨ again, hagain ⟩
     have hnine' : again.val.length = 9 := by
@@ -329,13 +416,13 @@ theorem artifact.path.is_part_name.spec (n : Slice U8) :
       scalar_tac
     step as ⟨ start, hstart ⟩
     exact artifact.path.is_part_name_loop.spec n start 0#usize
-      ⟨ by scalar_tac, by scalar_tac ⟩
+      ⟨ by scalar_tac, by scalar_tac, by intro k hk; simp at hk ⟩
 
 theorem artifact.path.is_safe_name_loop.spec (n : Slice U8) (start : Usize)
     (hinv : start.val ≤ n.val.length ∧
       ∀ k x, k < start.val → n.val[k]? = some x → ¬ Separator x) :
     artifact.path.is_safe_name_loop n start
-    ⦃ r => r = true → ∀ x ∈ n.val, ¬ Separator x ⦄ := by
+    ⦃ r => r = true ↔ ((∀ x ∈ n.val, ¬ Separator x) ∧ ¬ PartName n.val) ⦄ := by
   unfold artifact.path.is_safe_name_loop
   apply loop.spec_decr_nat
     (measure := fun (i : Usize) => n.val.length - i.val)
@@ -350,9 +437,17 @@ theorem artifact.path.is_safe_name_loop.spec (n : Slice U8) (start : Usize)
       step as ⟨ byte, hbyte ⟩
       step as ⟨ bad, hbad ⟩
       split
-      · simp only [WP.spec_ok]
-        intro h
-        cases h
+      · rename_i hisbad
+        -- The name holds a separator.
+        simp only [WP.spec_ok]
+        constructor
+        · intro h
+          cases h
+        · intro hsafe
+          have hmem : byte ∈ n.val := by
+            rw [hbyte]
+            exact List.getElem_mem hin
+          exact absurd (hbad.mp hisbad) (hsafe.1 byte hmem)
       · rename_i hfine
         step as ⟨ next, hnext ⟩
         refine ⟨ by scalar_tac, ?_, by scalar_tac ⟩
@@ -370,54 +465,84 @@ theorem artifact.path.is_safe_name_loop.spec (n : Slice U8) (start : Usize)
           exact hfine (hbad.mpr hseparator)
     · rename_i hend
       have hall : i.val = n.val.length := by scalar_tac
-      step as ⟨ part ⟩
-      intro _ x hx
-      obtain ⟨ k, hk ⟩ := List.mem_iff_getElem?.mp hx
-      obtain ⟨ hklt, _ ⟩ := List.getElem?_eq_some_iff.mp hk
-      exact hclean k x (by omega) hk
+      step as ⟨ part, hpart ⟩
+      have hnone : ∀ x ∈ n.val, ¬ Separator x := by
+        intro x hx
+        obtain ⟨ k, hk ⟩ := List.mem_iff_getElem?.mp hx
+        obtain ⟨ hklt, _ ⟩ := List.getElem?_eq_some_iff.mp hk
+        exact hclean k x (by omega) hk
+      rw [← hpart]
+      simp only [decide_eq_true_eq]
+      constructor
+      · intro hnot
+        exact ⟨ hnone, hnot ⟩
+      · intro hboth
+        exact hboth.2
   · exact hinv
 
-/-- A name that `is_safe_name` accepts is a safe name, and the check cannot
-fail. -/
+/-- `is_safe_name` accepts exactly the safe names, and cannot fail. -/
 @[step]
 theorem artifact.path.is_safe_name.spec (n : Slice U8) :
-    artifact.path.is_safe_name n ⦃ r => r = true → SafeName n.val ⦄ := by
+    artifact.path.is_safe_name n ⦃ r => r = true ↔ SafeName n.val ⦄ := by
   simp only [artifact.path.is_safe_name]
   step as ⟨ empty, hempty ⟩
+  have hnil : empty = true ↔ n.val = [] := by
+    rw [hempty]
+    simp [Slice.length]
   split
-  · simp only [WP.spec_ok]
-    intro h
-    cases h
+  · rename_i hisempty
+    simp only [WP.spec_ok]
+    constructor
+    · intro h
+      cases h
+    · intro hsafe
+      exact absurd (hnil.mp hisempty) hsafe.1
   · rename_i hnotempty
     split
-    · simp only [WP.spec_ok]
-      intro h
-      cases h
+    · rename_i hlong
+      simp only [WP.spec_ok]
+      constructor
+      · intro h
+        cases h
+      · intro hsafe
+        have := hsafe.2.1
+        simp only [artifact.path.MAX_NAME_BYTES] at hlong
+        scalar_tac
     · rename_i hshort
       step as ⟨ current, hcurrent ⟩
       split
-      · simp only [WP.spec_ok]
-        intro h
-        cases h
+      · rename_i hiscurrent
+        simp only [WP.spec_ok]
+        constructor
+        · intro h
+          cases h
+        · intro hsafe
+          exact absurd (hcurrent.mp hiscurrent) hsafe.2.2.1
       · rename_i hnotcurrent
         step as ⟨ parent, hparent ⟩
         split
-        · simp only [WP.spec_ok]
-          intro h
-          cases h
+        · rename_i hisparent
+          simp only [WP.spec_ok]
+          constructor
+          · intro h
+            cases h
+          · intro hsafe
+            exact absurd (hparent.mp hisparent) hsafe.2.2.2.1
         · rename_i hnotparent
           apply WP.spec_mono (artifact.path.is_safe_name_loop.spec n 0#usize
             ⟨ by scalar_tac, by intro k x hk; simp at hk ⟩)
-          intro r hclean haccepted
+          intro r hrest
           have hlength : n.val.length ≤ 246 := by
             simp only [artifact.path.MAX_NAME_BYTES] at hshort
             scalar_tac
-          refine ⟨ ?_, hlength, fun hdot => hnotcurrent (hcurrent hdot),
-            fun hdots => hnotparent (hparent.mpr hdots), hclean haccepted ⟩
-          intro hnil
-          apply hnotempty
-          rw [hempty]
-          simp [Slice.length, hnil]
+          rw [hrest]
+          constructor
+          · intro hclean
+            exact ⟨ fun hempty' => hnotempty (hnil.mpr hempty'), hlength,
+              fun hdot => hnotcurrent (hcurrent.mpr hdot),
+              fun hdots => hnotparent (hparent.mpr hdots), hclean.1, hclean.2 ⟩
+          · intro hsafe
+            exact ⟨ hsafe.2.2.2.2.1, hsafe.2.2.2.2.2 ⟩
 
 /-! ## Whole paths -/
 
@@ -458,15 +583,15 @@ theorem slice_empty (p : List U8) (start : Nat) : p.slice start start = [] := by
 
 theorem artifact.path.is_safe_path_loop.spec (path : Slice U8) (begin at_ : Usize)
     (hinv : begin.val ≤ at_.val ∧ at_.val ≤ path.val.length ∧
-      (AllSafe (path.val.slice begin.val at_.val) (path.val.drop at_.val) →
+      (AllSafe (path.val.slice begin.val at_.val) (path.val.drop at_.val) ↔
         SafePath path.val)) :
     artifact.path.is_safe_path_loop path begin at_
-    ⦃ r => r = true → SafePath path.val ⦄ := by
+    ⦃ r => r = true ↔ SafePath path.val ⦄ := by
   unfold artifact.path.is_safe_path_loop
   apply loop.spec_decr_nat
     (measure := fun (p : Usize × Usize) => path.val.length - p.2.val)
     (inv := fun (p : Usize × Usize) => p.1.val ≤ p.2.val ∧ p.2.val ≤ path.val.length ∧
-      (AllSafe (path.val.slice p.1.val p.2.val) (path.val.drop p.2.val) →
+      (AllSafe (path.val.slice p.1.val p.2.val) (path.val.drop p.2.val) ↔
         SafePath path.val))
   · intro ⟨ start, i ⟩ hstate
     dsimp only at hstate
@@ -481,49 +606,50 @@ theorem artifact.path.is_safe_path_loop.spec (path : Slice U8) (begin at_ : Usiz
       · rename_i hslash
         step as ⟨ piece, hpiece, hpiecelen ⟩
         step as ⟨ safe, hsafe ⟩
+        -- What the path is, read from here: this name, and then the rest.
+        have hhere : SafePath path.val ↔
+            (SafeName piece.val ∧ AllSafe [] (path.val.drop (i.val + 1))) := by
+          rw [← hrest, hdrop, hslash]
+          simp only [AllSafe, ↓reduceIte]
+          rw [← hpiece]
         split
         · rename_i haccepted
           step as ⟨ next, hnext ⟩
           refine ⟨ by scalar_tac, by scalar_tac, ?_, by scalar_tac ⟩
-          intro hafter
-          apply hrest
-          rw [hdrop, hslash]
-          simp only [AllSafe, ↓reduceIte]
-          refine ⟨ ?_, ?_ ⟩
-          · rw [← hpiece]
-            exact hsafe haccepted
-          · rw [hnext, slice_empty] at hafter
-            exact hafter
-        · simp only [WP.spec_ok]
-          intro h
-          cases h
+          rw [hnext, slice_empty, hhere]
+          constructor
+          · intro hafter
+            exact ⟨ hsafe.mp haccepted, hafter ⟩
+          · intro hboth
+            exact hboth.2
+        · rename_i hrejected
+          simp only [WP.spec_ok]
+          constructor
+          · intro h
+            cases h
+          · intro hpath
+            exact absurd (hsafe.mpr (hhere.mp hpath).1) hrejected
       · rename_i hnotslash
         step as ⟨ next, hnext ⟩
         refine ⟨ by scalar_tac, by scalar_tac, ?_, by scalar_tac ⟩
-        intro hafter
-        apply hrest
-        rw [hdrop]
+        rw [hnext, ← hrest, hdrop]
         simp only [AllSafe, hnotslash, ↓reduceIte]
         rw [slice_snoc path.val start.val i.val byte hle hinside hbyte]
-        rw [hnext] at hafter
-        exact hafter
     · rename_i hend
       have hall : i.val = path.val.length := by scalar_tac
       step as ⟨ piece, hpiece, hpiecelen ⟩
       step as ⟨ safe, hsafe ⟩
-      intro haccepted
-      apply hrest
-      rw [hall, slice_to_end, List.drop_length]
+      rw [← hrest, hall, slice_to_end, List.drop_length]
       simp only [AllSafe]
       rw [← hpiece]
-      exact hsafe haccepted
+      exact hsafe
   · exact hinv
 
-/-- A path that `is_safe_path` accepts is made of safe names and nothing
-else, and the check cannot fail. -/
+/-- `is_safe_path` accepts exactly the paths that are made of safe names
+and nothing else, and cannot fail. -/
 @[step]
 theorem artifact.path.is_safe_path.spec (path : Slice U8) :
-    artifact.path.is_safe_path path ⦃ r => r = true → SafePath path.val ⦄ := by
+    artifact.path.is_safe_path path ⦃ r => r = true ↔ SafePath path.val ⦄ := by
   unfold artifact.path.is_safe_path
   exact artifact.path.is_safe_path_loop.spec path 0#usize 0#usize
     ⟨ by scalar_tac, by scalar_tac, by simp [SafePath, List.slice] ⟩
@@ -545,55 +671,79 @@ def StaysInside (level : Nat) (current : List U8) : List U8 → Prop
     if b = 47#u8 then ∃ next, Follows level current next ∧ StaysInside next [] rest
     else StaysInside level (current ++ [b]) rest
 
-/-- `follow` gives a level only where the name may be followed, and then
+/-- A name leads to one level and no other. -/
+theorem Follows.unique {level : Nat} {piece : List U8} {a b : Nat}
+    (ha : Follows level piece a) (hb : Follows level piece b) : a = b := by
+  rcases ha with ⟨ hup, ha ⟩ | ⟨ hsafe, ha ⟩ <;> rcases hb with ⟨ hup', hb ⟩ | ⟨ hsafe', hb ⟩
+  · omega
+  · exact absurd hup hsafe'.2.2.2.1
+  · exact absurd hup' hsafe.2.2.2.1
+  · omega
+
+/-- `follow` gives a level exactly where the name may be followed, and then
 gives the level it leads to. -/
 @[step]
 theorem artifact.path.follow.spec (n : Slice U8) (level : U64) (hroom : level.val < U64.max) :
     artifact.path.follow n level
-    ⦃ r => ∀ next, r = some next →
-      Follows level.val n.val next.val ∧ next.val ≤ level.val + 1 ⦄ := by
+    ⦃ r =>
+      (∀ next, r = some next →
+        Follows level.val n.val next.val ∧ next.val ≤ level.val + 1) ∧
+      (r = none → ∀ next, ¬ Follows level.val n.val next) ⦄ := by
   unfold artifact.path.follow
   step as ⟨ up, hup ⟩
   split
   · rename_i hisup
+    have hdots := hup.mp hisup
     split
-    · simp only [WP.spec_ok]
-      intro next h
-      cases h
+    · rename_i hroot
+      have hzero : level.val = 0 := by scalar_tac
+      simp only [WP.spec_ok]
+      refine ⟨ fun next h => (by cases h), ?_ ⟩
+      intro _ next hfollows
+      rcases hfollows with ⟨ _, hlevel ⟩ | ⟨ hsafe, _ ⟩
+      · omega
+      · exact absurd hdots hsafe.2.2.2.1
     · rename_i hbelow
       step as ⟨ lower, hlower ⟩
+      refine ⟨ ?_, fun h => by cases h ⟩
       intro next hnext
       have hsame : lower = next := Option.some.inj hnext
       rw [← hsame]
-      exact ⟨ Or.inl ⟨ hup.mp hisup, by scalar_tac ⟩, by scalar_tac ⟩
-  · step as ⟨ safe, hsafe ⟩
+      exact ⟨ Or.inl ⟨ hdots, by scalar_tac ⟩, by scalar_tac ⟩
+  · rename_i hnotup
+    step as ⟨ safe, hsafe ⟩
     split
     · rename_i hissafe
       step as ⟨ deeper, hdeeper ⟩
+      refine ⟨ ?_, fun h => by cases h ⟩
       intro next hnext
       have hsame : deeper = next := Option.some.inj hnext
       rw [← hsame]
-      exact ⟨ Or.inr ⟨ hsafe hissafe, by scalar_tac ⟩, by scalar_tac ⟩
-    · simp only [WP.spec_ok]
-      intro next h
-      cases h
+      exact ⟨ Or.inr ⟨ hsafe.mp hissafe, by scalar_tac ⟩, by scalar_tac ⟩
+    · rename_i hnotsafe
+      simp only [WP.spec_ok]
+      refine ⟨ fun next h => (by cases h), ?_ ⟩
+      intro _ next hfollows
+      rcases hfollows with ⟨ hdots, _ ⟩ | ⟨ hname, _ ⟩
+      · exact hnotup (hup.mpr hdots)
+      · exact hnotsafe (hsafe.mpr hname)
 
 theorem artifact.path.is_safe_target_loop.spec (target : Slice U8) (level : U64)
     (begin at_ : Usize) (origin : Nat)
     (hroom : origin + target.val.length < U64.max)
     (hinv : begin.val ≤ at_.val ∧ at_.val ≤ target.val.length ∧
       level.val ≤ origin + at_.val ∧
-      (StaysInside level.val (target.val.slice begin.val at_.val) (target.val.drop at_.val) →
+      (StaysInside level.val (target.val.slice begin.val at_.val) (target.val.drop at_.val) ↔
         StaysInside origin [] target.val)) :
     artifact.path.is_safe_target_loop target level begin at_
-    ⦃ r => r = true → StaysInside origin [] target.val ⦄ := by
+    ⦃ r => r = true ↔ StaysInside origin [] target.val ⦄ := by
   unfold artifact.path.is_safe_target_loop
   apply loop.spec_decr_nat
     (measure := fun (p : U64 × Usize × Usize) => target.val.length - p.2.2.val)
     (inv := fun (p : U64 × Usize × Usize) =>
       p.2.1.val ≤ p.2.2.val ∧ p.2.2.val ≤ target.val.length ∧
       p.1.val ≤ origin + p.2.2.val ∧
-      (StaysInside p.1.val (target.val.slice p.2.1.val p.2.2.val) (target.val.drop p.2.2.val) →
+      (StaysInside p.1.val (target.val.slice p.2.1.val p.2.2.val) (target.val.drop p.2.2.val) ↔
         StaysInside origin [] target.val))
   · intro ⟨ depth, start, i ⟩ hstate
     dsimp only at hstate
@@ -607,95 +757,133 @@ theorem artifact.path.is_safe_target_loop.spec (target : Slice U8) (level : U64)
       split
       · rename_i hslash
         step as ⟨ piece, hpiece, hpiecelen ⟩
-        step as ⟨ led, hled ⟩
+        -- What the target is, read from here: this name, and then the rest
+        -- from wherever the name leads.
+        have hhere : StaysInside origin [] target.val ↔
+            ∃ next, Follows depth.val piece.val next ∧
+              StaysInside next [] (target.val.drop (i.val + 1)) := by
+          rw [← hrest, hdrop, hslash]
+          simp only [StaysInside, ↓reduceIte]
+          rw [← hpiece]
+        step as ⟨ led, hled, hnowhere ⟩
         cases led with
         | none =>
           simp only [WP.spec_ok]
-          intro h
-          cases h
+          constructor
+          · intro h
+            cases h
+          · intro hstays
+            obtain ⟨ next, hfollows, _ ⟩ := hhere.mp hstays
+            exact absurd hfollows (hnowhere rfl next)
         | some next =>
           obtain ⟨ hfollows, hnextle ⟩ := hled next rfl
           dsimp only
           step as ⟨ after, hafter ⟩
           refine ⟨ by scalar_tac, by scalar_tac, by scalar_tac, ?_, by scalar_tac ⟩
-          intro hinside'
-          apply hrest
-          rw [hdrop, hslash]
-          simp only [StaysInside, ↓reduceIte]
-          refine ⟨ next.val, ?_, ?_ ⟩
-          · rw [← hpiece]
-            exact hfollows
-          · rw [hafter, slice_empty] at hinside'
-            exact hinside'
+          rw [hafter, slice_empty, hhere]
+          constructor
+          · intro hrestsafe
+            exact ⟨ next.val, hfollows, hrestsafe ⟩
+          · intro ⟨ other, hother, hrestsafe ⟩
+            rw [Follows.unique hother hfollows] at hrestsafe
+            exact hrestsafe
       · rename_i hnotslash
         step as ⟨ after, hafter ⟩
         refine ⟨ by scalar_tac, by scalar_tac, by scalar_tac, ?_, by scalar_tac ⟩
-        intro hinside'
-        apply hrest
-        rw [hdrop]
+        rw [hafter, ← hrest, hdrop]
         simp only [StaysInside, hnotslash, ↓reduceIte]
         rw [slice_snoc target.val start.val i.val byte hle hinside hbyte]
-        rw [hafter] at hinside'
-        exact hinside'
     · rename_i hend
       have hall : i.val = target.val.length := by scalar_tac
       step as ⟨ piece, hpiece, hpiecelen ⟩
-      step as ⟨ led, hled ⟩
+      have hhere : StaysInside origin [] target.val ↔ ∃ next, Follows depth.val piece.val next := by
+        rw [← hrest, hall, slice_to_end, List.drop_length]
+        simp only [StaysInside]
+        rw [← hpiece]
+      step as ⟨ led, hled, hnowhere ⟩
       cases led with
       | none =>
-        intro h
-        simp at h
+        constructor
+        · intro h
+          simp at h
+        · intro hstays
+          obtain ⟨ next, hfollows ⟩ := hhere.mp hstays
+          exact absurd hfollows (hnowhere rfl next)
       | some next =>
         obtain ⟨ hfollows, _ ⟩ := hled next rfl
-        intro _
-        apply hrest
-        rw [hall, slice_to_end, List.drop_length]
-        simp only [StaysInside]
-        refine ⟨ next.val, ?_ ⟩
-        rw [← hpiece]
-        exact hfollows
+        constructor
+        · intro _
+          exact hhere.mpr ⟨ next.val, hfollows ⟩
+        · intro _
+          simp
   · exact hinv
 
-/-- A target that `is_safe_target` accepts, followed one name at a time from
-the directory that holds the link, never climbs above the root. The check
+/-- `is_safe_target` accepts exactly the targets that are not empty, not too
+long, belong to a link below the root and, followed one name at a time from
+the directory that holds the link, never climb above the root. The check
 cannot fail. -/
 @[step]
 theorem artifact.path.is_safe_target.spec (target : Slice U8) (depth : U32) :
     artifact.path.is_safe_target target depth
-    ⦃ r => r = true → 0 < depth.val ∧ StaysInside (depth.val - 1) [] target.val ⦄ := by
+    ⦃ r => r = true ↔
+      (target.val ≠ [] ∧ target.val.length ≤ 4096 ∧ 0 < depth.val ∧
+        StaysInside (depth.val - 1) [] target.val) ⦄ := by
   simp only [artifact.path.is_safe_target]
   step as ⟨ empty, hempty ⟩
+  have hnil : empty = true ↔ target.val = [] := by
+    rw [hempty]
+    simp [Slice.length]
   split
-  · simp only [WP.spec_ok]
-    intro h
-    cases h
-  · split
-    · simp only [WP.spec_ok]
-      intro h
+  · rename_i hisempty
+    simp only [WP.spec_ok]
+    constructor
+    · intro h
       cases h
+    · intro hsafe
+      exact absurd (hnil.mp hisempty) hsafe.1
+  · rename_i hnotempty
+    split
+    · rename_i hlong
+      simp only [WP.spec_ok]
+      constructor
+      · intro h
+        cases h
+      · intro hsafe
+        have := hsafe.2.1
+        simp only [artifact.path.MAX_TARGET_BYTES] at hlong
+        scalar_tac
     · rename_i hshort
       have hlength : target.val.length ≤ 4096 := by
         simp only [artifact.path.MAX_TARGET_BYTES] at hshort
         scalar_tac
       split
-      · simp only [WP.spec_ok]
-        intro h
-        cases h
+      · rename_i hroot
+        simp only [WP.spec_ok]
+        constructor
+        · intro h
+          cases h
+        · intro hsafe
+          have := hsafe.2.2.1
+          scalar_tac
       · rename_i hdeep
         have hpositive : 0 < depth.val := by scalar_tac
         step as ⟨ above, habove ⟩
         step as ⟨ level, hlevel ⟩
         have hstart :
             StaysInside level.val (target.val.slice (0#usize).val (0#usize).val)
-              (target.val.drop (0#usize).val) →
+              (target.val.drop (0#usize).val) ↔
             StaysInside (depth.val - 1) [] target.val := by
-          intro h
-          simpa [List.slice, hlevel, habove] using h
+          simp [List.slice, hlevel, habove]
         apply WP.spec_mono (artifact.path.is_safe_target_loop.spec target level 0#usize
           0#usize (depth.val - 1) (by scalar_tac)
           ⟨ by scalar_tac, by scalar_tac, by scalar_tac, hstart ⟩)
-        intro r hr haccepted
-        exact ⟨ hpositive, hr haccepted ⟩
+        intro r hr
+        rw [hr]
+        constructor
+        · intro hstays
+          exact ⟨ fun hempty' => hnotempty (hnil.mpr hempty'), hlength, hpositive, hstays ⟩
+        · intro hsafe
+          exact hsafe.2.2.2
 
 /-! ## The directory that holds an entry -/
 

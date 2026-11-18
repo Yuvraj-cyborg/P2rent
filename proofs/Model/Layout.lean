@@ -436,6 +436,24 @@ theorem artifact.layout.Layout.file_count.spec (l : Layout) :
   simp only [WP.spec_ok]
   scalar_tac
 
+/-- `chunk_count` is the number of chunks in all the files. -/
+@[step]
+theorem artifact.layout.Layout.impl.chunk_count.spec (l : Layout) (hl : l.WellFormed) :
+    artifact.layout.Layout.impl.chunk_count l
+    ⦃ r => r.val = chunksBefore l.sizes.val l.chunk_size.val l.sizes.val.length ⦄ := by
+  unfold artifact.layout.Layout.impl.chunk_count
+  simp only [WP.spec_ok]
+  exact hl.2.2.2.1
+
+/-- `total_size` is the sum of the sizes of the files. -/
+@[step]
+theorem artifact.layout.Layout.impl.total_size.spec (l : Layout) (hl : l.WellFormed) :
+    artifact.layout.Layout.impl.total_size l
+    ⦃ r => r.val = bytesBefore l.sizes.val l.sizes.val.length ⦄ := by
+  unfold artifact.layout.Layout.impl.total_size
+  simp only [WP.spec_ok]
+  exact hl.2.2.2.2
+
 /-- `file_chunks` returns the number of the file's first chunk and the
 number after its last. -/
 @[step]
