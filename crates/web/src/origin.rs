@@ -156,6 +156,8 @@ impl Source for Origin {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: self.is_random_access(),
+            // Each request is a connection to the server.
+            multiplexed: false,
         }
     }
 

@@ -563,6 +563,7 @@ impl Source for Folder {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
+            multiplexed: false,
         }
     }
 
@@ -628,6 +629,7 @@ impl Sink for Folder {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
+            multiplexed: false,
         }
     }
 
