@@ -169,7 +169,7 @@ delta size_mb="256":
     MUX_BENCH_SIZE_MB={{size_mb}} cargo bench --locked --package benches --bench delta
 
 # Time a download from a web address, e.g. `just fetch http://127.0.0.1:8080/big.bin 1` over one stream
-fetch url streams="4" runs="3":
+fetch url streams="8" runs="3":
     MUX_BENCH_URL={{url}} MUX_BENCH_STREAMS={{streams}} MUX_BENCH_RUNS={{runs}} cargo bench --locked --package benches --bench web
 
 # Run mux from source, e.g. `just run seed ./model.bin`

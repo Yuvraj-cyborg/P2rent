@@ -366,7 +366,10 @@ impl Setup {
     fn new(sample: &Arc<Sample>) -> Self {
         Self {
             sample: sample.clone(),
+            // Four requests at a time to a supplier: what the tests here
+            // count on, where they count.
             options: Options {
+                requests_per_supplier: 4,
                 stall_timeout: Duration::from_secs(90),
                 ..Options::default()
             },
@@ -1237,6 +1240,10 @@ struct Watched {
     /// How many readers are open, and the most there have been at once.
     open: Arc<AtomicUsize>,
     most_open: AtomicUsize,
+    /// The most readers it lets be open at once, if it has a limit, and
+    /// how many it has refused for being one more.
+    crowd: Option<usize>,
+    refused: AtomicUsize,
     /// How long a reader takes over each read.
     each: Duration,
     /// A reader opened at this offset takes this long instead.
@@ -1284,9 +1291,19 @@ impl Watched {
             unread: Arc::default(),
             open: Arc::default(),
             most_open: AtomicUsize::new(0),
+            crowd: None,
+            refused: AtomicUsize::new(0),
             each: Duration::ZERO,
             slow: None,
         })
+    }
+
+    /// The same, with every read taking `each`, and no more than `most`
+    /// readers open at once: one more is refused.
+    fn crowded(sample: &Arc<Sample>, each: Duration, most: usize) -> Arc<Self> {
+        let mut watched = Arc::into_inner(Self::new(sample, true)).unwrap();
+        (watched.each, watched.crowd) = (each, Some(most));
+        Arc::new(watched)
     }
 
     /// The same, with every read taking `each`, but `slow.1` from a reader
@@ -1319,11 +1336,19 @@ impl Source for Watched {
     }
 
     fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
+        // One reader too many is refused, as a server refuses one
+        // connection too many.
+        let open = self.open.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.crowd.is_some_and(|most| open > most) {
+            self.open.fetch_sub(1, Ordering::Relaxed);
+            self.refused.fetch_add(1, Ordering::Relaxed);
+            let busy = Failure::Unreachable("too many readers at once".into());
+            return Box::pin(std::future::ready(Err(busy)));
+        }
         self.opened.lock().unwrap().push((file, offset));
         self.asked.fetch_add(len, Ordering::Relaxed);
         Box::pin(async move {
             let reader = self.place.open(file, offset, len).await?;
-            let open = self.open.fetch_add(1, Ordering::Relaxed) + 1;
             self.most_open.fetch_max(open, Ordering::Relaxed);
             let slow = self.slow.filter(|(slow, _)| *slow == offset);
             let counted: Box<dyn Reader> = Box::new(Open {
@@ -1420,6 +1445,53 @@ fn a_stream_that_falls_behind_is_relieved() {
     // What it was opened for and did not read was read by the others.
     assert!(source.unread.load(Ordering::Relaxed) > 0);
     assert!(source.most_open.load(Ordering::Relaxed) <= 4);
+}
+
+/// A source that takes two readers at a time and refuses a third is used
+/// with two: the requests it refuses step aside, and the transfer goes on
+/// without reaching for the source again.
+#[test]
+fn a_source_that_takes_fewer_requests_is_used_with_those_it_takes() {
+    let sample = long(64);
+    let source = Watched::crowded(&sample, Duration::from_millis(10), 2);
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 8;
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    assert_eq!(source.most_open.load(Ordering::Relaxed), 2);
+    assert!(source.refused.load(Ordering::Relaxed) >= 6);
+    // Sixty-four chunks at a hundredth of a second each, by two streams,
+    // with no waiting to try the source again.
+    assert!(
+        ran.took < Duration::from_millis(500),
+        "it took {:?}",
+        ran.took
+    );
+    let closed = |event: &&Event| matches!(event, Event::Closed { .. });
+    assert_eq!(ran.events.iter().filter(closed).count(), 1);
+}
+
+/// A source that refuses every reader fails as a supplier: the last of
+/// its requests does not step aside.
+#[test]
+fn a_source_that_takes_no_request_is_a_supplier_that_failed() {
+    let sample = long(8);
+    let source = Watched::crowded(&sample, Duration::ZERO, 0);
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 8;
+    setup.options.stall_timeout = Duration::from_secs(20);
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(
+        matches!(ran.outcome, Err(Error::Stalled(_))),
+        "{:?}",
+        ran.outcome
+    );
+    // It was reached for again, after waits that double.
+    let opened = |event: &&Event| matches!(event, Event::Opened { .. });
+    let attempts = ran.events.iter().filter(opened).count();
+    assert!((3..=8).contains(&attempts), "{attempts} attempts");
 }
 
 /// A reader is kept open for the chunks that are to follow, and closed
@@ -1573,8 +1645,10 @@ fn a_supplier_that_sends_next_to_nothing_is_given_up() {
         "{:?}",
         ran.outcome
     );
-    // Each request was given up, and the supplier reached for again.
-    assert!(supplier.0.opened.load(Ordering::Relaxed) > 1);
+    // Each request was given up, and its chunk asked for again by one of
+    // the supplier's requests that was left.
+    let asked = supplier.0.asked.lock().unwrap().len();
+    assert!(asked > chunks(&sample), "asked for {asked} chunks");
 }
 
 /// One long file, for what only shows over many chunks.
