@@ -409,6 +409,16 @@ peer of the ticket how much it has, and `swarm::fetch` does the rest of
 the picture. `fetch` reports the events that a copy from any other place
 reports, so `mux cp` shows a ticket as it shows a web address.
 
+A ticket for one file may also name web addresses that hold the same
+bytes. `peer` cannot fetch from the web, and does not need to:
+`Found::also` takes any supplier, and `mux::origins::add` makes one of each
+address, after asking the server what it holds. In the transfer a web
+server and a peer are then the same thing. Each chunk is compared with the
+manifest's digest whoever sent it, so a server whose file has changed is
+dropped like a peer that sends wrong bytes. With no digests to compare
+with, as in a plain copy from the web, a source that changes still ends
+the transfer: bytes of two versions could not be told apart.
+
 `peer` knows the wire protocol and nothing about fetching. A peer is a
 **supplier**: something that can be reached, asked which chunks it holds and
 whom else it knows, and asked for a chunk. The engine does the rest, and
