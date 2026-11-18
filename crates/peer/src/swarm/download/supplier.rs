@@ -117,6 +117,9 @@ impl Supply for Link {
         })
     }
 
+    /// Each chunk is a request of its own, so nothing is left open.
+    fn leave(&self, _index: u64) {}
+
     /// A peer is asked for any chunk, and for several at once.
     fn capabilities(&self) -> Capabilities {
         Capabilities {

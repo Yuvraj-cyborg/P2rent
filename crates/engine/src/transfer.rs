@@ -686,6 +686,8 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         cursor,
         paced,
     } = pipeline;
+    // The chunk that follows the last one this pipeline fetched.
+    let mut reading_on: Option<u64> = None;
     loop {
         if run.is_complete() {
             return Ok(());
@@ -694,6 +696,15 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
             let mut cursor = sync::lock(&cursor);
             run.claim(owner, &sync::read(&view).held, &mut cursor)
         };
+        // Going elsewhere, or nowhere for now: what the supplier kept open
+        // to be read on from is not going to be.
+        let next = claim.as_ref().map(|claim| claim.index);
+        if let Some(following) = reading_on
+            .take()
+            .filter(|&following| next != Some(following))
+        {
+            supply.leave(following);
+        }
         let Some(claim) = claim else {
             // The supplier has nothing we need right now. It may gain
             // chunks, or another supplier may release one it holds.
@@ -722,6 +733,7 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         if let Some(paced) = &paced {
             paced.learn(asked.elapsed());
         }
+        reading_on = Some(index + 1);
 
         // From here the chunk is seen through, whatever becomes of this
         // supplier: it is stored, counted and marked done as one step.
