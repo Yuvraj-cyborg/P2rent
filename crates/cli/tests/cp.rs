@@ -943,3 +943,291 @@ async fn a_sync_that_was_cut_off_is_finished_by_running_it_again() {
     assert!(again.status.success(), "{}", said(&again));
     assert_eq!(std::fs::read(&copy).unwrap(), second);
 }
+
+// A sync that is killed, or loses its source, and is then run again.
+
+/// `len` bytes that do not repeat, and that differ for each `seed`.
+fn bytes(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+/// Numbers that follow no pattern, the same ones for the same seed.
+struct Dice(u64);
+
+impl Dice {
+    /// Seeded from the clock, so that every run tries other moments. The
+    /// seed is returned to be named when a run fails.
+    fn new() -> (Self, u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let seed = (now.as_secs() ^ (u64::from(now.subsec_nanos()) << 32)) | 1;
+        (Self(seed), seed)
+    }
+
+    /// A length of time somewhere between none and `limit`.
+    fn up_to(&mut self, limit: std::time::Duration) -> std::time::Duration {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        limit.mul_f64((self.0 >> 11) as f64 / (1u64 << 53) as f64)
+    }
+}
+
+/// Every file under `root` that has its final name, with what it holds:
+/// not what a sync put in its trash, and not a file that is still being
+/// written.
+fn final_names(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    held(root)
+        .into_iter()
+        .filter(|(path, _)| !path.to_string_lossy().ends_with(".mux-part"))
+        .filter_map(|(path, (seen, _, _))| match seen {
+            common::Seen::File(contents) => Some((path, contents)),
+            common::Seen::Directory | common::Seen::Link(_) => None,
+        })
+        .collect()
+}
+
+/// Starts `mux` with `args` and stops it dead after `after`, as a crash or
+/// a power cut would.
+async fn killed<const N: usize>(args: [&str; N], after: std::time::Duration) {
+    let mut command = Command::new(BIN);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let stopped = move || {
+        let mut child = command.spawn().unwrap();
+        std::thread::sleep(after);
+        // It may have finished by itself, and then there is nothing to kill.
+        let _ = child.kill();
+        child.wait().unwrap();
+    };
+    tokio::task::spawn_blocking(stopped).await.unwrap();
+}
+
+/// An older tree at `old` and a newer one at `new`: a file that stays, one
+/// that changes, one that grows, one that goes and one that comes.
+fn two_versions(old: &Path, new: &Path) {
+    const MIB: usize = 1024 * 1024;
+    for (root, version) in [(old, 1usize), (new, 2)] {
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let write = |name: &str, contents: Vec<u8>| {
+            std::fs::write(root.join(name), contents).unwrap();
+        };
+        write("same.bin", bytes(3 * MIB + 17, 10));
+        write("changed.bin", bytes(4 * MIB + version, 20 + version as u64));
+        write("nested/grown.bin", bytes(2 * MIB * version + 5, 30));
+        write("empty", Vec::new());
+    }
+    std::fs::write(old.join("nested/gone.bin"), bytes(MIB + 3, 40)).unwrap();
+    std::fs::write(new.join("nested/come.bin"), bytes(5 * MIB + 1, 50)).unwrap();
+}
+
+/// Checks that each file with its final name is whole: what was there
+/// before the sync, or what the source has, and never part of one and part
+/// of the other.
+fn assert_whole_files(
+    found: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    was: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    wanted: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    when: &str,
+) {
+    for (path, contents) in found {
+        let whole = was.get(path) == Some(contents) || wanted.get(path) == Some(contents);
+        assert!(
+            whole,
+            "{when}: {} is neither what was there nor what the source has",
+            path.display()
+        );
+    }
+}
+
+/// Stops a sync of a folder dead at random moments, twice over, and then
+/// lets one finish. Whenever it stops, every file with its final name is
+/// whole. The one that finishes leaves what the source holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_of_a_folder_killed_at_any_moment_leaves_whole_files_and_can_be_finished() {
+    const ROUNDS: usize = 6;
+    let tmp = tempfile::tempdir().unwrap();
+    let (old, new) = (tmp.path().join("old"), tmp.path().join("new"));
+    two_versions(&old, &new);
+    let (was, wanted) = (final_names(&old), final_names(&new));
+    // A destination that holds the older tree.
+    let holding_the_old = async |name: &str| {
+        let out = tmp.path().join(name);
+        let made = mux(["sync", text(&old), text(&out)]).await;
+        assert!(made.status.success(), "{}", said(&made));
+        out
+    };
+    let to_the_new = |out: &Path| ["sync", text(&new), text(out), "--delete"].map(str::to_owned);
+
+    // How long an undisturbed sync takes on this machine. The first one
+    // pays for what the later ones do not, such as reading the program
+    // from disk, so the second is the one timed.
+    let mut whole = std::time::Duration::ZERO;
+    for name in ["warm", "timed"] {
+        let out = holding_the_old(name).await;
+        let started = std::time::Instant::now();
+        let done = mux(to_the_new(&out).each_ref().map(String::as_str)).await;
+        assert!(done.status.success(), "{}", said(&done));
+        whole = started.elapsed();
+        // Not `assert_eq`, which would print megabytes of both.
+        assert!(
+            final_names(&out) == wanted,
+            "an undisturbed sync left something else"
+        );
+    }
+
+    let (mut dice, seed) = Dice::new();
+    let mut cut_short = 0;
+    for round in 0..ROUNDS {
+        let out = holding_the_old(&format!("out-{round}")).await;
+        let args = to_the_new(&out);
+        let args = args.each_ref().map(String::as_str);
+        // Twice, so that a sync that carries on is cut short too.
+        for kill in 0..2 {
+            killed(args, dice.up_to(whole)).await;
+            let found = final_names(&out);
+            let when = format!("seed {seed}, round {round}, kill {kill}");
+            assert_whole_files(&found, &was, &wanted, &when);
+            cut_short += usize::from(found != wanted);
+        }
+        let finished = mux(args).await;
+        assert!(
+            finished.status.success(),
+            "seed {seed}, round {round}: {}",
+            said(&finished)
+        );
+        assert!(
+            final_names(&out) == wanted,
+            "seed {seed}, round {round}: the sync that finished left something else"
+        );
+    }
+    assert!(
+        cut_short > 0,
+        "seed {seed}: no sync was cut short, so nothing was tested"
+    );
+}
+
+/// The same for a file on the web: the copy is the older version or the
+/// newer one whenever the sync stops, and the newer one when it finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_from_the_web_killed_at_any_moment_leaves_a_whole_file_and_can_be_finished() {
+    const ROUNDS: usize = 6;
+    const MIB: usize = 1024 * 1024;
+    let (first, second) = (bytes(6 * MIB + 11, 1), bytes(7 * MIB + 5, 2));
+    let server = Server::start(serving(first.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+    let serve = |file: &Vec<u8>, etag: &str| {
+        server.change(|serve| {
+            serve.file.clone_from(file);
+            serve.etag = Some(etag.into());
+        });
+    };
+    // A copy of the older version, made while the server has it, and then
+    // the server has the newer one.
+    let holding_the_first = async |name: &str| {
+        serve(&first, "\"v1\"");
+        let copy = tmp.path().join(name);
+        let made = mux(["sync", &url, text(&copy)]).await;
+        assert!(made.status.success(), "{}", said(&made));
+        serve(&second, "\"v2\"");
+        copy
+    };
+
+    let mut whole = std::time::Duration::ZERO;
+    for name in ["warm.bin", "timed.bin"] {
+        let copy = holding_the_first(name).await;
+        let started = std::time::Instant::now();
+        let done = mux(["sync", &url, text(&copy)]).await;
+        assert!(done.status.success(), "{}", said(&done));
+        whole = started.elapsed();
+        assert!(
+            std::fs::read(&copy).unwrap() == second,
+            "an undisturbed sync left something else"
+        );
+    }
+
+    let (mut dice, seed) = Dice::new();
+    let mut cut_short = 0;
+    for round in 0..ROUNDS {
+        let copy = holding_the_first(&format!("copy-{round}.bin")).await;
+        for kill in 0..2 {
+            killed(["sync", &url, text(&copy)], dice.up_to(whole)).await;
+            let found = std::fs::read(&copy).unwrap();
+            assert!(
+                found == first || found == second,
+                "seed {seed}, round {round}, kill {kill}: the copy is neither version whole"
+            );
+            cut_short += usize::from(found != second);
+        }
+        let finished = mux(["sync", &url, text(&copy)]).await;
+        assert!(
+            finished.status.success(),
+            "seed {seed}, round {round}: {}",
+            said(&finished)
+        );
+        assert!(
+            std::fs::read(&copy).unwrap() == second,
+            "seed {seed}, round {round}: the sync that finished left something else"
+        );
+    }
+    assert!(
+        cut_short > 0,
+        "seed {seed}: no sync was cut short, so nothing was tested"
+    );
+}
+
+/// A source that stops being readable halfway through a sync: the sync
+/// fails, every file with its final name is whole, and with the source
+/// readable again the same command finishes.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_whose_source_cannot_be_read_harms_nothing_and_can_be_finished() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let (old, new) = (tmp.path().join("old"), tmp.path().join("new"));
+    two_versions(&old, &new);
+    let (was, wanted) = (final_names(&old), final_names(&new));
+    let out = tmp.path().join("out");
+    assert!(mux(["sync", text(&old), text(&out)]).await.status.success());
+
+    let locked = new.join("nested/grown.bin");
+    let readable = |yes: bool| {
+        let mode = if yes { 0o644 } else { 0o000 };
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    readable(false);
+    if std::fs::read(&locked).is_ok() {
+        // Whoever runs this may read anything, so there is nothing to test.
+        return;
+    }
+    let failed = mux(["sync", text(&new), text(&out), "--delete"]).await;
+    assert!(!failed.status.success(), "{}", said(&failed));
+    assert_whole_files(
+        &final_names(&out),
+        &was,
+        &wanted,
+        "with the source unreadable",
+    );
+    assert_eq!(
+        std::fs::read(out.join("nested/grown.bin")).unwrap(),
+        was[Path::new("nested/grown.bin")]
+    );
+
+    readable(true);
+    let finished = mux(["sync", text(&new), text(&out), "--delete"]).await;
+    assert!(finished.status.success(), "{}", said(&finished));
+    assert_eq!(final_names(&out), wanted);
+}
