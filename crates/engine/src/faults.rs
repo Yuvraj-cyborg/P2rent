@@ -1244,9 +1244,15 @@ fn a_source_that_changes_is_only_dropped_where_every_chunk_has_its_digest() {
         changes_after: Some(2),
         ..Script::honest(&sample)
     };
+    // The other takes a second over each chunk, so the one that changes
+    // is sure to be asked for more than the two chunks it has to give.
+    let unhurried = Script {
+        delay: Duration::from_secs(1),
+        ..Script::honest(&sample)
+    };
     let suppliers = [
         Made::new(1, changing.clone(), &sample),
-        Made::new(2, Script::honest(&sample), &sample),
+        Made::new(2, unhurried, &sample),
     ];
     let ran = Setup::new(&sample).run(&suppliers);
     assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
