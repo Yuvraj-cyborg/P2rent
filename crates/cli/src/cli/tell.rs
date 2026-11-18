@@ -54,6 +54,16 @@ pub(super) enum Line<'a> {
         checked: &'a str,
         parts: bool,
         digests: Vec<Digest>,
+        /// For a ticket: each machine it names, and how much it holds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        holders: Option<Vec<Holder>>,
+    },
+    /// Something is offered to other machines, and this is its ticket.
+    Offer {
+        ticket: &'a str,
+        name: &'a str,
+        bytes: u64,
+        files: u64,
     },
     /// One thing a sync does, or with a dry run, would do.
     Step { step: &'a str, path: &'a str },
@@ -99,6 +109,16 @@ pub(super) struct Digest {
     pub path: String,
     /// The digest, as `--hash` takes it.
     pub digest: String,
+}
+
+/// One machine a ticket names.
+#[derive(Debug, Serialize)]
+pub(super) struct Holder {
+    /// Its node id.
+    pub node: String,
+    /// How many bytes it holds of what the ticket names, or nothing if it
+    /// could not be asked.
+    pub bytes: Option<u64>,
 }
 
 /// A line with the version of its shape in front.
@@ -191,6 +211,7 @@ mod tests {
                         path: "sub/b".into(),
                         digest: "sha256:00".into(),
                     }],
+                    holders: None,
                 },
                 r#"{"v":1,"event":"probe","place":"./a","name":"a","kind":"folder","bytes":5,"files":2,"checked":"consistent","parts":true,"digests":[{"path":"sub/b","digest":"sha256:00"}]}"#,
             ),
@@ -238,6 +259,48 @@ mod tests {
                     hint: None,
                 },
                 r#"{"v":1,"event":"error","code":4,"kind":"unreachable","message":"it said \"no\"\n","hint":null}"#,
+            ),
+        ];
+        for (line, written) in lines {
+            assert_eq!(json(&line), written);
+        }
+    }
+
+    /// The same, for the lines that have to do with other machines.
+    #[test]
+    fn the_lines_about_other_machines_are_written_as_documented() {
+        let lines = [
+            (
+                Line::Probe {
+                    place: "mux://aa?peer=bb",
+                    name: "a",
+                    kind: "file",
+                    bytes: 5,
+                    files: 1,
+                    checked: "verified",
+                    parts: true,
+                    digests: Vec::new(),
+                    holders: Some(vec![
+                        Holder {
+                            node: "bb".into(),
+                            bytes: Some(5),
+                        },
+                        Holder {
+                            node: "cc".into(),
+                            bytes: None,
+                        },
+                    ]),
+                },
+                r#"{"v":1,"event":"probe","place":"mux://aa?peer=bb","name":"a","kind":"file","bytes":5,"files":1,"checked":"verified","parts":true,"digests":[],"holders":[{"node":"bb","bytes":5},{"node":"cc","bytes":null}]}"#,
+            ),
+            (
+                Line::Offer {
+                    ticket: "mux://aa?peer=bb",
+                    name: "a",
+                    bytes: 5,
+                    files: 2,
+                },
+                r#"{"v":1,"event":"offer","ticket":"mux://aa?peer=bb","name":"a","bytes":5,"files":2}"#,
             ),
         ];
         for (line, written) in lines {

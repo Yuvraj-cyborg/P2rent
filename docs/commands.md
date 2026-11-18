@@ -12,15 +12,16 @@ goes to standard output, so it can be piped.
 $ mux cp <SOURCE>... <DESTINATION>
 ```
 
-Copies each source to the destination. Today a source is a web address, a
-file or a folder, and the destination is a folder. Copying to and from
-another machine will follow, and until then `mux seed` and `mux get` do
-that.
+Copies each source to the destination. A source is a web address, a file, a
+folder, or a ticket for what another machine offers. The destination is a
+folder, or `peer:`, which offers the sources to other machines.
 
 ```console
 $ mux cp https://example.org/big.iso ./downloads/      # ./downloads/big.iso
 $ mux cp https://example.org/big.iso ./image.iso       # under a name of its own
 $ mux cp ./weights ./notes.txt /mnt/backup/            # a folder and a file
+$ mux cp ./weights peer:                               # offer it, and print a ticket
+$ mux cp 'mux://450b9c6b…' ./models/                   # ./models/weights, from whoever has it
 ```
 
 The destination is read as `cp` reads it. If it is a folder, or is written
@@ -35,6 +36,8 @@ has. Otherwise it is the name the copy is given.
 | `--stall-timeout <SECONDS>` | Give up after this long with next to nothing received: under about a kilobyte a second on every stream. A slow link is waited for. The default is 60. |
 | `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
 | `--json` | Write for a program: see [below](#for-a-program). |
+
+A flag may be written before, between or after the places.
 
 ### What a copy does
 
@@ -69,16 +72,61 @@ was written, its size in bytes, and how far it was checked.
 | `consistent` | No digest was known. The source stayed what it was throughout. For a folder, nothing checks that: its files are read once, as they are. |
 | `already there` | Every file was there with the size and time the source gives, and nothing was read. |
 
-## `mux seed` and `mux get`
+### To and from another machine
 
-`mux seed <PATH>...` offers files or folders to other machines and prints a
-ticket. `mux get <TICKET>` fetches what the ticket names, from every
-machine that has it. `--help` lists their flags. One of them is about
-speed:
+```console
+$ mux cp ./weights peer:
+seeding  weights  (400.68 MiB, 402 chunks)
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7
+```
+
+`mux cp <PATH>... peer:` offers files or folders on this machine to others.
+It writes one ticket for each path to standard output, and goes on serving
+until it is stopped with Ctrl-C. Only what is on this machine can be
+offered.
+
+```console
+$ mux cp 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7' ./models/
+./models/weights	420143104	verified
+```
+
+`mux cp <TICKET> <FOLDER>` fetches what the ticket names, from every machine
+that holds it.
+
+- Every chunk is compared with the digest the ticket carries, so the copy
+  is always `verified`. `--hash` and `--mirror` are not for a ticket.
+- What a ticket names keeps its name. The destination is the folder to put
+  it in, written with a slash at its end if it is not there yet.
+- A copy that was interrupted is carried on with when the command is run
+  again: what is there is checked, and only what is missing is fetched.
+- `--streams` is not used. A machine is asked for as many chunks at once as
+  its connection has room for.
+
+A ticket is all another machine needs, and whoever has it can fetch the
+data. These flags say how the two machines reach each other. They are the
+same for `cp`, `probe`, `seed` and `get`:
 
 | Flag | |
 | --- | --- |
-| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: many times faster over a link that loses one packet in a hundred, and somewhat slower than `cubic` on a link that loses none. It is the sender's choice, so give it to `mux seed`. |
+| `--listen <ADDR>` | The address to listen on. By default every address, at a port the system picks. |
+| `--relay <URL>` | Reach machines behind routers through this relay, in place of the public ones. |
+| `--no-relay` | Use no relay and no directory. A machine is then reached at an address or not at all, and a ticket carries this machine's own. |
+| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: many times faster over a link that loses one packet in a hundred, and somewhat slower than `cubic` on a link that loses none. It is the sender's choice, so give it to the machine that offers. |
+| `--key <FILE>` | This machine's key, which is its name to other machines. Also `MUX_KEY`. It is made the first time a command has to do with another machine. |
+
+## `mux seed` and `mux get`
+
+`mux seed <PATH>...` is `mux cp <PATH>... peer:`, and `mux get <TICKET>
+--out <FOLDER>` is `mux cp <TICKET> <FOLDER>/`. They came first, and have a
+few flags of their own:
+
+| Flag | |
+| --- | --- |
+| `seed --advertise <HOST[:PORT]>` | An address to put in the ticket for other machines to dial. Repeatable. |
+| `seed --chunk-size <SIZE>` | 4K to 16M. The default is 1M. |
+| `get --seed` | Keep serving to other machines after the download. |
+| `get --peer <NODE[@HOST:PORT]>` | Another machine to try, as well as those in the ticket. Repeatable. |
+| `get --max-peers <N>` | The most machines to fetch from at once. The default is 8. |
 
 ## `mux probe`
 
@@ -86,8 +134,9 @@ speed:
 $ mux probe <PLACE>
 ```
 
-Says what is at a web address, a file or a folder, and reads none of it. A
-web server is asked for the first byte of the file.
+Says what is at a web address, a file, a folder or a ticket, and reads none
+of it. A web server is asked for the first byte of the file. The machines a
+ticket names are asked what it holds, and how much of it each of them has.
 
 ```console
 $ mux probe https://example.org/big.iso
@@ -103,6 +152,21 @@ parts    read several at once
 if a digest of every file is known: one given with `--hash`, or one a web
 server sends, which is then listed. `parts` says whether the place can be
 read at several points at once, or only in order from its start.
+
+```console
+$ mux probe 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7'
+name     weights
+kind     folder
+size     420143104 bytes (400.68 MiB)
+files    12
+checked  verified, if it is copied
+parts    read several at once
+holder   35964d95  all of it
+```
+
+For a ticket there is a `holder` line for each machine the ticket names:
+`all of it`, how many bytes of it, or `could not be asked` for a machine
+that did not answer.
 
 ## `mux sync`
 
@@ -189,7 +253,8 @@ field away or changes what one means.
 | `file` | A file is whole and has its final name. | `path` |
 | `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
 | `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
-| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest` |
+| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked |
+| `offer` | A path is offered to other machines, by `cp` to `peer:` or by `seed`. | `ticket`, `name`, `bytes`, `files` |
 | `step` | One thing a sync does, or would do with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
 | `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` brought, and `trash`: where what was replaced or removed is, or `null` |
 | `sync_plan` | In place of `synced`, with `--dry-run`. | The same, without `trash` |

@@ -3,12 +3,14 @@
 //! This file only reads the command line and shows what happens. What is
 //! copied, how, and how far it is checked are the library's to decide.
 
+use super::exit::Misuse;
 use super::tell::{self, Line};
-use super::ui;
+use super::{Reach, seed, ui};
 use anyhow::{Context, bail};
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest, Tree};
 use mux::place::{Event, Observer, Source, Verification};
 use mux::store::Folder;
+use mux::swarm::{DownloadOptions, Node, Ticket};
 use mux::{Location, engine};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -16,8 +18,11 @@ use std::time::{Duration, Instant};
 
 #[derive(clap::Args)]
 pub(super) struct Args {
-    /// What to copy, and then where to put it
-    #[arg(required = true, num_args = 2.., value_name = "PLACE")]
+    /// What to copy, and last of all where to put it: `peer:` offers it to
+    /// other machines
+    // Not `num_args = 2..`: that counts the places between two flags, and
+    // would refuse `cp FROM --dry-run TO`.
+    #[arg(required = true, value_name = "PLACE")]
     places: Vec<String>,
 
     /// The digest the source must have: `blake3:` or `sha256:` and 64 hex
@@ -42,12 +47,23 @@ pub(super) struct Args {
     /// Say what would be copied, and copy nothing
     #[arg(long)]
     dry_run: bool,
+
+    #[command(flatten)]
+    reach: Reach,
 }
 
-pub(super) async fn run(args: Args, json: bool) -> anyhow::Result<()> {
-    let Some((to, from)) = args.places.split_last() else {
-        bail!("say what to copy, and then where to put it");
-    };
+impl Args {
+    /// Where to put the copies, and what to copy.
+    fn places(&self) -> anyhow::Result<(&String, &[String])> {
+        match self.places.split_last() {
+            Some((to, from)) if !from.is_empty() => Ok((to, from)),
+            _ => Err(Misuse("say what to copy, and then where to put it".to_owned()).into()),
+        }
+    }
+}
+
+pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::Result<()> {
+    let (to, from) = args.places()?;
     if from.len() > 1 && (args.hash.is_some() || !args.mirror.is_empty()) {
         bail!(
             "--hash and --mirror say something of one source, and there are {}",
@@ -55,12 +71,19 @@ pub(super) async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         );
     }
     let to = mux::locate(to)?;
+    if to == Location::Serve {
+        return offer(args, json, key).await;
+    }
+    // Made when the first ticket is met: a copy that has to do with no
+    // other machine opens no socket.
+    let mut node: Option<Arc<Node>> = None;
+    let mut outcome = Ok(());
     for source in from {
         let source = mux::locate(source)?;
         let Location::Local(to) = &to else {
             bail!(
-                "`cp` cannot copy from {source} to {to} yet. It copies a web address or a \
-                 folder into a folder. For another machine there are `mux seed` and `mux get`."
+                "`cp` cannot copy from {source} to {to}. It copies into a folder, or to \
+                 `peer:`, which offers a file or a folder to other machines."
             );
         };
         let from = source.to_string();
@@ -70,11 +93,50 @@ pub(super) async fn run(args: Args, json: bool) -> anyhow::Result<()> {
             args: &args,
             json,
         };
-        copy.run(&source)
-            .await
-            .with_context(|| format!("cannot copy from {source}"))?;
+        let copied = match &source {
+            Location::Ticket(ticket) => {
+                let node = match &node {
+                    Some(node) => node.clone(),
+                    None => node.insert(super::node(key, &args.reach).await?).clone(),
+                };
+                copy.fetch(ticket, &node).await
+            }
+            _ => copy.run(&source).await,
+        };
+        outcome = copied.with_context(|| format!("cannot copy from {source}"));
+        if outcome.is_err() {
+            break;
+        }
     }
-    Ok(())
+    if let Some(node) = node {
+        node.shutdown().await;
+    }
+    outcome
+}
+
+/// `mux cp PATH... peer:`: offers the paths to other machines, as `mux
+/// seed` does, until it is stopped.
+async fn offer(args: Args, json: bool, key: Option<&Path>) -> anyhow::Result<()> {
+    if args.dry_run {
+        bail!("--dry-run has nothing to say of `peer:`: offering changes nothing on this machine");
+    }
+    if args.hash.is_some() || !args.mirror.is_empty() {
+        bail!("--hash and --mirror are for a source on the web, and `peer:` is offered files");
+    }
+    let (_, from) = args.places()?;
+    let mut paths = Vec::with_capacity(from.len());
+    for source in from {
+        match mux::locate(source)? {
+            Location::Local(path) => paths.push(PathBuf::from(path)),
+            other => bail!(
+                "{other} cannot be offered to other machines with `cp`: a file or a folder \
+                 on this machine can. To pass on what a ticket names while fetching it, \
+                 there is `mux get --seed`."
+            ),
+        }
+    }
+    let identity = super::identity(key)?;
+    seed::run(seed::Args::of(paths, args.reach), &identity, json).await
 }
 
 /// What `location` holds, as sources to copy from. `to` is where the copy
@@ -92,10 +154,10 @@ pub(super) async fn sources(
             bail!("--hash and --mirror are for a source on the web, and {path} is not")
         }
         Location::Local(path) => in_a_folder(path, to).await,
-        other => bail!(
-            "{other} cannot be copied from with `cp` yet. For another machine there are \
-             `mux seed` and `mux get`."
-        ),
+        Location::Ticket(_) => {
+            bail!("a ticket cannot be read here yet. `mux cp TICKET FOLDER` copies what it names.")
+        }
+        other => bail!("{other} is a place to copy to, and cannot be copied from"),
     }
 }
 
@@ -171,16 +233,95 @@ impl Copy<'_> {
         }
     }
 
-    /// Says what the copy would do, and does none of it.
-    async fn plan(&self, sources: &[Arc<dyn Source>]) -> anyhow::Result<()> {
+    /// Copies what a ticket names from the machines that hold it. Every
+    /// chunk is checked against the ticket's manifest, so the copy is
+    /// verified.
+    async fn fetch(&self, ticket: &Ticket, node: &Arc<Node>) -> anyhow::Result<()> {
+        let args = self.args;
+        if args.hash.is_some() || !args.mirror.is_empty() {
+            bail!(
+                "--hash and --mirror are for a source on the web: a ticket says what its \
+                 content has to be"
+            );
+        }
         let (folder, name) = destination(self.to);
-        let planned = engine::plan(sources, name, DEFAULT_CHUNK_SIZE).await?;
-        let tree = &planned.tree;
-        let place = Arc::new(Folder::inside(tree.clone(), &folder));
-        let there = planned.is_in(&place).await?;
-        let checked = checked((!there).then(|| planned.verification()));
-        let path = folder.join(tree.name());
-        let (bytes, files) = (tree.total_size(), planned.files());
+        if let Some(name) = name {
+            bail!(
+                "what a ticket names keeps its own name, and cannot be copied as {name:?}. \
+                 Name the folder to put it in, with a `/` at its end if it is not there yet."
+            );
+        }
+        let finding = (!self.json).then(|| ui::spinner("finding the machines that hold it"));
+        let found = mux::swarm::find(node, ticket).await;
+        if let Some(finding) = finding {
+            finding.finish_and_clear();
+        }
+        let found = found?;
+        let artifact = found.artifact.clone();
+        let saved = folder.join(artifact.name());
+        let bytes = artifact.total_size();
+        let checked = checked(Some(Verification::Verified));
+        if args.dry_run {
+            let files = artifact.entries().iter().filter(|e| e.is_file()).count() as u64;
+            self.say_plan(&saved, bytes, files, checked);
+            return Ok(());
+        }
+
+        let limits = DownloadOptions {
+            stall_timeout: Duration::from_secs(args.stall_timeout),
+            ..DownloadOptions::default()
+        };
+        let showing = Shown::new(self.json, self.from, self.to, &folder);
+        showing.copying(artifact.tree());
+        let progress = Arc::new(mux::swarm::Progress::default());
+        let fetching =
+            mux::swarm::fetch(node, found, &folder, limits, progress, showing.observer());
+        let fetched = fetching.await;
+        showing.done();
+        let report = fetched?;
+
+        if self.json {
+            tell::say(&Line::Done {
+                path: &saved.to_string_lossy(),
+                bytes,
+                checked,
+                fetched: report.fetched_bytes,
+                kept: report.resumed_bytes,
+            });
+            return Ok(());
+        }
+        println!("{}\t{bytes}\t{checked}", saved.display());
+        eprintln!(
+            "saved    {}  ({}, {checked})",
+            saved.display(),
+            ui::bytes(bytes)
+        );
+        if report.fetched_bytes > 0 {
+            eprintln!(
+                "fetched  {} in {:.1}s ({}) from {}",
+                ui::bytes(report.fetched_bytes),
+                report.elapsed.as_secs_f64(),
+                ui::rate(report.fetched_bytes, report.elapsed),
+                ui::plural(report.sources.len(), "machine"),
+            );
+        }
+        if report.resumed_bytes > 0 {
+            eprintln!(
+                "kept     {} that was already there",
+                ui::bytes(report.resumed_bytes)
+            );
+        }
+        if report.skipped_links > 0 {
+            eprintln!(
+                "skipped  {}, which this system cannot create",
+                ui::plural(report.skipped_links, "link")
+            );
+        }
+        Ok(())
+    }
+
+    /// Says what a copy would bring to `path`, as a dry run says it.
+    fn say_plan(&self, path: &Path, bytes: u64, files: u64, checked: &str) {
         if self.json {
             tell::say(&Line::Plan {
                 source: self.from,
@@ -199,6 +340,18 @@ impl Copy<'_> {
                 ui::plural(files, "file"),
             );
         }
+    }
+
+    /// Says what the copy would do, and does none of it.
+    async fn plan(&self, sources: &[Arc<dyn Source>]) -> anyhow::Result<()> {
+        let (folder, name) = destination(self.to);
+        let planned = engine::plan(sources, name, DEFAULT_CHUNK_SIZE).await?;
+        let tree = &planned.tree;
+        let place = Arc::new(Folder::inside(tree.clone(), &folder));
+        let there = planned.is_in(&place).await?;
+        let checked = checked((!there).then(|| planned.verification()));
+        let path = folder.join(tree.name());
+        self.say_plan(&path, tree.total_size(), planned.files(), checked);
         Ok(())
     }
 
