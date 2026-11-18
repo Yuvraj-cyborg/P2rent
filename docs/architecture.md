@@ -269,9 +269,14 @@ is then over when the last of them has been read, nothing is sent that is
 not read, and the connection carries the next request. The first request
 of all asks for one byte, to learn how large the file is, and what follows
 goes over the connection it made. A server that does not say how large its
-file is cannot be used. Redirects are followed, a proxy named in the environment is used, and
-certificates are checked against those the system trusts. `headers.rs`
-reads what servers send, and is fuzzed.
+file is cannot be used.
+
+Requests are HTTP/1.1, so that each stream has a connection of its own:
+its own congestion control and its own window. The client cannot speak
+HTTP/2, which would put every stream on one connection. Redirects are
+followed, a proxy named in the environment is used, and certificates are
+checked against those the system trusts. `headers.rs` reads what servers
+send, and is fuzzed.
 
 ## Sync
 
