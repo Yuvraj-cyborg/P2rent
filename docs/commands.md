@@ -1,6 +1,6 @@
 # Commands
 
-This describes the commands on the `main` branch. Release 0.2.0 has `seed`,
+This describes the commands of release 0.3. Release 0.2.0 had `seed`,
 `get` and `id` only, under the name `p2rent`.
 
 Progress and notes for people go to standard error. What a command produced

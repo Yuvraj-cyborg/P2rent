@@ -12,7 +12,7 @@ place has its own tool, each with its own rules for resuming, checking and
 speed.
 
 This document describes where the project is going. The [README](../README.md)
-describes what the released version does.
+describes what it does today.
 
 ## Commands
 
@@ -56,8 +56,10 @@ These hold for every place, which is the reason to use one tool.
    trash folder first, a sync that would delete a large share of a folder
    stops and asks, and a missing record is never treated as a deletion.
 
-Guarantees 1, 3 and 4 hold today between machines. The rest arrive with the
-milestones below.
+Guarantees 1 to 4 and 6 hold today. Of 5, a sync reads only the files that
+changed, and a file that changed is fetched whole unless its chunks kept
+their place: finding chunks that moved is
+[#74](https://github.com/yuvichh/mux/issues/74).
 
 ## What it is not
 

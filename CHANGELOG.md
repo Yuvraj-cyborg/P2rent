@@ -3,7 +3,7 @@
 What changed for someone who uses `mux`, release by release. The newest is
 first. Each line names the pull request that made the change.
 
-## Unreleased: will be 0.3.0
+## 0.3.0
 
 The project was called p2rent up to 0.2.0. It is now **mux**, and it has
 grown from one use (hand a folder to many machines) into a tool that
