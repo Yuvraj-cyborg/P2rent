@@ -1481,3 +1481,95 @@ async fn a_copy_from_the_web_is_offered_with_its_address_in_the_ticket() {
     assert!(server.asked().len() > asked);
     drop(offering);
 }
+
+/// Interrupt a ticket sync after its web origin delivers part of a file.
+/// The peer supplies the verified manifest but has lost its copy of the data.
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupted_ticket_sync_resumes_verified_web_chunks_under_the_chosen_name() {
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("offered");
+    let file = bytes(2 * 1024 * 1024, 84);
+    std::fs::write(&source, &file).unwrap();
+    let node = common::node().await;
+    let (_, mut ticket) = common::seed(&node, &source);
+    std::fs::remove_file(&source).unwrap();
+    let mut slow = serving(file.clone());
+    slow.pace = Some(Duration::from_millis(25));
+    let server = Server::start(slow).await;
+    ticket.origins.push(server.url("/sample.bin"));
+    let to = tmp.path().join("renamed");
+    let old = b"previous contents";
+    std::fs::write(&to, old).unwrap();
+    let mut sync = Command::new(BIN);
+    sync.env("MUX_KEY", tmp.path().join("receiver.key"))
+        .args([
+            "--json",
+            "sync",
+            "--no-relay",
+            "--listen",
+            "127.0.0.1:0",
+            "--streams",
+            "1",
+        ])
+        .arg(ticket.to_string())
+        .arg(&to);
+    let mut child = kills::KillOnDrop(
+        sync.stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let part = to.with_extension("mux-part");
+    let verified_bytes = |data: &[u8]| {
+        let (chunks, _) = data.as_chunks::<{ common::CHUNK }>();
+        let (wanted, _) = file.as_chunks::<{ common::CHUNK }>();
+        chunks.iter().zip(wanted).filter(|(a, b)| a == b).count() * common::CHUNK
+    };
+    // Wait for a complete chunk on disk. The web server limits the total
+    // bandwidth across all connections, leaving time to stop the receiver.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if std::fs::read(&part).is_ok_and(|data| verified_bytes(&data) > 0) {
+                break;
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "sync ended before a chunk was observed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    assert_eq!(std::fs::read(&to).unwrap(), old);
+    let partial = std::fs::read(&part).unwrap();
+    let kept = verified_bytes(&partial);
+    assert!(kept > 0 && kept < file.len());
+    assert_eq!(
+        std::fs::read(trash_of(tmp.path()).join("renamed")).unwrap(),
+        old
+    );
+
+    server.change(|serve| serve.pace = None);
+    let output = tokio::task::spawn_blocking(move || {
+        sync.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(output.status.success(), "{}", said(&output));
+    let lines = String::from_utf8(output.stdout).unwrap();
+    let done: serde_json::Value = serde_json::from_str(lines.lines().last().unwrap()).unwrap();
+    assert_eq!(done["event"], "synced");
+    assert_eq!(done["kept"], kept);
+    assert_eq!(done["fetched"], file.len() - kept);
+    assert!(!part.exists());
+    assert_eq!(std::fs::read(&to).unwrap(), file);
+    node.shutdown().await;
+}

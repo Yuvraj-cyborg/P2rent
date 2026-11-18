@@ -8,6 +8,7 @@
 //! A file gets its final name only when every one of its chunks is in
 //! place.
 
+mod selection;
 mod supplier;
 
 use self::supplier::Swarm;
@@ -184,6 +185,24 @@ impl Found {
     pub fn also(&mut self, supplier: Arc<dyn Supplier>) {
         self.others.push(supplier);
     }
+
+    fn suppliers(&self, node: &Arc<Node>) -> (Swarm, Vec<Arc<dyn Supplier>>) {
+        let named = self.peers.iter().filter_map(|peer| peer.relay.clone());
+        let swarm = Swarm {
+            node: node.clone(),
+            artifact: self.artifact.clone(),
+            known: Arc::default(),
+            relays: named.chain(node.endpoint().relay()).collect(),
+        };
+        let suppliers = self
+            .peers
+            .iter()
+            .cloned()
+            .map(|peer| swarm.supplier(peer))
+            .chain(self.others.iter().cloned())
+            .collect();
+        (swarm, suppliers)
+    }
 }
 
 /// One peer of a ticket, and how much of the artifact it holds.
@@ -301,12 +320,7 @@ pub async fn fetch(
     observer: Observer,
 ) -> Result<Report> {
     let started = Instant::now();
-    let Found {
-        artifact,
-        peers: bootstrap,
-        manifest_peer,
-        others,
-    } = found;
+    let artifact = &found.artifact;
     progress
         .total
         .store(artifact.total_size(), Ordering::Relaxed);
@@ -324,11 +338,11 @@ pub async fn fetch(
         scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
         scan_observer(Event::Examined { bytes });
     };
-    let hints = fetch_hints(node, &manifest_peer, &artifact);
+    let hints = fetch_hints(node, &found.manifest_peer, artifact);
     let store = Store::resume_with_hints(artifact.clone(), folder.clone(), examined, hints).await?;
     let have = store.held();
 
-    let resumed = bytes_of(&artifact, &have);
+    let resumed = bytes_of(artifact, &have);
     progress.resumed.store(resumed, Ordering::Relaxed);
     observer(Event::Kept { bytes: resumed });
 
@@ -339,19 +353,8 @@ pub async fn fetch(
     )));
 
     progress.set_phase(Phase::Downloading);
-    let named = bootstrap.iter().filter_map(|peer| peer.relay.clone());
-    let swarm = Swarm {
-        node: node.clone(),
-        artifact,
-        known: Arc::default(),
-        relays: named.chain(node.endpoint().relay()).collect(),
-    };
-    let not_peers: Vec<SupplierId> = others.iter().map(|other| other.id()).collect();
-    let suppliers = bootstrap
-        .into_iter()
-        .map(|peer| swarm.supplier(peer))
-        .chain(others)
-        .collect();
+    let (swarm, suppliers) = found.suppliers(node);
+    let not_peers: Vec<SupplierId> = found.others.iter().map(|other| other.id()).collect();
     let limits = engine::Options {
         max_suppliers: options.max_peers,
         stall_timeout: options.stall_timeout,
