@@ -2,11 +2,11 @@
 
 mod kills;
 
-use kills::Moments;
+use kills::{KillOnDrop, Moments};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mux");
@@ -15,16 +15,6 @@ fn mux(key: &Path) -> Command {
     let mut command = Command::new(BIN);
     command.env("MUX_KEY", key).stdin(Stdio::null());
     command
-}
-
-/// Kills the child when the test ends, however it ends.
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 #[test]
@@ -340,12 +330,11 @@ fn a_command_that_asks_for_what_cannot_be_done_is_a_usage_error() {
     let file = tmp.path().join("file");
     std::fs::write(&file, b"x").unwrap();
     let file = file.to_str().unwrap();
-    let refused: [(&[&str], &str); 5] = [
+    let refused: [(&[&str], &str); 4] = [
         (&["seed", file, "--chunk-size", "1"], "chunk size must be"),
         (&["sync", file, "peer:"], "is not a folder on this machine"),
         (&["cp", file, "peer:", "--dry-run"], "--dry-run has nothing"),
         (&["cp", file, "peer:", "--hash", "blake3:00"], ""),
-        (&["cp", file, "./elsewhere/", "--seed"], "--seed goes on"),
     ];
     for (line, why) in refused {
         let output = mux(&key).args(line).output().unwrap();

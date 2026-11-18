@@ -1,12 +1,23 @@
-//! Moments to stop a command dead at, for the tests that kill one as a
-//! crash or a power cut would.
+//! Stopping a command: at a moment of the test's choosing, as a crash or a
+//! power cut would, or when the test is over.
 
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The most rounds a test tries for each round it wants. More than any run
 /// needs: every late kill halves the time the next is drawn from.
 const PATIENCE: usize = 10;
+
+/// A command that goes on until it is stopped, and is stopped when the test
+/// lets go of it, however the test ends.
+pub(crate) struct KillOnDrop(pub(crate) Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 /// Starts `command` and stops it dead `after` that long, with no chance to
 /// tidy up. If it ends by itself first, this returns then: there is

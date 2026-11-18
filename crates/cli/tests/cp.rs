@@ -1411,3 +1411,73 @@ async fn with_its_web_address_of_no_use_the_machines_finish_the_transfer() {
     let from_machines: u64 = report.sources.iter().map(|(_, bytes)| bytes).sum();
     assert_eq!(from_machines, file.len() as u64);
 }
+
+/// The first machine to copy a file from the web offers it with `--seed`:
+/// the ticket it writes names the web address too. The next machine is
+/// shown both by `probe`, and copies from both.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_from_the_web_is_offered_with_its_address_in_the_ticket() {
+    let file = bytes(2 * 1024 * 1024 + 9, 90);
+    let server = Server::start(serving(file.clone())).await;
+    let url = server.url("/sample.bin");
+    let tmp = tempfile::tempdir().unwrap();
+    let reach = ["--no-relay", "--listen", "127.0.0.1:0"];
+
+    // It says what it wrote, then writes the ticket, and does not end.
+    let first = tmp.path().join("first");
+    let mut command = Command::new(BIN);
+    command
+        .env("MUX_KEY", tmp.path().join("first.key"))
+        .args(["cp", &url, &format!("{}/", text(&first)), "--seed"])
+        .args(reach)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let (offering, wrote, ticket) = tokio::task::spawn_blocking(move || {
+        use std::io::BufRead;
+        let mut offering = kills::KillOnDrop(command.spawn().unwrap());
+        let mut said = std::io::BufReader::new(offering.0.stdout.take().unwrap()).lines();
+        let mut line = || said.next().unwrap().unwrap();
+        let (wrote, ticket) = (line(), line());
+        (offering, wrote, ticket)
+    })
+    .await
+    .unwrap();
+    assert!(wrote.ends_with("\tconsistent"), "{wrote:?}");
+    assert!(ticket.starts_with("mux://"), "{ticket:?}");
+    assert!(ticket.ends_with(&format!("&url={url}")), "{ticket:?}");
+
+    // A second machine is told where it could copy from.
+    let key = tmp.path().join("second.key");
+    let second = |args: &[&str]| {
+        let mut command = Command::new(BIN);
+        command.env("MUX_KEY", &key).args(args).args(reach);
+        command.stdin(Stdio::null());
+        tokio::task::spawn_blocking(move || command.output().unwrap())
+    };
+    let probed = second(&["probe", &ticket]).await.unwrap();
+    assert!(probed.status.success(), "{}", said(&probed));
+    let told = String::from_utf8_lossy(&probed.stdout).into_owned();
+    assert!(told.contains("  all of it\n"), "{told}");
+    let origin = format!("origin   {url}  the web, a file of that size\n");
+    assert!(told.ends_with(&origin), "{told}");
+
+    // And copies from the machine and the web address in one transfer:
+    // the server is asked again, and every chunk is checked against what
+    // the first machine holds.
+    let asked = server.asked().len();
+    let out = tmp.path().join("second");
+    let copied = second(&["cp", &ticket, &format!("{}/", text(&out))])
+        .await
+        .unwrap();
+    assert!(copied.status.success(), "{}", said(&copied));
+    assert_result(
+        &copied,
+        &out.join("sample.bin"),
+        &file.len().to_string(),
+        "verified",
+    );
+    assert!(std::fs::read(out.join("sample.bin")).unwrap() == file);
+    assert!(server.asked().len() > asked);
+    drop(offering);
+}

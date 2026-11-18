@@ -8,6 +8,7 @@ use super::tell::{self, Line};
 use super::{Reach, seed, ui};
 use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest, Tree};
+use mux::origins::Origin;
 use mux::place::{Event, Observer, Source, Verification};
 use mux::store::Folder;
 use mux::swarm::{DownloadOptions, Node, Report, Ticket, announce};
@@ -48,8 +49,8 @@ pub(super) struct Args {
     #[arg(long)]
     dry_run: bool,
 
-    /// Go on offering what was copied from a ticket to other machines,
-    /// until stopped
+    /// Go on offering what was copied to other machines, until stopped.
+    /// What came from the web gets a ticket that names its address too
     #[arg(long)]
     seed: bool,
 
@@ -110,20 +111,11 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
     // with one written wrong copies nothing.
     let located: Result<Vec<Location>, _> = from.iter().map(|place| mux::locate(place)).collect();
     let sources = located?;
-    if args.seed
-        && !sources
-            .iter()
-            .any(|source| matches!(source, Location::Ticket(_)))
-    {
-        return misuse(
-            "--seed goes on offering what was copied from a ticket, and no source is one. \
-             To offer a file or a folder, copy it to `peer:`.",
-        );
-    }
     // Made when the first ticket is met: a copy that has to do with no
     // other machine opens no socket.
     let mut node: Option<Arc<Node>> = None;
     let mut fetched: Vec<Report> = Vec::new();
+    let mut saved: Vec<Saved> = Vec::new();
     let mut outcome = Ok(());
     for source in sources {
         let Location::Local(to) = &to else {
@@ -139,10 +131,10 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
             args: &args,
             json,
         };
-        let copied = match &source {
+        let copied = if let Location::Ticket(ticket) = &source {
             // Asked before a node is made: a command that is refused opens
             // no socket and gives this machine no key.
-            Location::Ticket(ticket) => match copy.folder_for_a_ticket() {
+            match copy.folder_for_a_ticket() {
                 Ok(folder) => {
                     let node = match &node {
                         Some(node) => node.clone(),
@@ -152,36 +144,72 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
                     report.map(|report| fetched.extend(report))
                 }
                 Err(refused) => Err(refused),
-            },
-            _ => copy.run(&source).await,
+            }
+        } else {
+            let path = copy.run(&source).await;
+            path.map(|path| saved.extend(path.map(|path| Saved::of(path, &source))))
         };
         outcome = copied.with_context(|| format!("cannot copy from {source}"));
         if outcome.is_err() {
             break;
         }
     }
+    if args.seed && outcome.is_ok() && !args.dry_run {
+        let node = match &node {
+            Some(node) => node.clone(),
+            None => node.insert(super::node(key, &args.reach).await?).clone(),
+        };
+        outcome = keep_offering(&node, &args.reach, &fetched, &saved, json).await;
+    }
     if let Some(node) = node {
-        if args.seed && outcome.is_ok() {
-            keep_offering(&node, &fetched).await;
-        }
         node.shutdown().await;
     }
     outcome
 }
 
-/// Says to a person where what a ticket names came from.
-fn say_fetched(report: &Report) {
+/// What a copy from a folder or from the web left on this machine.
+struct Saved {
+    path: PathBuf,
+    /// The web address it came from, if it came from one: a place the same
+    /// bytes can be fetched from, for a ticket to name.
+    origin: Option<String>,
+}
+
+impl Saved {
+    fn of(path: PathBuf, source: &Location) -> Self {
+        let origin = match source {
+            Location::Web(address) => Some(address.clone()),
+            _ => None,
+        };
+        Self { path, origin }
+    }
+}
+
+/// Says to a person where what a ticket names came from: the machines,
+/// and those of the ticket's web addresses that gave something.
+fn say_fetched(report: &Report, origins: &[Origin]) {
     if report.fetched_bytes > 0 {
+        let machines = ui::plural(report.sources.len(), "machine");
+        let from = if report.others.is_empty() {
+            machines
+        } else {
+            format!("{machines} and the web")
+        };
         eprintln!(
-            "fetched  {} in {:.1}s ({}) from {}",
+            "fetched  {} in {:.1}s ({}) from {from}",
             ui::bytes(report.fetched_bytes),
             report.elapsed.as_secs_f64(),
             ui::rate(report.fetched_bytes, report.elapsed),
-            ui::plural(report.sources.len(), "machine"),
         );
-        // With one machine, the line above has said it.
-        for (node, bytes) in report.sources.iter().filter(|_| report.sources.len() > 1) {
+        // With one place, the line above has said it.
+        let several = report.sources.len() + report.others.len() > 1;
+        for (node, bytes) in report.sources.iter().filter(|_| several) {
             eprintln!("         {}  {}", node.short(), ui::bytes(*bytes));
+        }
+        for (id, bytes) in report.others.iter().filter(|_| several) {
+            let address = origins.iter().find(|origin| origin.id == *id);
+            let address = address.map_or("elsewhere", |origin| origin.address.as_str());
+            eprintln!("         {address}  {}", ui::bytes(*bytes));
         }
     }
     if report.resumed_bytes > 0 {
@@ -198,10 +226,19 @@ fn say_fetched(report: &Report) {
     }
 }
 
-/// Goes on offering what was fetched until the command is stopped, and
-/// keeps this machine listed with those it fetched from, so that machines
-/// that come later are told of it.
-async fn keep_offering(node: &Arc<Node>, fetched: &[Report]) {
+/// Goes on offering what was copied until the command is stopped.
+///
+/// What a ticket named is offered under that ticket, and this machine is
+/// kept listed with those it fetched from, so that machines that come
+/// later are told of it. What came from a folder or from the web is
+/// offered as `mux seed` offers it, and its ticket is written.
+async fn keep_offering(
+    node: &Arc<Node>,
+    reach: &Reach,
+    fetched: &[Report],
+    saved: &[Saved],
+    json: bool,
+) -> anyhow::Result<()> {
     let listed: Vec<_> = fetched
         .iter()
         .map(|report| {
@@ -209,11 +246,27 @@ async fn keep_offering(node: &Arc<Node>, fetched: &[Report]) {
             tokio::spawn(announce(node.clone(), content, report.peers.clone()))
         })
         .collect();
-    let shares: Vec<_> = fetched.iter().map(|report| report.share.clone()).collect();
+    let mut shares: Vec<_> = fetched.iter().map(|report| report.share.clone()).collect();
+    if !saved.is_empty() {
+        let advertised = seed::advertised(node, reach, &[]).await;
+        for copy in saved {
+            let origins = copy.origin.as_slice();
+            let offering = seed::offer(
+                node,
+                &copy.path,
+                DEFAULT_CHUNK_SIZE,
+                &advertised,
+                origins,
+                json,
+            );
+            shares.push(offering.await?);
+        }
+    }
     seed::serve_until_interrupted(&shares).await;
     for listing in listed {
         listing.abort();
     }
+    Ok(())
 }
 
 /// `mux cp PATH... peer:`: offers the paths to other machines, as `mux
@@ -334,13 +387,16 @@ struct Copy<'a> {
 }
 
 impl Copy<'_> {
-    async fn run(&self, source: &Location) -> anyhow::Result<()> {
+    /// Copies what is at `source`, or says what a copy would do. Gives
+    /// the path that was written, if anything was.
+    async fn run(&self, source: &Location) -> anyhow::Result<Option<PathBuf>> {
         let args = self.args;
         let sources = sources(source, Some(self.to), args.hash, &args.mirror).await?;
         if args.dry_run {
-            self.plan(&sources).await
+            self.plan(&sources).await?;
+            Ok(None)
         } else {
-            self.copy(sources).await
+            self.copy(sources).await.map(Some)
         }
     }
 
@@ -377,7 +433,7 @@ impl Copy<'_> {
         if let Some(finding) = finding {
             finding.finish_and_clear();
         }
-        let found = found?;
+        let mut found = found?;
         let artifact = found.artifact.clone();
         let saved = folder.join(artifact.name());
         let bytes = artifact.total_size();
@@ -386,6 +442,11 @@ impl Copy<'_> {
             let files = artifact.entries().iter().filter(|e| e.is_file()).count() as u64;
             self.say_plan(&saved, bytes, files, checked);
             return Ok(None);
+        }
+        // The web addresses the ticket names are fetched from as well.
+        let origins = mux::origins::add(&mut found, ticket).await;
+        for (origin, why) in origins.iter().filter_map(|o| Some((o, o.unused.as_ref()?))) {
+            eprintln!("note: nothing is fetched from {}: {why}", origin.address);
         }
 
         let limits = DownloadOptions {
@@ -415,7 +476,7 @@ impl Copy<'_> {
                 saved.display(),
                 ui::bytes(bytes)
             );
-            say_fetched(&report);
+            say_fetched(&report, &origins);
         }
         Ok(Some(report))
     }
@@ -455,8 +516,9 @@ impl Copy<'_> {
         Ok(())
     }
 
-    /// Copies what `sources` hold, and says what was done.
-    async fn copy(&self, sources: Vec<Arc<dyn Source>>) -> anyhow::Result<()> {
+    /// Copies what `sources` hold, says what was done, and gives the path
+    /// that was written.
+    async fn copy(&self, sources: Vec<Arc<dyn Source>>) -> anyhow::Result<PathBuf> {
         let (folder, name) = destination(self.to);
         let limits = engine::Options {
             requests_per_supplier: self.args.streams.max(1),
@@ -491,7 +553,7 @@ impl Copy<'_> {
                 fetched: copied.fetched,
                 kept: copied.resumed,
             });
-            return Ok(());
+            return Ok(saved);
         }
         // What was written is the only thing on standard output.
         println!("{}\t{bytes}\t{checked}", saved.display());
@@ -515,7 +577,7 @@ impl Copy<'_> {
                 ui::bytes(copied.resumed)
             );
         }
-        Ok(())
+        Ok(saved)
     }
 }
 
