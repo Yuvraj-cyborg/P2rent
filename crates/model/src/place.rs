@@ -311,6 +311,12 @@ pub trait Supply: fmt::Debug + Send + Sync {
     /// they come.
     fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>>;
 
+    /// Says that chunk `index` will not be asked for by whoever fetched the
+    /// chunk before it. A supplier that kept something open to read on
+    /// from, such as a request for the rest of a file, closes it now: left
+    /// open, it would go on being sent what nobody reads.
+    fn leave(&self, index: u64);
+
     /// What fetching from this supplier allows. One without
     /// [`Capabilities::random_access`] is asked for one chunk at a time,
     /// from the first that is missing onwards.
