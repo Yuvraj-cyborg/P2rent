@@ -25,11 +25,19 @@ pub(super) enum Exit {
     Corrupt = 6,
 }
 
+/// A command line that is written wrong, where only the command can tell.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(super) struct Misuse(pub(super) String);
+
 impl Exit {
     /// How `error` ends a command: by the first cause in it that is a
     /// failure of a known kind.
     pub(super) fn of(error: &anyhow::Error) -> Self {
         let known = error.chain().find_map(|cause| {
+            if cause.is::<Misuse>() {
+                return Some(Self::Usage);
+            }
             if let Some(failure) = cause.downcast_ref::<Failure>() {
                 return Some(Self::of_failure(failure));
             }
@@ -130,7 +138,7 @@ mod tests {
         let said = String::new;
         let io = |kind| mux::store::Error::Io(std::io::Error::from(kind));
         let sync = |error: mux::sync::Error| anyhow::Error::from(error);
-        let cases: [(anyhow::Error, Exit); 19] = [
+        let cases: [(anyhow::Error, Exit); 20] = [
             (
                 sync(engine::Error::Stalled(Duration::ZERO).into()),
                 Exit::Unreachable,
@@ -169,6 +177,7 @@ mod tests {
                 Exit::Corrupt,
             ),
             (mux::Error::InvalidLocation(said()).into(), Exit::Usage),
+            (Misuse(said()).into(), Exit::Usage),
             (mux::Error::ManifestUnavailable.into(), Exit::Absent),
             (anyhow::anyhow!("something else"), Exit::Failed),
         ];
