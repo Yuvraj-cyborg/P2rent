@@ -11,7 +11,7 @@ use crate::store::{Put, Store};
 use crate::sync;
 use model::artifact::Bitfield;
 use model::pace;
-use model::place::{Event, Failure, Observer, Supplier, SupplierId, Supply, Verification};
+use model::place::{Arrived, Event, Failure, Observer, Supplier, SupplierId, Supply, Verification};
 use model::retry;
 use model::schedule::Owner;
 use std::collections::HashMap;
@@ -25,7 +25,16 @@ use tracing::{debug, warn};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request may go without [`PROGRESS`] before it is given up.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
+/// The bytes of one request that count as progress. A request that brings
+/// fewer in [`CHUNK_TIMEOUT`] is given up, and a transfer in which no
+/// request brings as many within the stall timeout has stalled. It comes
+/// to about a kilobyte a second for each request, below which a link is
+/// taken to carry nothing.
+const PROGRESS: u64 = 64 * 1024;
+/// How often a request is looked at to see what has arrived of it.
+const WATCH: Duration = Duration::from_secs(1);
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
 const IDLE_POLL: Duration = Duration::from_secs(1);
 /// How long a supplier that had nothing wanted is left alone.
@@ -45,7 +54,7 @@ pub struct Options {
     /// each a connection of their own. A supplier that takes every request
     /// on one connection is asked for as many as its route has room for.
     pub requests_per_supplier: usize,
-    /// Give up when no chunk has arrived for this long.
+    /// Give up when next to nothing has arrived for this long.
     pub stall_timeout: Duration,
 }
 
@@ -256,7 +265,8 @@ struct Run {
     owners: AtomicU32,
     found: mpsc::UnboundedSender<Arc<dyn Supplier>>,
     stored_from: Mutex<HashMap<SupplierId, u64>>,
-    /// When a chunk was last stored, or when the transfer started.
+    /// When a chunk was last stored or a request last brought
+    /// [`PROGRESS`] bytes, or when the transfer started.
     last_progress: Mutex<Instant>,
     /// Whether a supplier is waiting for a turn that none is free for.
     crowded: AtomicBool,
@@ -345,7 +355,13 @@ impl Run {
         self.claims.is_complete()
     }
 
-    /// How long it has been since a chunk was stored.
+    /// Records that there was progress: a chunk was stored, or enough of
+    /// one arrived.
+    fn progressed(&self) {
+        *sync::lock(&self.last_progress) = Instant::now();
+    }
+
+    /// How long it has been since there was progress.
     fn idle(&self) -> Duration {
         sync::lock(&self.last_progress).elapsed()
     }
@@ -372,7 +388,7 @@ impl Run {
             (self.observer)(Event::Committed { file });
         }
         *sync::lock(&self.stored_from).entry(from).or_default() += bytes;
-        *sync::lock(&self.last_progress) = Instant::now();
+        self.progressed();
         self.claims.complete(claim);
     }
 
@@ -690,14 +706,14 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         let index = claim.index;
 
         let asked = Instant::now();
-        let data = match timeout(CHUNK_TIMEOUT, supply.chunk(index)).await {
-            Ok(Ok(data)) => data,
-            Ok(Err(Failure::Absent(_))) => {
+        let data = match fetch(&run, &*supply, index).await {
+            Some(Ok(data)) => data,
+            Some(Err(Failure::Absent(_))) => {
                 sync::write(&view).refuse(index);
                 continue;
             }
-            Ok(Err(failure)) => return Err(Ended::by(failure)),
-            Err(_) => {
+            Some(Err(failure)) => return Err(Ended::by(failure)),
+            None => {
                 return Err(Ended::Failed(format!(
                     "chunk {index} did not arrive in time"
                 )));
@@ -723,6 +739,32 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         }
         if paced.as_ref().is_some_and(|paced| paced.is_over()) {
             return Ok(());
+        }
+    }
+}
+
+/// Fetches chunk `index`, for as long as it keeps coming. `None` if next to
+/// nothing of it arrived for [`CHUNK_TIMEOUT`]: a chunk that is slow is
+/// waited for, and one that is not coming is not.
+async fn fetch(run: &Run, supply: &dyn Supply, index: u64) -> Option<Result<Vec<u8>, Failure>> {
+    let arrived = Arrived::default();
+    let mut chunk = supply.chunk(index, &arrived);
+    let mut watch = tokio::time::interval_at(Instant::now() + WATCH, WATCH);
+    watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // What had arrived when the request last made progress, and when.
+    let (mut marked, mut since) = (0, Instant::now());
+    loop {
+        tokio::select! {
+            fetched = &mut chunk => return Some(fetched),
+            _ = watch.tick() => {
+                let now = arrived.so_far();
+                if now - marked >= PROGRESS {
+                    (marked, since) = (now, Instant::now());
+                    run.progressed();
+                } else if since.elapsed() > CHUNK_TIMEOUT {
+                    return None;
+                }
+            }
         }
     }
 }

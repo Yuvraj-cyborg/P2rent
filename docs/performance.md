@@ -399,10 +399,15 @@ a lower priority than the one before.
   receive window that Linux gives one TCP connection. It is the figure for
   one connection with nothing tuned, not a limit of TCP.
 - **600 ms.** Every tool spends most of a 128 MiB file getting up to speed.
-- A transfer counts progress in whole chunks. With no chunk stored for the
-  stall timeout it is taken for stalled, even while bytes arrive. `mux cp`
-  from the web over 0.5 Mbit/s gave up on an 8 MiB file for that reason:
-  [#83](https://github.com/yuvichh/mux/issues/83).
+- A transfer counted progress in whole chunks. With no chunk stored for the
+  stall timeout it was taken for stalled, even while bytes arrived. `mux cp`
+  from the web over 0.5 Mbit/s gave up on an 8 MiB file after 100 seconds
+  for that reason. Progress is now counted in bytes
+  ([#83](https://github.com/yuvichh/mux/issues/83)): the same copy takes
+  145 seconds, and `mux get` of the same file 142, at 93% of what the link
+  carries. Loopback costs the same CPU as before within a hundredth (5.59
+  CPU seconds per GiB against 5.55), and the first row of the table reads
+  91.5 MiB/s.
 
 ## Sending only what changed
 

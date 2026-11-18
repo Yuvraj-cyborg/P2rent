@@ -298,7 +298,7 @@ mod tests {
     use super::*;
     use crate::conformance::{Memory, Sample};
     use model::artifact::{Hash, MIN_CHUNK_SIZE, Timestamp};
-    use model::place::{Capabilities, Pending, Reader};
+    use model::place::{Arrived, Capabilities, Pending, Reader};
     use std::sync::Mutex;
 
     /// A place that is read from, and says of its files what it is told to.
@@ -321,12 +321,12 @@ mod tests {
     }
 
     impl Reader for Short {
-        fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+        fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
             Box::pin(async move {
                 let left = self.left.checked_sub(u64::from(len));
                 self.left =
                     left.ok_or_else(|| Failure::Unreachable("the line went dead".into()))?;
-                self.reader.read(len).await
+                self.reader.read(len, arrived).await
             })
         }
     }

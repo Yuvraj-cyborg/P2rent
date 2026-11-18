@@ -77,6 +77,7 @@ mod tests {
     use crate::conformance::{Memory, Sample};
     use crate::{Error, Options, copy};
     use model::artifact::MIN_CHUNK_SIZE;
+    use model::place::Arrived;
 
     /// Copies the entries `picked` of the sample into a new place.
     fn copy_part(
@@ -165,7 +166,9 @@ mod tests {
         assert_eq!(read.as_deref(), Ok(&sample.files[5][..]));
         let mut reader = runtime.block_on(picked.open(1, 0)).unwrap();
         assert_eq!(
-            runtime.block_on(reader.read(1)).as_deref(),
+            runtime
+                .block_on(reader.read(1, &Arrived::default()))
+                .as_deref(),
             Ok(&sample.files[5][..])
         );
         for missing in [2, 9] {
