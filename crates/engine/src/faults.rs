@@ -16,7 +16,7 @@ use model::place::{
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -208,7 +208,12 @@ impl Supply for Reached {
         })
     }
 
-    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
+    fn chunk<'a>(
+        &'a self,
+        index: u64,
+        _following: u64,
+        arrived: &'a Arrived,
+    ) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             let script = &self.made.script;
             let _asking = Asking::begin(&self.made, index);
@@ -282,8 +287,8 @@ impl Source for Hooked {
         self.place.describe()
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
-        self.place.open(file, offset)
+    fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
+        self.place.open(file, offset, len)
     }
 }
 
@@ -1225,27 +1230,46 @@ struct Watched {
     random_access: bool,
     /// The file and offset of every reader that was opened.
     opened: Mutex<Vec<(usize, u64)>>,
+    /// How many bytes the readers were opened for, all told.
+    asked: AtomicU64,
+    /// How many of those bytes were never read.
+    unread: Arc<AtomicU64>,
     /// How many readers are open, and the most there have been at once.
     open: Arc<AtomicUsize>,
     most_open: AtomicUsize,
+    /// How long a reader takes over each read.
+    each: Duration,
+    /// A reader opened at this offset takes this long instead.
+    slow: Option<(u64, Duration)>,
 }
 
 /// A reader that is counted as open for as long as it lives.
 #[derive(Debug)]
 struct Open {
     reader: Box<dyn Reader>,
-    open: Arc<AtomicUsize>,
+    /// How many readers there are.
+    readers: Arc<AtomicUsize>,
+    /// How many of the bytes it was opened for have not been read.
+    left: u64,
+    unread: Arc<AtomicU64>,
+    delay: Duration,
 }
 
 impl Reader for Open {
     fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
-        self.reader.read(len, arrived)
+        Box::pin(async move {
+            tokio::time::sleep(self.delay).await;
+            let read = self.reader.read(len, arrived).await?;
+            self.left = self.left.saturating_sub(read.len() as u64);
+            Ok(read)
+        })
     }
 }
 
 impl Drop for Open {
     fn drop(&mut self) {
-        self.open.fetch_sub(1, Ordering::Relaxed);
+        self.readers.fetch_sub(1, Ordering::Relaxed);
+        self.unread.fetch_add(self.left, Ordering::Relaxed);
     }
 }
 
@@ -1256,9 +1280,21 @@ impl Watched {
             place: Memory::holding(tree, &sample.files).unwrap(),
             random_access,
             opened: Mutex::default(),
+            asked: AtomicU64::new(0),
+            unread: Arc::default(),
             open: Arc::default(),
             most_open: AtomicUsize::new(0),
+            each: Duration::ZERO,
+            slow: None,
         })
+    }
+
+    /// The same, with every read taking `each`, but `slow.1` from a reader
+    /// that was opened at the offset `slow.0`.
+    fn taking(sample: &Arc<Sample>, each: Duration, slow: Option<(u64, Duration)>) -> Arc<Self> {
+        let mut watched = Arc::into_inner(Self::new(sample, true)).unwrap();
+        (watched.each, watched.slow) = (each, slow);
+        Arc::new(watched)
     }
 
     fn supplier(self: &Arc<Self>, sample: &Sample) -> Vec<Arc<dyn Supplier>> {
@@ -1282,15 +1318,20 @@ impl Source for Watched {
         self.place.describe()
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+    fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
         self.opened.lock().unwrap().push((file, offset));
+        self.asked.fetch_add(len, Ordering::Relaxed);
         Box::pin(async move {
-            let reader = self.place.open(file, offset).await?;
+            let reader = self.place.open(file, offset, len).await?;
             let open = self.open.fetch_add(1, Ordering::Relaxed) + 1;
             self.most_open.fetch_max(open, Ordering::Relaxed);
+            let slow = self.slow.filter(|(slow, _)| *slow == offset);
             let counted: Box<dyn Reader> = Box::new(Open {
                 reader,
-                open: self.open.clone(),
+                readers: self.open.clone(),
+                left: len,
+                unread: self.unread.clone(),
+                delay: slow.map_or(self.each, |(_, delay)| delay),
             });
             Ok(counted)
         })
@@ -1329,31 +1370,99 @@ fn chunks_in_a_row_come_from_one_reader() {
     );
 }
 
-/// A reader is closed as soon as the pipeline that was reading from it goes
-/// elsewhere. Left open, a request for the rest of a file goes on being
-/// sent what nobody reads. So there are never more readers open than there
-/// are pipelines, however often they move.
+/// A request is for a run of chunks and ends where the run ends. So with
+/// streams that keep their speed, every byte a source was opened for is
+/// read, and each stream opens it a few times and no more.
 #[test]
-fn a_reader_is_closed_when_its_pipeline_goes_elsewhere() {
+fn nothing_is_asked_for_that_is_not_read() {
     let sample = long(64);
-    // A first transfer leaves the first ten chunks, so that the pipelines
-    // of the second have uneven shares, and those that finish early move.
-    let some = Script {
-        holds: (0..64).map(|chunk| chunk < 10).collect(),
-        ..Script::default()
-    };
-    let first = Setup::new(&sample).run(&[Made::new(1, some, &sample)]);
-    assert!(matches!(first.outcome, Err(Error::Stalled(_))));
-
-    let source = Watched::new(&sample, true);
-    let mut setup = Setup::new(&sample).into(&first.place);
+    let source = Watched::taking(&sample, Duration::from_millis(10), None);
+    let mut setup = Setup::new(&sample);
     setup.options.requests_per_supplier = 4;
     let ran = setup.run_from(source.supplier(&sample));
 
     assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let size = sample.artifact.total_size();
+    assert_eq!(source.asked.load(Ordering::Relaxed), size);
+    assert_eq!(source.unread.load(Ordering::Relaxed), 0);
+    assert!(source.most_open.load(Ordering::Relaxed) <= 4);
+    // A first run each, to learn how fast the stream is, and then its
+    // share of the rest: eight, and a few more for what the shares left.
     let opened = source.opened.lock().unwrap().len();
-    assert!(opened > 4, "no pipeline moved: {opened} readers");
-    assert_eq!(source.most_open.load(Ordering::Relaxed), 4);
+    assert!((8..=12).contains(&opened), "{opened} readers");
+    // Sixty-four chunks at a hundredth of a second each, by four streams.
+    assert!(
+        ran.took < Duration::from_millis(200),
+        "it took {:?}",
+        ran.took
+    );
+}
+
+/// One of four streams takes a second over each chunk where the others
+/// take a hundredth. When they have fetched everything else, they take over what
+/// the slow one has not come to, half of it at a time, and the copy does
+/// not wait for the slow one to read all it had taken.
+#[test]
+fn a_stream_that_falls_behind_is_relieved() {
+    let sample = long(64);
+    // The reader opened at the start of the file is the slow one.
+    let slow = Some((0, Duration::from_secs(1)));
+    let source = Watched::taking(&sample, Duration::from_millis(10), slow);
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 4;
+    let ran = setup.run_from(source.supplier(&sample));
+
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    // Its first run is a sixteenth of the file: eight chunks, and eight
+    // seconds if it read them all.
+    assert!(ran.took < Duration::from_secs(6), "it took {:?}", ran.took);
+    assert!(ran.took >= Duration::from_secs(2), "it took {:?}", ran.took);
+    // What it was opened for and did not read was read by the others.
+    assert!(source.unread.load(Ordering::Relaxed) > 0);
+    assert!(source.most_open.load(Ordering::Relaxed) <= 4);
+}
+
+/// A reader is kept open for the chunks that are to follow, and closed
+/// when its last has been read or when it is said that they will not be
+/// asked for. Left open, a request goes on being sent what nobody reads.
+#[test]
+fn a_reader_is_open_for_as_long_as_it_will_be_read() {
+    let sample = long(8);
+    let source = Watched::new(&sample, true);
+    let supplier = source.supplier(&sample).remove(0);
+    let chunk = u64::from(MIN_CHUNK_SIZE);
+    let open = || source.open.load(Ordering::Relaxed);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let supply = supplier.open().await.unwrap();
+        let arrived = Arrived::default();
+        // Opened for a chunk and the three that are to follow.
+        supply.chunk(0, 3, &arrived).await.unwrap();
+        assert_eq!(source.asked.load(Ordering::Relaxed), 4 * chunk);
+        assert_eq!(open(), 1);
+        // The next is read on from it, whatever is now said to follow.
+        supply.chunk(1, 0, &arrived).await.unwrap();
+        assert_eq!(source.opened.lock().unwrap().len(), 1);
+        assert_eq!(open(), 1);
+        // The one after that will not be asked for.
+        supply.leave(2);
+        assert_eq!(open(), 0);
+        assert_eq!(source.unread.load(Ordering::Relaxed), 2 * chunk);
+
+        // A run that is read to its end closes its reader by itself.
+        supply.chunk(4, 1, &arrived).await.unwrap();
+        assert_eq!(open(), 1);
+        supply.chunk(5, 0, &arrived).await.unwrap();
+        assert_eq!(open(), 0);
+        assert_eq!(source.unread.load(Ordering::Relaxed), 2 * chunk);
+        // And a run does not reach past the end of its file.
+        supply.chunk(7, 5, &arrived).await.unwrap();
+        assert_eq!(open(), 0);
+        assert_eq!(source.asked.load(Ordering::Relaxed), 7 * chunk);
+    });
 }
 
 /// A source that is one stream is read from its start, each file once, by
