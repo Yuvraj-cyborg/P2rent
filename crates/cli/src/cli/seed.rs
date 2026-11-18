@@ -58,12 +58,35 @@ pub(super) async fn run(args: Args, key: Option<&Path>, json: bool) -> anyhow::R
     }
 
     // Bind first so a busy port is reported before any hashing starts.
-    let relays = args.reach.relays();
     let node = super::node(key, &args.reach).await?;
-    let bound = node.local_addrs();
+    let advertised = advertised(&node, &args.reach, &args.advertise).await;
+    let mut shares: Vec<Arc<Share>> = Vec::new();
+    for path in &args.paths {
+        shares.push(offer(&node, path, args.chunk_size, &advertised, &[], json).await?);
+    }
+
+    eprintln!("node     {}", node.node_id());
+    let listed = |addrs: &[String]| match addrs {
+        [] => "nothing".to_owned(),
+        addrs => addrs.join(", "),
+    };
+    let bound: Vec<String> = node.local_addrs().iter().map(ToString::to_string).collect();
+    eprintln!(
+        "listen   {}  (advertised as {})",
+        listed(&bound),
+        listed(&advertised)
+    );
+    serve_until_interrupted(&shares).await;
+    node.shutdown().await;
+    Ok(())
+}
+
+/// The addresses to put in this node's tickets: those `requested`, or with
+/// no relay in use, the one this machine has on its network. With a relay
+/// in use, it is waited for a moment first, so that a ticket can name it.
+pub(super) async fn advertised(node: &Node, reach: &Reach, requested: &[String]) -> Vec<String> {
     // With no relay, a ticket has to say where this machine is.
-    let detect = relays == Relays::Off;
-    let advertised = advertised_addresses(&args.advertise, &bound, detect);
+    let detect = reach.relays() == Relays::Off;
     if !detect
         && tokio::time::timeout(RELAY_WAIT, node.online())
             .await
@@ -74,47 +97,43 @@ pub(super) async fn run(args: Args, key: Option<&Path>, json: bool) -> anyhow::R
             RELAY_WAIT.as_secs()
         );
     }
+    advertised_addresses(requested, &node.local_addrs(), detect)
+}
 
-    let mut shares: Vec<Arc<Share>> = Vec::new();
-    for path in &args.paths {
-        let share = index_and_seed(&node, path, args.chunk_size).await?;
-        let artifact = share.artifact();
-        eprintln!(
-            "seeding  {}  ({}, {})",
-            artifact.name(),
-            ui::bytes(artifact.total_size()),
-            ui::plural(artifact.chunk_count(), "chunk"),
-        );
-        // The ticket is the only thing on stdout, so it can be piped.
-        let ticket = node.ticket(artifact.id(), &advertised).to_string();
-        if json {
-            let files = artifact.entries().iter().filter(|e| e.is_file()).count();
-            tell::say(&Line::Offer {
-                ticket: &ticket,
-                name: artifact.name(),
-                bytes: artifact.total_size(),
-                files: files as u64,
-            });
-        } else {
-            println!("{ticket}");
-        }
-        shares.push(share);
-    }
-
-    eprintln!("node     {}", node.node_id());
-    let listed = |addrs: &[String]| match addrs {
-        [] => "nothing".to_owned(),
-        addrs => addrs.join(", "),
-    };
-    let bound: Vec<String> = bound.iter().map(ToString::to_string).collect();
+/// Offers what is at `path` from `node`, and writes its ticket: the one
+/// thing on standard output, so that it can be piped. `origins` are web
+/// addresses that hold the same file, for the ticket to name too.
+pub(super) async fn offer(
+    node: &Node,
+    path: &Path,
+    chunk_size: u32,
+    advertised: &[String],
+    origins: &[String],
+    json: bool,
+) -> anyhow::Result<Arc<Share>> {
+    let share = index_and_seed(node, path, chunk_size).await?;
+    let artifact = share.artifact();
     eprintln!(
-        "listen   {}  (advertised as {})",
-        listed(&bound),
-        listed(&advertised)
+        "seeding  {}  ({}, {})",
+        artifact.name(),
+        ui::bytes(artifact.total_size()),
+        ui::plural(artifact.chunk_count(), "chunk"),
     );
-    serve_until_interrupted(&shares).await;
-    node.shutdown().await;
-    Ok(())
+    let mut ticket = node.ticket(artifact.id(), advertised);
+    ticket.origins.extend_from_slice(origins);
+    let ticket = ticket.to_string();
+    if json {
+        let files = artifact.entries().iter().filter(|e| e.is_file()).count();
+        tell::say(&Line::Offer {
+            ticket: &ticket,
+            name: artifact.name(),
+            bytes: artifact.total_size(),
+            files: files as u64,
+        });
+    } else {
+        println!("{ticket}");
+    }
+    Ok(share)
 }
 
 async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Result<Arc<Share>> {

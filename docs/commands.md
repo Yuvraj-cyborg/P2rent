@@ -35,6 +35,7 @@ has. Otherwise it is the name the copy is given.
 | `--streams <N>` | The most requests to make at once to each source, each for a part of a file. The default is 8. A server that refuses some of them is used with those it takes. With 1, a file is one request. |
 | `--stall-timeout <SECONDS>` | Give up after this long with next to nothing received: under about a kilobyte a second on every stream. A slow link is waited for. The default is 60. |
 | `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
+| `--seed` | When the copy is whole, go on offering it to other machines until stopped: see [below](#the-web-and-other-machines-at-once). |
 | `--json` | Write for a program: see [below](#for-a-program). |
 
 A flag may be written before, between or after the places.
@@ -107,6 +108,43 @@ that holds it.
   Ctrl-C. Each machine that does this is one more to copy from: the ticket
   stays the same, and a machine that asks one holder is told of the others.
 
+### The web and other machines at once
+
+The second machine to want a file from the web need not load the server
+again. The first copies it with `--seed`:
+
+```console
+$ mux cp https://example.org/big.iso ./downloads/ --seed
+./downloads/big.iso	1288490188	consistent
+mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7&url=https://example.org/big.iso
+```
+
+After the line that says what was written comes a ticket, and the command
+goes on offering the file. The ticket names this machine and the web
+address the file came from. Every other machine copies with it:
+
+```console
+$ mux cp 'mux://450b9c6b…?peer=35964d95…&url=https://example.org/big.iso' ./downloads/ --seed
+./downloads/big.iso	1288490188	verified
+```
+
+- That copy reads from the machines that have the file and from the web
+  address in one transfer, and takes each chunk from whichever gives it
+  first.
+- It is `verified` against the first machine's copy: every chunk is
+  compared with the digest that machine worked out, whoever sent it. A
+  server that has since changed the file gives chunks that do not match,
+  and nothing more is asked of it.
+- A web address that cannot be reached, or holds a file of another size,
+  is left out with a note, and the machines finish the copy. A machine
+  that sends wrong bytes is dropped, and the web address fills in.
+- Nothing vouches for the first copy itself beyond what vouches for any
+  copy from the web. Give the first machine `--hash` if the digest of the
+  file is known.
+
+`--seed` offers what was copied from a folder too, as copying it to `peer:`
+would.
+
 A ticket is all another machine needs, and whoever has it can fetch the
 data. These flags say how the two machines reach each other. They are the
 same for `cp`, `probe`, `seed` and `get`:
@@ -170,7 +208,8 @@ holder   35964d95  all of it
 
 For a ticket there is a `holder` line for each machine the ticket names:
 `all of it`, how many bytes of it, or `could not be asked` for a machine
-that did not answer.
+that did not answer. If the ticket names web addresses, each has an
+`origin` line that says whether a copy would read from it, and if not, why.
 
 ## `mux sync`
 
@@ -257,8 +296,8 @@ field away or changes what one means.
 | `file` | A file is whole and has just been given its final name. Each file that is copied gets one line: a file with no bytes as the copy begins. A file that was there already and is kept gets none. | `path` |
 | `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
 | `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
-| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked |
-| `offer` | A path is offered to other machines, by `cp` to `peer:` or by `seed`. | `ticket`, `name`, `bytes`, `files` |
+| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked; and `origins`, a list of `address` and `unused`: why a copy would not read from that web address, or `null` if it would |
+| `offer` | A path is offered to other machines: by `cp` to `peer:`, by `seed`, or after a copy with `--seed`. | `ticket`, `name`, `bytes`, `files` |
 | `step` | One thing a sync does, or would do with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
 | `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` brought, and `trash`: where what was replaced or removed is, or `null` |
 | `sync_plan` | In place of `synced`, with `--dry-run`. | The same, without `trash` |
