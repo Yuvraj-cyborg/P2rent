@@ -2,7 +2,7 @@ use crate::sync;
 use model::artifact::{Artifact, Bitfield, EntryKind, FileDigest, Hash, Tree};
 use model::assembly::Assembly;
 use model::notes::Notes;
-use model::place::{Failure, Foreknown, Sink, Source, Verification};
+use model::place::{Begun, Failure, Foreknown, Sink, Source, Verification};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// What became of a chunk handed to a [`Store`].
@@ -37,6 +37,9 @@ pub struct Store {
     sink: Option<Arc<dyn Sink>>,
     /// Which chunks are in the place, and which files are whole.
     assembly: RwLock<Assembly>,
+    /// The files the place named as it was made ready, until they are
+    /// asked for.
+    named: Mutex<Vec<usize>>,
     /// One for each entry, held while a chunk is added to that file, so the
     /// file is not committed while another chunk is being written into it.
     writing: Vec<Mutex<()>>,
@@ -69,9 +72,12 @@ impl Store {
     /// A store over a place that holds every chunk already, as after
     /// indexing it. Nothing is read: the caller vouches for the content.
     pub fn whole(artifact: Arc<Artifact>, source: Arc<dyn Source>) -> Arc<Self> {
-        let held = Bitfield::full(artifact.chunk_count());
+        let begun = Begun {
+            held: Bitfield::full(artifact.chunk_count()),
+            named: Vec::new(),
+        };
         let tree = artifact.tree().clone();
-        Self::over(tree, Digests::Known(artifact), source, None, held)
+        Self::over(tree, Digests::Known(artifact), source, None, begun)
     }
 
     /// Opens a place to be filled in with an artifact. The place is made
@@ -87,11 +93,11 @@ impl Store {
         examined: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Arc<Self>, Failure> {
         let (opened, expected) = (place.clone(), artifact.clone());
-        let held =
+        let begun =
             waiting(move || opened.begin(&|index| expected.chunk_hash(index), &examined)).await?;
         let tree = artifact.tree().clone();
         let digests = Digests::Known(artifact);
-        Ok(Self::over(tree, digests, place.clone(), Some(place), held))
+        Ok(Self::over(tree, digests, place.clone(), Some(place), begun))
     }
 
     /// Opens a place to be filled in with a tree whose digests are not
@@ -113,10 +119,10 @@ impl Store {
         examined: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Arc<Self>, Failure> {
         let (opened, outline) = (place.clone(), tree.clone());
-        let (learned, held) =
+        let (learned, begun) =
             waiting(move || Learned::open(&outline, &*opened, files, &examined)).await?;
         let digests = Digests::Learned(learned);
-        Ok(Self::over(tree, digests, place.clone(), Some(place), held))
+        Ok(Self::over(tree, digests, place.clone(), Some(place), begun))
     }
 
     fn over(
@@ -124,12 +130,13 @@ impl Store {
         digests: Digests,
         source: Arc<dyn Source>,
         sink: Option<Arc<dyn Sink>>,
-        held: Bitfield,
+        begun: Begun,
     ) -> Arc<Self> {
         Arc::new(Self {
             // A set of the wrong length describes nothing, and the assembly
             // then starts from nothing held.
-            assembly: RwLock::new(Assembly::new(tree.layout().clone(), held)),
+            assembly: RwLock::new(Assembly::new(tree.layout().clone(), begun.held)),
+            named: Mutex::new(begun.named),
             writing: tree.entries().iter().map(|_| Mutex::new(())).collect(),
             spoiled: OnceLock::new(),
             tree,
@@ -160,6 +167,13 @@ impl Store {
             Digests::Known(_) => Verification::Verified,
             Digests::Learned(learned) => learned.verification(&self.tree),
         }
+    }
+
+    /// The files that were given their final names as the place was made
+    /// ready: those that needed nothing fetched. They are given once, to
+    /// whoever asks first, so that each is told of once.
+    pub fn named_at_the_start(&self) -> Vec<usize> {
+        std::mem::take(&mut sync::lock(&self.named))
     }
 
     /// Whether chunk `index` is in the place.
@@ -308,7 +322,7 @@ impl Learned {
         sink: &dyn Sink,
         files: Vec<Foreknown>,
         examined: &(dyn Fn(u64) + Sync),
-    ) -> Result<(Self, Bitfield), Failure> {
+    ) -> Result<(Self, Begun), Failure> {
         let mut digests = vec![None; usize::try_from(tree.chunk_count()).unwrap_or(usize::MAX)];
         let mut described = Vec::with_capacity(tree.entries().len());
         let mut files = files.into_iter();
@@ -341,7 +355,8 @@ impl Learned {
 
         let noted = &digests;
         let expected = |index: u64| noted.get(usize::try_from(index).ok()?).copied()?;
-        let held = sink.begin(&expected, examined)?;
+        let begun = sink.begin(&expected, examined)?;
+        let held = &begun.held;
         for (file, (_, notes)) in described.iter().enumerate() {
             // A file that is whole already was committed as the place was
             // made ready, and has nothing left to keep notes beside.
@@ -362,7 +377,7 @@ impl Learned {
             files: described,
             artifact: OnceLock::new(),
         };
-        Ok((learned, held))
+        Ok((learned, begun))
     }
 
     /// Records the digest of a chunk that has just been written, in memory

@@ -2,7 +2,7 @@ use super::io;
 use model::artifact::{Bitfield, EntryKind, Hash, PART_SUFFIX, Tree};
 use model::assembly::Assembly;
 use model::place::{
-    Arrived, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
+    Arrived, Begun, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
 };
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -107,11 +107,7 @@ impl Folder {
     /// Returns an error if a file cannot be read or created, if something of
     /// another kind is in the way, or if this file system treats two of the
     /// tree's names as one.
-    fn prepare(
-        &self,
-        expected: &Expected<'_>,
-        examined: &(dyn Fn(u64) + Sync),
-    ) -> Result<Bitfield> {
+    fn prepare(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Result<Begun> {
         let tree = &self.0.tree;
         let entries = tree.entries().len();
 
@@ -143,9 +139,11 @@ impl Folder {
         // A part file with every chunk right is a download that stopped just
         // before its rename. A file with no chunks has nothing to wait for.
         let assembly = Assembly::new(tree.layout().clone(), held.clone());
+        let mut named = Vec::new();
         for entry in 0..entries {
             if !self.is_in_place(entry) && assembly.is_whole(entry) {
                 self.put_in_place(entry)?;
+                named.push(entry);
             }
         }
         let mut skipped = 0;
@@ -155,7 +153,7 @@ impl Folder {
             }
         }
         self.0.skipped_links.store(skipped, Ordering::Relaxed);
-        Ok(held)
+        Ok(Begun { held, named })
     }
 
     /// Reads `len` bytes of `file` at `offset`, from its part file or from
@@ -638,7 +636,7 @@ impl Sink for Folder {
         }
     }
 
-    fn begin(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Placed<Bitfield> {
+    fn begin(&self, expected: &Expected<'_>, examined: &(dyn Fn(u64) + Sync)) -> Placed<Begun> {
         placed(self.prepare(expected, examined))
     }
 
