@@ -526,9 +526,25 @@ rule looked right and were not:
   slow one takes next to nothing from a fast one. Five runs then fell
   between 23.4 and 24.2 seconds.
 
-**Not measured yet:** an HTTPS server that offers HTTP/2, where the four
-streams may all travel on one connection
-([#89](https://github.com/yuvichh/mux/issues/89)).
+**Over HTTPS.** A server that offers HTTP/2 could have had all four
+streams on one connection, which would lose what four connections are
+for ([#89](https://github.com/yuvichh/mux/issues/89)). It did not: the
+server's log shows HTTP/1.1 and four connections. `mux` sets up TLS
+itself and never offered HTTP/2, so the HTTP/2 code in the binary was
+never used. It has been taken out, which makes the binary 0.65 MiB
+smaller (6.82 to 6.18 MiB on Linux) and leaves seven crates fewer in it.
+
+nginx with a certificate and HTTP/2 on, MiB/s, two runs each:
+
+| Link, round trip | File | curl (HTTP/2) | curl `--http1.1` | `mux cp` |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.18 and 9.43 | 9.58 and 9.58 | 9.41 and 9.49 |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.6 and 26.7 | 27.0 and 27.0 | 80.8 and 84.9 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.41 | 0.45 | 1.71 and 1.92 |
+
+Over HTTPS each new connection costs a round trip more to set up than
+over HTTP, which is why `mux cp` is level with curl at 200 ms here and
+not ahead of it.
 
 ## Sending only what changed
 
