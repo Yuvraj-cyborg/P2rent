@@ -332,6 +332,12 @@ peer's id is the one the caller asked for.
 One UDP socket both dials and accepts, so the address a peer observes for a
 node is also the address at which that node can be reached.
 
+How fast a connection may send is decided by CUBIC unless a node is made
+with `Congestion::Bbr` (`--congestion bbr`), which is many times faster
+where packets are lost and harder on what else uses the link.
+[docs/performance.md](performance.md#packets-lost-for-other-reasons) has
+both sides of that.
+
 ## Swarm
 
 A `Node` owns the endpoint and a table of `Share`s. A share is one artifact

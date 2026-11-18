@@ -29,6 +29,23 @@ const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 /// carry, so this changes nothing on a standard 1500-byte network.
 const MAX_DATAGRAM: u16 = 9000 - 40 - 8;
 
+/// How a connection decides how fast it may send.
+///
+/// It is the choice of whoever sends: the machine that holds the data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Congestion {
+    /// Takes every lost packet for a sign of a full link and halves its
+    /// rate. On a link that loses packets for other reasons, such as
+    /// Wi-Fi or a long route, it stays far below what the link carries.
+    #[default]
+    Cubic,
+    /// Measures what the link carries and holds that rate, whatever is
+    /// lost. Many times faster where packets are lost, and somewhat faster
+    /// far away. Where a link's queue is short it leaves next to nothing
+    /// for a connection of the other kind that shares the link.
+    Bbr,
+}
+
 /// A QUIC socket that both dials and accepts, authenticated as one node.
 #[derive(Debug, Clone)]
 pub struct Endpoint {
@@ -43,6 +60,20 @@ impl Endpoint {
     ///
     /// Returns an error if the TLS configuration cannot be built or `addr` cannot be bound.
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self> {
+        Self::bind_with(identity, addr, Congestion::default())
+    }
+
+    /// The same, with a say in how its connections decide how fast to
+    /// send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS configuration cannot be built or `addr` cannot be bound.
+    pub fn bind_with(
+        identity: &Identity,
+        addr: SocketAddr,
+        congestion: Congestion,
+    ) -> Result<Self> {
         let (mut server, mut client) = tls::configs(identity)?;
 
         let mut mtu_discovery = quinn::MtuDiscoveryConfig::default();
@@ -62,6 +93,14 @@ impl Endpoint {
             .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
             .send_window(u64::from(CONNECTION_WINDOW))
             .mtu_discovery_config(Some(mtu_discovery));
+        match congestion {
+            // What the library does unless told otherwise.
+            Congestion::Cubic => {}
+            Congestion::Bbr => {
+                let bbr = quinn::congestion::BbrConfig::default();
+                transport.congestion_controller_factory(Arc::new(bbr));
+            }
+        }
         let transport = Arc::new(transport);
         server.transport_config(transport.clone());
         client.transport_config(transport);

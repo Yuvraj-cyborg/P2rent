@@ -37,6 +37,33 @@ async fn downloads_a_file() {
     );
 }
 
+/// A transfer comes through whole with the other way of deciding how fast
+/// to send, on either end or on both.
+#[tokio::test]
+async fn downloads_with_either_congestion_control() {
+    use peer::net::Congestion::{Bbr, Cubic};
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("model.bin");
+    let data = pattern(CHUNK * 75 + 123, 4);
+    fs::write(&source, &data).unwrap();
+    let node = |congestion| {
+        let identity = Identity::generate().unwrap();
+        peer::swarm::Node::bind_with(&identity, localhost(), congestion).unwrap()
+    };
+
+    for (number, (sends, fetches)) in [(Bbr, Bbr), (Bbr, Cubic), (Cubic, Bbr)]
+        .into_iter()
+        .enumerate()
+    {
+        let seeder = node(sends);
+        let (_, ticket) = seed(&seeder, &source);
+        let out = tmp.path().join(format!("out-{number}"));
+        let report = get(&node(fetches), &ticket, &out).await.unwrap();
+        assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
+        assert_eq!(report.fetched_bytes, data.len() as u64);
+    }
+}
+
 /// Whoever waits for a chunk can see how much of it has come.
 #[tokio::test]
 async fn the_bytes_of_a_chunk_are_counted_as_they_arrive() {
