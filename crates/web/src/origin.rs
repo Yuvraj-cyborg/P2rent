@@ -1,7 +1,9 @@
 use crate::headers::{self, Validator};
 use bytes::{Buf, Bytes};
 use model::artifact::{Entry, EntryKind, EntryMetadata, FileDigest, Timestamp};
-use model::place::{Capabilities, Description, Failure, Foreknown, Pending, Reader, Source};
+use model::place::{
+    Arrived, Capabilities, Description, Failure, Foreknown, Pending, Reader, Source,
+};
 use reqwest::header::{
     ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderMap, IF_RANGE,
     LAST_MODIFIED, RANGE,
@@ -316,16 +318,17 @@ impl Body {
 }
 
 impl Reader for Body {
-    fn read(&mut self, len: u32) -> Pending<'_, Vec<u8>> {
+    fn read<'a>(&'a mut self, len: u32, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             // Each byte is copied once, from where it arrived to where it
             // is handed over.
             let len = len as usize;
             let mut read = Vec::with_capacity(len);
             while read.len() < len {
-                let arrived = self.arrived().await?;
-                let taken = arrived.len().min(len - read.len());
-                read.extend_from_slice(&arrived.split_to(taken));
+                let here = self.arrived().await?;
+                let taken = here.len().min(len - read.len());
+                read.extend_from_slice(&here.split_to(taken));
+                arrived.add(taken);
             }
             Ok(read)
         })
