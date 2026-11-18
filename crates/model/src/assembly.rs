@@ -20,11 +20,12 @@ pub struct Assembly {
 }
 
 impl Assembly {
-    /// Starts from the chunks already in place. A set whose length is not
-    /// the layout's number of chunks cannot describe it, and counts as
-    /// empty.
+    /// Starts from the chunks already in place. A set that is not well
+    /// formed for the layout's number of chunks cannot describe it, and
+    /// counts as empty: one of another length, or one with bits set past
+    /// its end, which would be counted as chunks that are not there.
     pub fn new(layout: Layout, held: Bitfield) -> Self {
-        let held = if held.len() == layout.chunk_count() {
+        let held = if held.is_well_formed(layout.chunk_count()) {
             held
         } else {
             Bitfield::new(layout.chunk_count())
@@ -149,6 +150,21 @@ mod tests {
         let assembly = Assembly::new(layout(), Bitfield::full(3));
         assert_eq!(assembly.held(), &Bitfield::new(4));
         assert!(!assembly.is_whole(0) && !assembly.is_whole(2));
+    }
+
+    /// Four chunks need one byte, of which four bits are not chunks. With
+    /// three chunks in place and one of those four bits set, as many bits
+    /// are set as there are chunks: taken as it is, the set would count
+    /// as complete with a chunk missing.
+    #[test]
+    fn a_set_with_bits_past_its_end_counts_as_empty() {
+        let stray = Bitfield::from_parts(4, alloc::vec![0b0001_0111]);
+        assert_eq!(stray.count_ones(), 4);
+        assert!(!stray.get(3));
+
+        let assembly = Assembly::new(layout(), stray);
+        assert!(!assembly.is_complete());
+        assert_eq!(assembly.held(), &Bitfield::new(4));
     }
 
     #[test]
