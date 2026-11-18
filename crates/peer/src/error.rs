@@ -99,6 +99,7 @@ macro_rules! transport_errors {
 transport_errors!(
     iroh::endpoint::ConnectionError,
     iroh::endpoint::WriteError,
+    iroh::endpoint::ReadError,
     iroh::endpoint::ReadExactError,
     iroh::endpoint::ClosedStream,
 );

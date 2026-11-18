@@ -390,7 +390,10 @@ does the same for a supplier that is a web server or a folder.
 Any `Source` is a supplier through `engine::supplier`. It keeps a reader
 open after each chunk, and whoever asks for the chunk that follows reads on
 from it. For a web server that is one request for a long run of chunks and
-not one for each. A source that cannot be opened part of the way in is one
+not one for each. A reader is closed as soon as the pipeline that was
+reading from it goes elsewhere: left open, a request for the rest of a
+file goes on being sent what nobody reads, over a link that others need.
+A source that cannot be opened part of the way in is one
 stream: the engine then runs a single pipeline over it, from the first
 chunk that is missing.
 
@@ -418,9 +421,20 @@ kind of failure the supplier reports:
 The last two rows and the order of turns exist because a property test
 found transfers that stalled without them: see `engine/src/faults.rs`.
 
+Progress is counted in bytes, not in chunks. A supplier adds the bytes of a
+chunk to a count as they come, and the engine looks at the count each
+second. A request that brings fewer than 64 KiB in a minute is given up,
+and its supplier is tried again later: that is about a kilobyte a second,
+below which a link is taken to carry nothing. A chunk that is slow and
+keeps coming is waited for, however long it takes. Counting whole chunks
+gave up on links where a chunk took more than a minute, with bytes
+arriving all the while
+([#83](https://github.com/yuvichh/mux/issues/83)).
+
 A transfer ends in one of four ways. Every chunk is stored. Or the store
-fails, or what is being read changes, and the transfer ends there. Or
-nothing arrives for the whole of the stall timeout. Or every supplier has
+fails, or what is being read changes, and the transfer ends there. Or, for
+the whole of the stall timeout, no chunk is stored and no request brings
+those 64 KiB. Or every supplier has
 been dropped, so that nobody is left who could deliver: then it ends at
 once, saying what the last one was dropped for, once the chunks that had
 already arrived are stored.

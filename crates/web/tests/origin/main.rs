@@ -8,7 +8,7 @@ use engine::conformance::{Sample, check_source};
 use engine::{Copied, Error};
 use fs::Folder;
 use model::artifact::{Entry, EntryKind, EntryMetadata, FileDigest, Hash, MIN_CHUNK_SIZE, Tree};
-use model::place::{Failure, Source, Verification};
+use model::place::{Arrived, Failure, Source, Verification};
 use server::{Behaviour, Fault, Mistake, Server};
 use std::path::Path;
 use std::sync::Arc;
@@ -514,7 +514,8 @@ async fn answers_are_not_joined_when_nothing_tells_they_are_one_file() {
     );
     // From its start the file can be read, as many times as is wanted.
     let mut reader = origin.open(0, 0).await.unwrap();
-    assert_eq!(reader.read(5).await.unwrap(), file[..5]);
+    let read = reader.read(5, &Arrived::default()).await;
+    assert_eq!(read.unwrap(), file[..5]);
 
     // So an answer that breaks off ends the transfer, which says why, and
     // nothing is kept.
@@ -711,7 +712,8 @@ async fn only_the_one_file_is_there_and_only_its_bytes() {
     assert_eq!(server.asked().len(), 1);
 
     let mut last = origin.open(0, size - 1).await.unwrap();
-    assert_eq!(last.read(1).await.unwrap(), file[file.len() - 1..]);
+    let read = last.read(1, &Arrived::default()).await;
+    assert_eq!(read.unwrap(), file[file.len() - 1..]);
 }
 
 #[tokio::test]

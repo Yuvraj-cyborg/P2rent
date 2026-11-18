@@ -10,7 +10,7 @@
 use crate::sync;
 use model::artifact::{Bitfield, Tree};
 use model::place::{
-    Capabilities, Failure, Pending, Reader, Source, Status, Supplier, SupplierId, Supply,
+    Arrived, Capabilities, Failure, Pending, Reader, Source, Status, Supplier, SupplierId, Supply,
 };
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +84,7 @@ impl Supply for Opened {
         Box::pin(std::future::ready(Ok(status)))
     }
 
-    fn chunk(&self, index: u64) -> Pending<'_, Vec<u8>> {
+    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>> {
         Box::pin(async move {
             let at = self
                 .tree
@@ -94,7 +94,7 @@ impl Supply for Opened {
                 Some(reader) => reader,
                 None => self.source.open(at.file, at.offset).await?,
             };
-            let data = reader.read(at.len).await?;
+            let data = reader.read(at.len, arrived).await?;
             // The next chunk of the same file follows on from this one.
             let follows = self.tree.locate(index + 1);
             if follows.is_some_and(|next| next.file == at.file) {
@@ -102,6 +102,10 @@ impl Supply for Opened {
             }
             Ok(data)
         })
+    }
+
+    fn leave(&self, index: u64) {
+        drop(self.waiting_at(index));
     }
 
     fn capabilities(&self) -> Capabilities {
