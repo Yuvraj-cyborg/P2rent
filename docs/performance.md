@@ -320,20 +320,8 @@ both.
 ### The other congestion control
 
 `--congestion bbr` is BBR in its third version here, where the library
-used before had the first. The figures under "Packets lost for other
-reasons" below are for that first version, and have not all been made
-again. One run each, when the switch was first tried, MiB/s:
-
-| Link, round trip | CUBIC | BBR 3 |
-| --- | ---: | ---: |
-| 100 Mbit/s, 50 ms, 1% loss | 0.57 | 9.07 |
-| 1 Gbit/s, 100 ms | 90.4 | 84.3 |
-| 100 Mbit/s, 50 ms | 10.6 | 9.7 |
-
-So it is as much faster where packets are lost, and 7 to 9% slower than
-CUBIC on these two clean links, where the first version was level or
-ahead. How it shares a link with another download has not been measured
-for this version: it is meant to be fairer than the first.
+used before had the first. It is measured under
+[Packets lost for other reasons](#packets-lost-for-other-reasons).
 
 ### Between two real machines
 
@@ -682,61 +670,65 @@ a link that loses packets for other reasons, such as Wi-Fi, a mobile
 network or a long route, it stays far below what the link carries. BBR
 measures what the link carries and holds that rate, whatever is lost.
 
-`mux seed --congestion bbr` chooses it. It is the sender's choice, so it
-is given to the machine that holds the data. CUBIC is still what is used
-unless it is asked for: see the last table for why
-([#82](https://github.com/yuvichh/mux/issues/82)).
+`--congestion bbr` chooses it. It is the sender's choice, so it is given
+to the machine that holds the data. CUBIC is still what is used unless it
+is asked for ([#82](https://github.com/yuvichh/mux/issues/82)).
 
 `mux get` from `mux seed` with each, MiB/s, the median of three runs
-taken in turn (two at 600 ms and over the slow link, and one of CUBIC with
-loss), 18 November 2026, the machine and method of the tables above:
+taken in turn (one of CUBIC and of curl where there is loss), 18 November
+2026, the machine and method of the tables above. BBR here is its third
+version, as iroh's QUIC has it:
 
 | Link, round trip | File | CUBIC | BBR | curl |
 | --- | ---: | ---: | ---: | ---: |
-| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.83 | **9.99** | 0.47 |
-| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | | 7.36 | |
-| 1 Gbit/s, 20 ms | 1 GiB | 107.9 | 109.4 | 111.3 |
-| 1 Gbit/s, 100 ms | 1 GiB | 92.0 | 95.5 | 26.6 |
-| 100 Mbit/s, 50 ms | 128 MiB | 10.70 | 10.64 | 11.05 |
-| 100 Mbit/s, 200 ms | 128 MiB | 8.95 | 9.30 | 9.40 |
-| 100 Mbit/s, 600 ms | 128 MiB | 5.59 | 6.34 | 5.05 |
-| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0564 | 0.0560 | 0.0569 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.71 | **8.36** | 0.43 |
+| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | 0.06 | **6.97** | 0.08 |
+| 1 Gbit/s, 20 ms | 1 GiB | 108.1 | 105.8 | |
+| 1 Gbit/s, 100 ms | 1 GiB | 91.1 | 85.7 | |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.78 | 8.82 | |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.44 | 5.08 | |
 
-- With loss it is twelve times as fast, and uses 84% of the link.
-- Without loss it is the same near the server and 4 to 13% faster far from
-  it.
+- With loss it is twelve times as fast at 50 ms, and over a hundred times
+  at 200 ms with 2% lost: nine seconds where CUBIC took eighteen minutes.
+  The curl run on that link was stopped after five minutes, at the rate
+  shown.
+- Without loss it is level at 100 Mbit/s and 200 ms, and 2 to 7% slower
+  on the other three links.
 - It does not send more to do so. The bytes that crossed the link for each
-  byte of the file were 1.053 to 1.056 with CUBIC and 1.053 to 1.063 with
-  BBR, over all the rows.
+  byte of the file were 1.053 to 1.054 with either.
 
 **What it does to others.** A `mux get` and a `curl` download of the same
-256 MiB file were started together over 100 Mbit/s at 50 ms, twice each.
-The link carries both in about 45 seconds. With fair shares both end
-then. One that ends well before has taken more than half while it ran.
-Seconds until each was done:
+128 MiB file were started together over 100 Mbit/s at 50 ms, three times
+each. The link carries both in about 22 seconds. With fair shares both
+end then. One that ends well before has taken more than half while it
+ran. Seconds until each was done:
 
 | The queue at the slow point | `mux get` with | `mux get` done | curl done |
 | --- | --- | ---: | ---: |
-| deep (100 ms) | (two curls, for comparison) | 42.9, 44.4 | 45.3, 45.2 |
-| | CUBIC | 26.7, 26.9 | 45.4, 45.4 |
-| | BBR | 45.4, 26.3 | 38.3, 45.4 |
-| shallow (10 ms) | (two curls, for comparison) | 46.9, 37.5 | 35.4, 45.2 |
-| | CUBIC | 27.5, 43.6 | 47.4, 47.3 |
-| | BBR | 23.5, 23.6 | 53.3, 53.3 |
+| deep (100 ms) | (two curls, for comparison) | 22.3, 22.8, 22.3 | 22.8, 16.7, 22.7 |
+| | CUBIC | 13.4, 13.7, 13.4 | 23.0, 22.9, 23.0 |
+| | BBR | 25.7, 36.6, 25.0 | 13.8, 13.7, 14.2 |
+| shallow (10 ms) | (two curls, for comparison) | 23.4, 22.8, 21.6 | 21.1, 21.4, 23.2 |
+| | CUBIC | 13.2, 13.3, 13.6 | 28.0, 23.1, 26.2 |
+| | BBR | 25.2, 24.0, 25.2 | 19.7, 21.4, 19.7 |
 
-- A `mux get` that is done after 27 seconds had about four fifths of the
-  link until then. With CUBIC that happens in three runs of four. It is
-  this QUIC library's CUBIC against Linux's, and it was not known before
-  this was measured.
-- With a deep queue BBR does the same or less. With a shallow queue it
-  took about nineteen twentieths of the link both times, and the curl
-  download got next to nothing until the transfer was over. That is a
-  known trait of this version of BBR, and the reason it is not made the
-  default here without being asked for.
+- With CUBIC, a `mux get` has about four fifths of the link while the
+  curl download runs, with either queue. It is this QUIC library's CUBIC
+  against Linux's, and it is what happens today by default.
+- With BBR and a shallow queue the two share about evenly, the curl
+  download a little ahead.
+- With BBR and a deep queue it is the other way round from CUBIC: the curl
+  download has about four fifths, and the transfer waits for it.
 
-The library calls its BBR experimental. Its newer version, BBR 3, is in
-the QUIC library that the move to iroh would bring
-([#19](https://github.com/yuvichh/mux/issues/19)).
+So of the two, BBR is the one that is kinder to what else is on the link,
+and by far the faster where packets are lost. What it costs is a few
+percent on a clean fast link, and its turn on a link with a deep queue
+that a TCP download is filling.
+
+The library used before iroh had the first version of BBR. That one gave
+9.99 MiB/s on the first row, was level or ahead on clean links, and with a
+shallow queue left a curl download a twentieth of the link. Its figures
+are in the history of this page.
 
 ## The web and machines in one transfer
 
