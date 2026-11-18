@@ -5,6 +5,8 @@ first. Each line names the pull request that made the change.
 
 ## 0.3.0
 
+[Release notes and downloads](https://github.com/yuvichh/mux/releases/tag/v0.3.0)
+
 The project was called p2rent up to 0.2.0. It is now **mux**, and it has
 grown from one use (hand a folder to many machines) into a tool that
 copies and syncs between folders, web addresses and other machines.
@@ -40,7 +42,7 @@ copies and syncs between folders, web addresses and other machines.
   removed goes to a trash folder first. A sync that would remove more than
   half of a folder stops (#77, #78).
   `mux sync TICKET DESTINATION` pulls a peer snapshot into the named file
-  or folder, reusing verified local chunks and resuming interrupted syncs (#115).
+  or folder, reusing verified local chunks and resuming interrupted syncs (#117).
 - **`mux probe`** says what is at a place without copying it: size, files,
   how far a copy would be checked, and for a ticket, which machine holds
   how much (#71, #99).
@@ -60,6 +62,10 @@ copies and syncs between folders, web addresses and other machines.
 - **`mux protocols`** lists the kinds of place a build can use (#52).
 
 ### Changed
+
+- Peer downloads now recover verified chunks even when an insertion shifts
+  their offsets. The sync summary reports the bytes fetched and reused
+  (#114, #116, #117).
 
 - **Only whole files appear.** A file is written under a name ending
   `.mux-part` and renamed when every chunk of it is in place (#40).
