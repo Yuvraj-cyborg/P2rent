@@ -1,5 +1,8 @@
 //! Drives the real binary: one process seeds, another downloads.
 
+mod kills;
+
+use kills::Moments;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -192,19 +195,6 @@ fn files_under(root: &Path) -> BTreeMap<String, Vec<u8>> {
     found
 }
 
-/// Numbers that look random and can be repeated from their seed.
-struct Dice(u64);
-
-impl Dice {
-    /// A duration somewhere between nothing and `limit`.
-    fn up_to(&mut self, limit: Duration) -> Duration {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        limit.mul_f64((self.0 >> 11) as f64 / (1u64 << 53) as f64)
-    }
-}
-
 /// Stops a download dead at random moments, as a crash or a power cut
 /// would. Whenever it stops, every file that has its final name is complete
 /// and correct, and running the download again finishes it.
@@ -249,20 +239,13 @@ fn a_download_killed_at_any_moment_leaves_only_whole_files_and_resumes() {
         expected
     );
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    let seed = now.as_secs() ^ (u64::from(now.subsec_nanos()) << 32);
-    let mut dice = Dice(seed | 1);
-    let mut cut_short = 0;
-    for round in 0..ROUNDS {
+    let mut moments = Moments::new(ROUNDS, whole);
+    while let Some(round) = moments.round() {
         let out = tmp.path().join(format!("out-{round}"));
         // Kill it twice, so that a resumed download is interrupted too.
         for kill in 0..2 {
-            let mut child = quiet(&out).spawn().unwrap();
-            std::thread::sleep(dice.up_to(whole));
-            child.kill().unwrap();
-            child.wait().unwrap();
+            let after = moments.next();
+            kills::kill(&mut quiet(&out), after);
 
             let found = files_under(&out.join("tree"));
             for (name, contents) in &found {
@@ -271,28 +254,24 @@ fn a_download_killed_at_any_moment_leaves_only_whole_files_and_resumes() {
                 }
                 assert!(
                     expected.get(name) == Some(contents),
-                    "seed {seed}, round {round}, kill {kill}: {name} has its final name \
-                     but is not the whole file"
+                    "round {round}, killed after {after:?}: {name} has its final name but \
+                     is not the whole file"
                 );
             }
-            if found != expected {
-                cut_short += 1;
+            if kill == 0 {
+                moments.first_kill(found != expected);
             }
         }
 
         assert!(
             quiet(&out).status().unwrap().success(),
-            "seed {seed}, round {round}: the download did not resume"
+            "round {round}: the download did not resume"
         );
         assert!(
             files_under(&out.join("tree")) == expected,
-            "seed {seed}, round {round}: the resumed download differs from the source"
+            "round {round}: the resumed download differs from the source"
         );
     }
-    assert!(
-        cut_short > 0,
-        "seed {seed}: no download was interrupted, so nothing was tested"
-    );
 }
 
 /// A link that stays inside the tree is sent. One that points outside it is
