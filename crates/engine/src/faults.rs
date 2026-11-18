@@ -1201,6 +1201,39 @@ fn a_source_that_changes_ends_the_transfer_and_leaves_nothing_half_written() {
     }
 }
 
+/// A supplier with a slow line and two quick ones, as a web server far away
+/// and two machines near by: the transfer ends long before it would from
+/// the slow one alone.
+#[test]
+fn a_slow_supplier_with_two_quick_ones_ends_long_before_it_would_alone() {
+    let sample = long(64);
+    let slow = || {
+        let script = Script {
+            line: Duration::from_secs(1),
+            ..Script::honest(&sample)
+        };
+        Made::new(1, script, &sample)
+    };
+    let quick = |number| {
+        let script = Script {
+            delay: Duration::from_millis(10),
+            ..Script::honest(&sample)
+        };
+        Made::new(number, script, &sample)
+    };
+
+    let alone = Setup::new(&sample).run(&[slow()]);
+    assert!(alone.has_every_file(&sample), "{:?}", alone.outcome);
+    let together = Setup::new(&sample).run(&[slow(), quick(2), quick(3)]);
+    assert!(together.has_every_file(&sample), "{:?}", together.outcome);
+    assert!(
+        together.took * 2 < alone.took,
+        "together {:?}, the slow one alone {:?}",
+        together.took,
+        alone.took
+    );
+}
+
 /// Where every chunk has its digest, a source that changes has spoiled
 /// nothing: it is dropped as one that sends wrong bytes is, what it sent
 /// before is kept, and another supplier finishes.
