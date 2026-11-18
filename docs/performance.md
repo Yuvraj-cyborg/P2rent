@@ -391,9 +391,10 @@ a lower priority than the one before.
   that open four connections get four times one. A congestion control that
   does not take every loss for congestion (BBR) is the thing to measure:
   [#82](https://github.com/yuvichh/mux/issues/82).
-- **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl:
-  see "A reader left open" below, and
-  [#84](https://github.com/yuvichh/mux/issues/84).
+- **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl.
+  It is faster than curl there now: see "A reader left open" and
+  "Requests that end where the reading does" below
+  ([#84](https://github.com/yuvichh/mux/issues/84)).
 - **curl at 1 Gbit/s and 100 ms** is held to 26.5 MiB/s by the size of the
   receive window that Linux gives one TCP connection. It is the figure for
   one connection with nothing tuned, not a limit of TCP.
@@ -439,11 +440,95 @@ with the builds taken in turn, and the range:
 | 100 Mbit/s, 200 ms | 128 MiB | 6.6 (6.3 to 6.7) | 7.6 (7.5 to 7.8) | 9.3 |
 | 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.91 | 1.91 | 0.48 |
 
-What is left is the number of requests. Near the end of a copy a stream
-that has finished its part takes half of what another has left, again and
-again, and each time that is a new connection that starts slowly. One
-stream is as fast as curl on these links, and four are still slower where
-one connection can fill the link by itself. That is the rest of #84.
+What was left was the number of requests. Near the end of a copy a stream
+that had finished its part took half of what another had left, again and
+again, and each time that was a new connection that started slowly. One
+stream was as fast as curl on these links, and four were still slower
+where one connection can fill the link by itself.
+
+### Requests that end where the reading does
+
+Both faults had one root: a request never ended by itself, so a stream
+that ran into what another had fetched had to cut its answer off. That
+threw the connection away and wasted what was on its way.
+
+A stream now reserves a run of chunks and asks for those and no more. The
+answer ends by itself and the connection carries the next request. See
+"Transfer" in [architecture.md](architecture.md#transfer) for how long a
+run is.
+
+**The design was timed before it was built.** curl can fetch parts of a
+file over connections it uses again (`curl -Z --parallel-max 4` with a
+list of ranges), so it can act the design out. 128 MiB over 100 Mbit/s at
+200 ms:
+
+| | Seconds |
+| --- | ---: |
+| curl, one request | 13.4 |
+| 4 parts over 4 connections | 13.2 to 13.4 |
+| 8 parts over 4 connections | 12.6 |
+| 16 parts over 4 connections | 12.9 |
+| 32 parts over 4 connections | 14.0 |
+
+Too few parts, and the connections do not end together. Too many, and
+each start of a part costs a round trip.
+
+**The result.** `mux cp` from nginx with four streams against curl, MiB/s,
+the median of three runs with the tools taken in turn, and the range
+(four runs of each mux for the lossy row, and one of curl). 18 November
+2026, the machine and method of the tables above:
+
+| Link, round trip | File | curl | `mux cp` before | `mux cp` after |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.05 (11.02 to 11.06) | 9.89 (9.89 to 10.16) | 11.09 (11.04 to 11.09) |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.40 (9.27 to 9.60) | 7.93 (7.59 to 8.18) | **9.78** (9.78 to 9.80) |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.05 (4.93 to 5.21) | 3.93 (3.87 to 4.08) | **5.49** (5.34 to 5.54) |
+| 1 Gbit/s, 20 ms | 1 GiB | 111.3 (111.0 to 111.7) | 107.6 (105.5 to 107.6) | 111.0 (110.9 to 111.1) |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.6 (26.5 to 26.6) | 86.7 (85.4 to 95.6) | **91.1** (90.1 to 92.1) |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.47 | 1.90 (1.85 to 1.93) | **1.91** (1.89 to 1.92) |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0569 | 0.0566 | 0.0569 |
+
+- Where one connection fills the link (the first, fourth and last rows)
+  `mux cp` is now as fast as curl, to within half of one per cent. No
+  tool can be faster there: the link is the limit.
+- Far from the server it is faster than curl, by 4% at 200 ms and 9% at
+  600 ms. Four connections get up to speed sooner than one.
+- Where one connection is held back by itself, it stays three to four
+  times as fast as curl: by the receive window at 1 Gbit/s and 100 ms, and
+  by loss in the row below it.
+  [#88](https://github.com/yuvichh/mux/issues/88) is about going further
+  there.
+
+What the server counted, for the same runs:
+
+| Link, round trip | | Requests | Connections | Sent for the file |
+| --- | --- | ---: | ---: | ---: |
+| 100 Mbit/s, 200 ms, 128 MiB | before | 12 to 15 | 11 to 13 | 155 to 161 MiB |
+| | after | 7 to 9 | 4 | 130 to 131 MiB |
+| 1 Gbit/s, 100 ms, 1 GiB | before | 6 to 11 | 4 to 9 | 1,038 to 1,057 MiB |
+| | after | 9 to 11 | 4 | 1,024 MiB |
+
+**What went wrong on the way**, because the first two versions of the
+rule looked right and were not:
+
+- A stream's speed was first taken from its last chunk. A link gives its
+  bytes in bursts, and the stream that finishes first is more often than
+  not one that just had a quick chunk. It looked faster than it was and
+  took too much. Speed is now taken over the whole run.
+- A stream with nothing to do first took over half of whatever another
+  had left, if that was more than two seconds of work. At 600 ms one
+  connection gets ahead and carries most of the link, and the others
+  crawl. They finished early and cut the fast one's answer off. Its next
+  request began on a new connection, which at 600 ms needed eight seconds
+  for 2 MiB, and the whole copy waited for it: times went from 21.7 to
+  28.4 seconds from run to run. The rule now compares speeds. A stream
+  takes what it could fetch by the time the other would get there, so a
+  slow one takes next to nothing from a fast one. Five runs then fell
+  between 23.4 and 24.2 seconds.
+
+**Not measured yet:** an HTTPS server that offers HTTP/2, where the four
+streams may all travel on one connection
+([#89](https://github.com/yuvichh/mux/issues/89)).
 
 ## Sending only what changed
 
