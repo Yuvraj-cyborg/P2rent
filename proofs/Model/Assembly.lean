@@ -106,10 +106,10 @@ def lackingIn (held : Bitfield) (l : Layout) (f : Nat) : Nat :=
       chunksBefore l.sizes.val l.chunk_size.val f)
 
 /-- What `new` sets up and `add` keeps: the layout is consistent, there is
-one bit for each chunk, and each file's count is the number of its chunks
-that are not in place. -/
+one bit for each chunk and none set past them, and each file's count is the
+number of its chunks that are not in place. -/
 def assembly.Assembly.WellFormed (a : Assembly) : Prop :=
-  a.layout.WellFormed ∧ a.held.Sized ∧ a.held.len = a.layout.chunk_count ∧
+  a.layout.WellFormed ∧ a.held.Tidy ∧ a.held.len = a.layout.chunk_count ∧
   a.missing.val.length = a.layout.sizes.val.length ∧
   ∀ f, f < a.layout.sizes.val.length →
     ∃ count, a.missing.val[f]? = some count ∧ count.val = lackingIn a.held a.layout f
@@ -244,44 +244,48 @@ theorem assembly.Assembly.new_loop0.spec (l : Layout) (held : Bitfield)
       exact hcounts f (by omega)
   · exact hinv
 
-/-- `new` gives a consistent assembly of the layout. It starts from the
-chunks it was given if there is one bit for each chunk of the layout, and
-from none otherwise. -/
+/-- `new` gives a consistent assembly of the layout, whatever set of chunks
+it is given. It starts from that set if the set is well formed for the
+layout, with one bit for each chunk and none set past them, and from no
+chunks otherwise. -/
 @[step]
 theorem assembly.Assembly.new.spec (l : Layout) (held : Bitfield)
-    (hl : l.WellFormed) (hsized : held.Sized) (hfits : l.chunk_count.val ≤ 8 * Usize.max) :
+    (hl : l.WellFormed) (hfits : l.chunk_count.val ≤ 8 * Usize.max) :
     assembly.Assembly.new l held
     ⦃ a =>
       a.WellFormed ∧ a.layout = l ∧
-      (held.len = l.chunk_count → a.held = held) ∧
-      (held.len ≠ l.chunk_count → ∀ i, a.held.bit i = false) ⦄ := by
-  simp only [assembly.Assembly.new, artifact.bitfield.Bitfield.impl.len,
-    artifact.layout.Layout.impl.chunk_count]
-  -- Either way there is one bit for each chunk.
+      (held.len = l.chunk_count ∧ held.Tidy → a.held = held) ∧
+      (¬ (held.len = l.chunk_count ∧ held.Tidy) → ∀ i, a.held.bit i = false) ⦄ := by
+  simp only [assembly.Assembly.new, artifact.layout.Layout.impl.chunk_count]
+  step as ⟨ sound, hsound ⟩
+  -- Either way there is one bit for each chunk, and none past them.
   have hstart :
-      (if held.len = l.chunk_count then ok held
-        else artifact.bitfield.Bitfield.new l.chunk_count)
+      (if sound then ok held else artifact.bitfield.Bitfield.new l.chunk_count)
       ⦃ h =>
-        h.Sized ∧ h.len = l.chunk_count ∧
-        (held.len = l.chunk_count → h = held) ∧
-        (held.len ≠ l.chunk_count → ∀ i, h.bit i = false) ⦄ := by
+        h.Tidy ∧ h.len = l.chunk_count ∧
+        (held.len = l.chunk_count ∧ held.Tidy → h = held) ∧
+        (¬ (held.len = l.chunk_count ∧ held.Tidy) → ∀ i, h.bit i = false) ⦄ := by
     split
-    · rename_i hsame
+    · rename_i hyes
+      have hgood := hsound.mp hyes
       rw [WP.spec_ok]
-      exact ⟨ hsized, hsame, fun _ => rfl, fun hdiffer => absurd hsame hdiffer ⟩
-    · rename_i hdiffer
-      step as ⟨ empty, hlen, hemptysized, hnone ⟩
-      exact ⟨ hemptysized, hlen, fun hsame => absurd hsame hdiffer, fun _ => hnone ⟩
-  step with hstart as ⟨ start, hstartsized, hstartlen, hkept, hemptied ⟩
+      exact ⟨ hgood.2, hgood.1, fun _ => rfl, fun hbad => absurd hgood hbad ⟩
+    · rename_i hno
+      have hbad : ¬ (held.len = l.chunk_count ∧ held.Tidy) := fun hgood => hno (hsound.mpr hgood)
+      step as ⟨ empty, hlen, hemptysized, hnone, hemptytidy ⟩
+      refine ⟨ hemptytidy, hlen, ?_, fun _ => hnone ⟩
+      intro hsame hheldtidy
+      exact absurd ⟨ hsame, hheldtidy ⟩ hbad
+  step with hstart as ⟨ start, hstarttidy, hstartlen, hkept, hemptied ⟩
   step as ⟨ files, hfiles ⟩
   have hbegin : countsInv l start
       (alloc.vec.Vec.with_capacity U64 files, 0#usize) := by
     simp [countsInv, alloc.vec.Vec.with_capacity, alloc.vec.Vec.new]
-  step with assembly.Assembly.new_loop0.spec l start _ 0#usize hl hstartsized hbegin
+  step with assembly.Assembly.new_loop0.spec l start _ 0#usize hl hstarttidy.sized hbegin
     as ⟨ missing, hlength, hcounts ⟩
   refine ⟨ ?_, hkept, hemptied ⟩
   simp only [assembly.Assembly.WellFormed]
-  exact ⟨ hl, hstartsized, hstartlen, hlength, hcounts ⟩
+  exact ⟨ hl, hstarttidy, hstartlen, hlength, hcounts ⟩
 
 /-- `is_whole` says yes exactly when the file exists and every chunk of it
 is in place. -/
@@ -291,7 +295,8 @@ theorem assembly.Assembly.is_whole.spec (a : Assembly) (file : Usize) (ha : a.We
     ⦃ r => r = true ↔ (file.val < a.layout.sizes.val.length ∧ a.Whole file.val) ⦄ := by
   simp only [assembly.Assembly.is_whole]
   simp only [assembly.Assembly.WellFormed] at ha
-  obtain ⟨ hl, hsized, hlen, hfiles, hcounts ⟩ := ha
+  obtain ⟨ hl, htidy, hlen, hfiles, hcounts ⟩ := ha
+  have hsized := htidy.sized
   split
   · rename_i hin
     have hfile : file.val < a.layout.sizes.val.length := by scalar_tac
@@ -334,7 +339,8 @@ theorem assembly.Assembly.add.spec (a : Assembly) (index : U64) (ha : a.WellForm
   simp only [assembly.Assembly.add]
   have hwf := ha
   simp only [assembly.Assembly.WellFormed] at ha
-  obtain ⟨ hl, hsized, hlen, hfiles, hcounts ⟩ := ha
+  obtain ⟨ hl, htidy, hlen, hfiles, hcounts ⟩ := ha
+  have hsized := htidy.sized
   have hlayout := hl
   simp only [artifact.layout.Layout.WellFormed] at hlayout
   obtain ⟨ hc, -, -, hcount, - ⟩ := hlayout
@@ -379,7 +385,7 @@ theorem assembly.Assembly.add.spec (a : Assembly) (index : U64) (ha : a.WellForm
       obtain ⟨ size, hsize, hlo, hhi, -, - ⟩ := hlocates
       have hfile := lt_length_of_getElem? hsize
       dsimp only
-      step as ⟨ held', hlen', hbytes', hbits' ⟩
+      step as ⟨ held', hlen', hbytes', hbits', hkeeps ⟩
       have hbits : ∀ i, held'.bit i = (a.held.bit i || decide (i = index.val)) := by
         intro i
         have hin : index.val < a.held.len.val := by
@@ -387,10 +393,7 @@ theorem assembly.Assembly.add.spec (a : Assembly) (index : U64) (ha : a.WellForm
           exact hinrange
         rw [hbits' i]
         simp [hin]
-      have hsized' : held'.Sized := by
-        simp only [Bitfield.Sized] at hsized ⊢
-        rw [hlen', hbytes']
-        exact hsized
+      have htidy' : held'.Tidy := hkeeps htidy
       step as ⟨ count, hcountget ⟩
       have hcountval := val_of_getElem? (by omega) hcountget (hcounts chunk.file.val hfile)
       have hmono := chunksBefore_mono a.layout.sizes.val a.layout.chunk_size.val
@@ -422,7 +425,7 @@ theorem assembly.Assembly.add.spec (a : Assembly) (index : U64) (ha : a.WellForm
       have hwf' : (assembly.Assembly.mk a.layout held'
           (a.missing.set chunk.file left)).WellFormed := by
         simp only [assembly.Assembly.WellFormed]
-        refine ⟨ hl, hsized', by rw [hlen', hlen], by simp [hfiles], ?_ ⟩
+        refine ⟨ hl, htidy', by rw [hlen', hlen], by simp [hfiles], ?_ ⟩
         intro f hf
         by_cases hsame : f = chunk.file.val
         · subst hsame
@@ -470,5 +473,26 @@ theorem assembly.Assembly.add.spec (a : Assembly) (index : U64) (ha : a.WellForm
         subst hsame
         have := hwhole.mpr hwholef
         omega
+
+/-- `has` says whether a chunk is in place. -/
+@[step]
+theorem assembly.Assembly.has.spec (a : Assembly) (index : U64) (ha : a.WellFormed) :
+    assembly.Assembly.has a index ⦃ r => r = a.held.bit index.val ⦄ := by
+  simp only [assembly.Assembly.WellFormed] at ha
+  obtain ⟨ -, htidy, -, -, - ⟩ := ha
+  unfold assembly.Assembly.has
+  exact artifact.bitfield.Bitfield.get.spec a.held index htidy.sized
+
+/-- `is_complete` says yes exactly when every chunk is in place. -/
+@[step]
+theorem assembly.Assembly.is_complete.spec (a : Assembly) (ha : a.WellFormed) :
+    assembly.Assembly.is_complete a
+    ⦃ r => r = true ↔ ∀ i, i < a.layout.chunk_count.val → a.held.bit i = true ⦄ := by
+  simp only [assembly.Assembly.WellFormed] at ha
+  obtain ⟨ -, htidy, hlen, -, - ⟩ := ha
+  unfold assembly.Assembly.is_complete
+  have hfull := artifact.bitfield.Bitfield.is_full.spec a.held htidy
+  rw [hlen] at hfull
+  exact hfull
 
 end model
