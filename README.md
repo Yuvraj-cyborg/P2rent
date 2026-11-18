@@ -233,6 +233,8 @@ mux is not yet production software.
 | [Performance](docs/performance.md) | How speed is measured, the figures, and what was tried. |
 | [Scope](docs/scope.md) | What the project is for, and what it will not do. |
 | [Proofs](proofs/README.md) | Which parts are formally proven, and what the proofs rest on. |
+| [Changelog](CHANGELOG.md) | What changed for someone who uses `mux`, release by release. |
+| [Commands](docs/commands.md) | Every command on `main`, its flags, what it prints and how it ends. |
 
 ## Repository layout
 
