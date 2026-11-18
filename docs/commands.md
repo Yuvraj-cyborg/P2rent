@@ -100,6 +100,10 @@ that holds it.
   it in, written with a slash at its end if it is not there yet.
 - A copy that was interrupted is carried on with when the command is run
   again: what is there is checked, and only what is missing is fetched.
+- If a file of the same name already exists, an indexed sender can supply
+  rolling hashes. The receiver searches that file for missing full chunks,
+  including chunks shifted by insertions or deletions. It verifies each
+  match against the ticket's manifest and fetches the rest.
 - `--streams` is not used. A machine is asked for as many chunks at once as
   its connection has room for. `--max-peers <N>` is the most machines to
   copy from at once, and is 8 unless it is given.

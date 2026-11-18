@@ -834,7 +834,7 @@ three ways of finding what it can keep, on three kinds of change:
 
 - **Same place.** The new file is cut into chunks of one size, and a chunk
   is kept if the old file has the same bytes at the same place. This is
-  what a transfer does today when the digests are known.
+  the baseline when the digests are known.
 - **Search.** The same chunks, and a chunk is kept if the old file has its
   bytes anywhere. The old file is gone through once with a hash that rolls
   from each byte to the next, as `rsync` and `zsync` do.
@@ -890,13 +890,29 @@ Two things the measurement changed:
 | Asking a table at every byte whether a chunk starts there | First version: 170 MiB/s on a laptop. |
 | A bit for each of a million values of the hash, and the table asked only where the bit is set | Kept: 570 MiB/s on the same laptop. |
 
-A file made to collide could still make the hash match everywhere, so the
-search will stop after a set number of matches that were not the chunk,
-and fall back to comparing in place.
+A file can make the rolling hash match repeatedly with the wrong bytes.
+Per file, the receiver stops after at most 4,096 false matches, or one
+more than the number of full chunks in the old file, whichever is smaller.
+Each candidate must pass its BLAKE3 check.
+
+An end-to-end check used `mux cp TICKET FOLDER/` from Linux to macOS on
+the 10 Mbit/s LAN. The old file contained 24 MiB of pseudorandom data.
+The source inserted 4 KiB at offset 8 MiB + 29 bytes. With 1 MiB chunks,
+the earlier seeder supplied 16 MiB + 4 KiB of file data in 17.79 s.
+The seeder with hints supplied 1 MiB + 4 KiB in 1.89 s on the first
+request and 1.71 s on a second request to the same seeder. All copies
+matched the source byte for byte. Each timing is one run with a release
+seeder and debug receiver, starting after the ticket was ready.
+
+Computing hints during indexing increased sender user CPU for a 512 MiB
+Linux fixture from 0.22 s to 0.79 s (medians of three). The sender now
+computes hints on request, in pages covering at most 16 MiB of source
+data, and caches them for the lifetime of the share. Without a request,
+the same test measured 0.22 s before and 0.23 s after. Each page costs
+eight bytes of hash data per chunk.
 
 The rolling loop is written in safe Rust. It is the first candidate for
-the fast path below, once the search is part of a transfer and there is a
-link fast enough to be held up by it.
+the fast path below, if a link is fast enough for the scan to limit the transfer.
 
 ## The fast path
 

@@ -158,7 +158,11 @@ impl Memory {
                 }
             });
         }
-        Begun { held, named }
+        Begun {
+            held,
+            named,
+            older: false,
+        }
     }
 }
 
