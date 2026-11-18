@@ -1,6 +1,6 @@
 //! `mux probe`: say what is at a place, without copying it.
 
-use super::tell::{self, Digest, Holder, Line};
+use super::tell::{self, Digest, Holder, Line, Origin};
 use super::{Reach, cp, ui};
 use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest};
@@ -65,6 +65,7 @@ pub(super) async fn run(args: &Args, json: bool, key: Option<&Path>) -> anyhow::
             parts,
             digests,
             holders: None,
+            origins: None,
         });
         return Ok(());
     }
@@ -105,7 +106,9 @@ async fn on_other_machines(
         Err(_) => Vec::new(),
     };
     node.shutdown().await;
-    let found = found?;
+    let mut found = found?;
+    // Each web address is asked what it holds, as a copy would ask it.
+    let origins = mux::origins::add(&mut found, ticket).await;
 
     let artifact = &found.artifact;
     let kind = if artifact.is_file() { "file" } else { "folder" };
@@ -131,6 +134,15 @@ async fn on_other_machines(
                     })
                     .collect(),
             ),
+            origins: Some(
+                origins
+                    .into_iter()
+                    .map(|origin| Origin {
+                        address: origin.address,
+                        unused: origin.unused,
+                    })
+                    .collect(),
+            ),
         });
         return Ok(());
     }
@@ -147,6 +159,13 @@ async fn on_other_machines(
             None => "could not be asked".to_owned(),
         };
         println!("holder   {}  {holds}", holder.node.short());
+    }
+    for origin in &origins {
+        let holds = match &origin.unused {
+            None => "the web, a file of that size".to_owned(),
+            Some(why) => format!("the web, not used: {why}"),
+        };
+        println!("origin   {}  {holds}", origin.address);
     }
     Ok(())
 }
