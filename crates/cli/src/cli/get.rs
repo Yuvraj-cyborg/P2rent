@@ -36,13 +36,17 @@ pub(super) struct Args {
     /// Give up after this long without receiving any data
     #[arg(long, default_value_t = 60, value_name = "SECONDS")]
     stall_timeout: u64,
+
+    /// How to decide how fast to send to other machines
+    #[arg(long, value_enum, default_value = "cubic", value_name = "HOW")]
+    congestion: super::Congestion,
 }
 
 pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     let mut ticket = args.ticket;
     ticket.peers.extend(args.peers);
 
-    let node = Node::bind(identity, args.listen)
+    let node = Node::bind_with(identity, args.listen, args.congestion.into())
         .with_context(|| format!("cannot listen on {}", args.listen))?;
     let options = DownloadOptions {
         max_peers: args.max_peers,

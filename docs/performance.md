@@ -389,8 +389,9 @@ a lower priority than the one before.
   congestion control, which halves its rate at each loss. `mux get` is one
   QUIC connection and does twice as well as one TCP connection, but tools
   that open four connections get four times one. A congestion control that
-  does not take every loss for congestion (BBR) is the thing to measure:
-  [#82](https://github.com/yuvichh/mux/issues/82).
+  does not take every loss for congestion (BBR) was measured next: see
+  "Packets lost for other reasons" below
+  ([#82](https://github.com/yuvichh/mux/issues/82)).
 - **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl.
   It is faster than curl there now: see "A reader left open" and
   "Requests that end where the reading does" below
@@ -529,6 +530,70 @@ rule looked right and were not:
 **Not measured yet:** an HTTPS server that offers HTTP/2, where the four
 streams may all travel on one connection
 ([#89](https://github.com/yuvichh/mux/issues/89)).
+
+### Packets lost for other reasons
+
+A connection has to decide how fast it may send. The usual way (CUBIC)
+takes every lost packet for a sign of a full link and halves its rate. On
+a link that loses packets for other reasons, such as Wi-Fi, a mobile
+network or a long route, it stays far below what the link carries. BBR
+measures what the link carries and holds that rate, whatever is lost.
+
+`mux seed --congestion bbr` chooses it. It is the sender's choice, so it
+is given to the machine that holds the data. CUBIC is still what is used
+unless it is asked for: see the last table for why
+([#82](https://github.com/yuvichh/mux/issues/82)).
+
+`mux get` from `mux seed` with each, MiB/s, the median of three runs
+taken in turn (two at 600 ms and over the slow link, and one of CUBIC with
+loss), 18 November 2026, the machine and method of the tables above:
+
+| Link, round trip | File | CUBIC | BBR | curl |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.83 | **9.99** | 0.47 |
+| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | | 7.36 | |
+| 1 Gbit/s, 20 ms | 1 GiB | 107.9 | 109.4 | 111.3 |
+| 1 Gbit/s, 100 ms | 1 GiB | 92.0 | 95.5 | 26.6 |
+| 100 Mbit/s, 50 ms | 128 MiB | 10.70 | 10.64 | 11.05 |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.95 | 9.30 | 9.40 |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.59 | 6.34 | 5.05 |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0564 | 0.0560 | 0.0569 |
+
+- With loss it is twelve times as fast, and uses 84% of the link.
+- Without loss it is the same near the server and 4 to 13% faster far from
+  it.
+- It does not send more to do so. The bytes that crossed the link for each
+  byte of the file were 1.053 to 1.056 with CUBIC and 1.053 to 1.063 with
+  BBR, over all the rows.
+
+**What it does to others.** A `mux get` and a `curl` download of the same
+256 MiB file were started together over 100 Mbit/s at 50 ms, twice each.
+The link carries both in about 45 seconds. With fair shares both end
+then. One that ends well before has taken more than half while it ran.
+Seconds until each was done:
+
+| The queue at the slow point | `mux get` with | `mux get` done | curl done |
+| --- | --- | ---: | ---: |
+| deep (100 ms) | (two curls, for comparison) | 42.9, 44.4 | 45.3, 45.2 |
+| | CUBIC | 26.7, 26.9 | 45.4, 45.4 |
+| | BBR | 45.4, 26.3 | 38.3, 45.4 |
+| shallow (10 ms) | (two curls, for comparison) | 46.9, 37.5 | 35.4, 45.2 |
+| | CUBIC | 27.5, 43.6 | 47.4, 47.3 |
+| | BBR | 23.5, 23.6 | 53.3, 53.3 |
+
+- A `mux get` that is done after 27 seconds had about four fifths of the
+  link until then. With CUBIC that happens in three runs of four. It is
+  this QUIC library's CUBIC against Linux's, and it was not known before
+  this was measured.
+- With a deep queue BBR does the same or less. With a shallow queue it
+  took about nineteen twentieths of the link both times, and the curl
+  download got next to nothing until the transfer was over. That is a
+  known trait of this version of BBR, and the reason it is not made the
+  default here without being asked for.
+
+The library calls its BBR experimental. Its newer version, BBR 3, is in
+the QUIC library that the move to iroh would bring
+([#19](https://github.com/yuvichh/mux/issues/19)).
 
 ## Sending only what changed
 
