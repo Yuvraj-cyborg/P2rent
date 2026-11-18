@@ -331,6 +331,30 @@ fn a_bad_ticket_is_a_usage_error() {
     assert!(stderr.contains("ticket"), "{stderr}");
 }
 
+/// What cannot be done as it is typed ends with 2, whichever command it
+/// is, and gives this machine no key.
+#[test]
+fn a_command_that_asks_for_what_cannot_be_done_is_a_usage_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let key = tmp.path().join("node.key");
+    let file = tmp.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    let file = file.to_str().unwrap();
+    let refused: [(&[&str], &str); 4] = [
+        (&["seed", file, "--chunk-size", "1"], "chunk size must be"),
+        (&["sync", file, "peer:"], "is not a folder on this machine"),
+        (&["cp", file, "peer:", "--dry-run"], "--dry-run has nothing"),
+        (&["cp", file, "peer:", "--hash", "blake3:00"], ""),
+    ];
+    for (line, why) in refused {
+        let output = mux(&key).args(line).output().unwrap();
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{line:?}: {said}");
+        assert!(said.contains(why), "{line:?}: {said}");
+    }
+    assert!(!key.exists());
+}
+
 // Another machine through `cp` and `probe`: `peer:` offers, and a ticket is
 // a place to copy from.
 
@@ -557,14 +581,17 @@ fn a_dry_run_of_a_ticket_says_what_would_be_copied_and_a_new_name_is_refused() {
     assert_result(&planned.stdout, &out.join("tree"), "3000000\tverified");
     assert!(!out.exists(), "a dry run wrote something");
 
-    // What a ticket names keeps its name.
+    // What a ticket names keeps its name. Nobody is asked: the command is
+    // refused as it is typed, and this machine is given no key for it.
+    let key = tmp.path().join("unused.key");
     let renamed = with_ticket(&key, ["cp"], &ticket)
         .arg(tmp.path().join("other-name"))
         .output()
         .unwrap();
-    assert!(!renamed.status.success());
     let why = String::from_utf8_lossy(&renamed.stderr).into_owned();
+    assert_eq!(renamed.status.code(), Some(2), "{why}");
     assert!(why.contains("keeps its own name"), "{why}");
+    assert!(!key.exists());
 }
 
 #[test]
@@ -575,8 +602,8 @@ fn only_what_is_on_this_machine_can_be_offered() {
         .args(["cp", "https://example.org/file.bin", "peer:", "--no-relay"])
         .output()
         .unwrap();
-    assert!(!refused.status.success());
     let why = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert_eq!(refused.status.code(), Some(2), "{why}");
     if cfg!(feature = "web") {
         assert!(why.contains("cannot be offered to other machines"), "{why}");
     }

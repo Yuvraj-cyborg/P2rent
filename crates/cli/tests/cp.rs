@@ -213,9 +213,10 @@ async fn how_a_copy_fails_is_told_by_how_the_command_ends() {
     let output = cp([&nobody, to]).await;
     assert_eq!(output.status.code(), Some(4), "{}", said(&output));
 
-    // Places that cannot be copied between.
+    // Places that cannot be copied between: the command is to be written
+    // another way, as one with too few places is.
     let output = cp([to, "https://example.org/there"]).await;
-    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert_eq!(output.status.code(), Some(2), "{}", said(&output));
     assert!(
         said(&output).contains("cannot copy from"),
         "{}",
@@ -367,7 +368,7 @@ async fn a_folder_that_cannot_be_copied_says_why() {
     // Into itself.
     let inside = format!("{}/sub/", text(&source));
     let output = cp([text(&source), &inside]).await;
-    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert_eq!(output.status.code(), Some(2), "{}", said(&output));
     let why = said(&output);
     assert!(why.contains("cannot be copied into itself"), "{why}");
     assert!(!source.join("sub/tree").exists());
@@ -380,9 +381,19 @@ async fn a_folder_that_cannot_be_copied_says_why() {
     // What is said of a source on the web.
     let digest = format!("blake3:{}", Hash::of(b"x"));
     let output = cp([text(&source), text(tmp.path()), "--hash", &digest]).await;
-    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert_eq!(output.status.code(), Some(2), "{}", said(&output));
     let why = said(&output);
     assert!(why.contains("for a source on the web"), "{why}");
+
+    // A program is told the same: this is not worth running again.
+    let output = mux(["cp", "--json", text(&source), &inside]).await;
+    let told = String::from_utf8_lossy(&output.stdout).into_owned();
+    let error: serde_json::Value = serde_json::from_str(told.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        (&error["event"], &error["code"], &error["kind"]),
+        (&"error".into(), &2.into(), &"usage".into())
+    );
+    assert!(error["hint"].is_null());
 }
 
 /// Runs `mux` with `args`, away from the thread that serves.
@@ -581,7 +592,7 @@ async fn probe_says_what_is_at_a_place() {
     let output = mux(["probe", text(&tmp.path().join("missing"))]).await;
     assert_eq!(output.status.code(), Some(3), "{}", said(&output));
     let output = mux(["probe", "peer:"]).await;
-    assert_eq!(output.status.code(), Some(1), "{}", said(&output));
+    assert_eq!(output.status.code(), Some(2), "{}", said(&output));
 }
 
 /// The steps a dry run of `sync` wrote: what to do, and the path.
