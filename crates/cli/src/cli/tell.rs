@@ -57,6 +57,10 @@ pub(super) enum Line<'a> {
         /// For a ticket: each machine it names, and how much it holds.
         #[serde(skip_serializing_if = "Option::is_none")]
         holders: Option<Vec<Holder>>,
+        /// For a ticket: each web address it names, and why nothing would
+        /// be fetched from it, if nothing would.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        origins: Option<Vec<Origin>>,
     },
     /// Something is offered to other machines, and this is its ticket.
     Offer {
@@ -119,6 +123,15 @@ pub(super) struct Holder {
     /// How many bytes it holds of what the ticket names, or nothing if it
     /// could not be asked.
     pub bytes: Option<u64>,
+}
+
+/// One web address a ticket names.
+#[derive(Debug, Serialize)]
+pub(super) struct Origin {
+    pub address: String,
+    /// Why nothing would be fetched from it, or nothing if it would be
+    /// fetched from.
+    pub unused: Option<String>,
 }
 
 /// A line with the version of its shape in front.
@@ -212,6 +225,7 @@ mod tests {
                         digest: "sha256:00".into(),
                     }],
                     holders: None,
+                    origins: None,
                 },
                 r#"{"v":1,"event":"probe","place":"./a","name":"a","kind":"folder","bytes":5,"files":2,"checked":"consistent","parts":true,"digests":[{"path":"sub/b","digest":"sha256:00"}]}"#,
             ),
@@ -290,8 +304,18 @@ mod tests {
                             bytes: None,
                         },
                     ]),
+                    origins: Some(vec![
+                        Origin {
+                            address: "https://example.org/a".into(),
+                            unused: None,
+                        },
+                        Origin {
+                            address: "https://example.net/a".into(),
+                            unused: Some("it holds 4 bytes".into()),
+                        },
+                    ]),
                 },
-                r#"{"v":1,"event":"probe","place":"mux://aa?peer=bb","name":"a","kind":"file","bytes":5,"files":1,"checked":"verified","parts":true,"digests":[],"holders":[{"node":"bb","bytes":5},{"node":"cc","bytes":null}]}"#,
+                r#"{"v":1,"event":"probe","place":"mux://aa?peer=bb","name":"a","kind":"file","bytes":5,"files":1,"checked":"verified","parts":true,"digests":[],"holders":[{"node":"bb","bytes":5},{"node":"cc","bytes":null}],"origins":[{"address":"https://example.org/a","unused":null},{"address":"https://example.net/a","unused":"it holds 4 bytes"}]}"#,
             ),
             (
                 Line::Offer {
