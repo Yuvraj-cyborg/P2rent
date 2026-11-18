@@ -347,10 +347,10 @@ mod tests {
             })
         }
 
-        fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+        fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
             Box::pin(async move {
                 let short: Box<dyn Reader> = Box::new(Short {
-                    reader: self.place.open(file, offset).await?,
+                    reader: self.place.open(file, offset, len).await?,
                     left: self.reach.saturating_sub(offset),
                 });
                 Ok(short)

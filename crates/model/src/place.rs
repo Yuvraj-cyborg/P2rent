@@ -127,13 +127,16 @@ pub trait Source: fmt::Debug + Send + Sync {
     /// Says what is here.
     fn describe(&self) -> Pending<'_, Description>;
 
-    /// Opens `file` to be read in order, starting at `offset`.
+    /// Opens `file` to be read in order: the `len` bytes from `offset`,
+    /// which lie within the file.
     ///
     /// This is how many chunks are fetched: one after another from one
     /// reader, which for a web server is one request and not one for each
-    /// chunk. A place without [`Capabilities::random_access`] may have to
-    /// read and discard everything before `offset` to get there.
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>>;
+    /// chunk. The request is for those bytes and no more, so that it ends
+    /// by itself when they have been read. Nothing past them is read from
+    /// the reader. A place without [`Capabilities::random_access`] may have
+    /// to read and discard everything before `offset` to get there.
+    fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>>;
 
     /// Reads `len` bytes of `file`, starting at `offset`.
     ///
@@ -142,12 +145,14 @@ pub trait Source: fmt::Debug + Send + Sync {
     fn read(&self, file: usize, offset: u64, len: u32) -> Pending<'_, Vec<u8>> {
         Box::pin(async move {
             let arrived = Arrived::default();
-            self.open(file, offset).await?.read(len, &arrived).await
+            let reader = self.open(file, offset, u64::from(len)).await;
+            reader?.read(len, &arrived).await
         })
     }
 }
 
-/// The bytes of one file, read in order from where it was opened.
+/// Bytes of one file, read in order from where it was opened to where it
+/// was opened to.
 pub trait Reader: fmt::Debug + Send {
     /// Reads the next `len` bytes: all of them, or the read fails. Bytes
     /// are added to `arrived` as they come.
@@ -309,12 +314,22 @@ pub trait Supply: fmt::Debug + Send + Sync {
     /// Fetches chunk `index`. The failure is [`Failure::Absent`] if the
     /// supplier turns out not to hold it. Bytes are added to `arrived` as
     /// they come.
-    fn chunk<'a>(&'a self, index: u64, arrived: &'a Arrived) -> Pending<'a, Vec<u8>>;
+    ///
+    /// `following` is how many of the chunks after it the asker means to
+    /// ask for next, in order. A supplier that answers a run of chunks from
+    /// one request, as a web server does, asks for this chunk and those
+    /// and no more, so that the answer ends where the reading does.
+    fn chunk<'a>(
+        &'a self,
+        index: u64,
+        following: u64,
+        arrived: &'a Arrived,
+    ) -> Pending<'a, Vec<u8>>;
 
     /// Says that chunk `index` will not be asked for by whoever fetched the
-    /// chunk before it. A supplier that kept something open to read on
-    /// from, such as a request for the rest of a file, closes it now: left
-    /// open, it would go on being sent what nobody reads.
+    /// chunk before it, though it said it would. A supplier that kept a
+    /// request open to read on from closes it now: left open, it would go
+    /// on being sent what nobody reads.
     fn leave(&self, index: u64);
 
     /// What fetching from this supplier allows. One without
