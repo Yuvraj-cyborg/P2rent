@@ -11,8 +11,8 @@ use crate::{Error, Options, Store, Summary, transfer};
 use model::artifact::{Bitfield, FileDigest, Hash, MIN_CHUNK_SIZE};
 use model::pace;
 use model::place::{
-    Arrived, Capabilities, Description, Event, Expected, Failure, Foreknown, Observer, Pending,
-    Reader, Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
+    Arrived, Begun, Capabilities, Description, Event, Expected, Failure, Foreknown, Observer,
+    Pending, Reader, Sink, Source, Status, Supplier, SupplierId, Supply, Verification,
 };
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -301,7 +301,7 @@ impl Sink for Hooked {
         &self,
         expected: &Expected<'_>,
         examined: &(dyn Fn(u64) + Sync),
-    ) -> Result<Bitfield, Failure> {
+    ) -> Result<Begun, Failure> {
         self.place.begin(expected, examined)
     }
 
@@ -526,7 +526,8 @@ fn everything_that_happens_is_reported_once() {
         })
         .sum();
     assert_eq!(stored, sample.artifact.total_size());
-    // One for each file that has bytes. The empty file was there already.
+    // One for each file. The empty one needed nothing fetched and was
+    // named as the place was made ready, so it is told of before the rest.
     let mut committed: Vec<usize> = ran
         .events
         .iter()
@@ -535,8 +536,9 @@ fn everything_that_happens_is_reported_once() {
             _ => None,
         })
         .collect();
+    assert_eq!(committed[0], 2);
     committed.sort_unstable();
-    assert_eq!(committed, [1, 4, 5]);
+    assert_eq!(committed, [1, 2, 4, 5]);
 }
 
 #[test]
