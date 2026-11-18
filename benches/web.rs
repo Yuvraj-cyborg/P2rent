@@ -11,7 +11,7 @@
 //! | ------------------- | ------- | ------------------------------------------ |
 //! | `MUX_BENCH_URL`     | none    | The address to fetch; nothing runs without |
 //! | `MUX_BENCH_RUNS`    | 3       | Downloads to time                          |
-//! | `MUX_BENCH_STREAMS` | 4       | Requests open at the same time             |
+//! | `MUX_BENCH_STREAMS` | 8       | Requests open at the same time             |
 //! | `MUX_BENCH_DIR`     | temp    | Where to put the data                      |
 //!
 //! Against a server on the same machine there is no latency and no loss,
@@ -34,7 +34,7 @@ fn main() {
         return;
     };
     let runs = setting("MUX_BENCH_RUNS", 3).max(1);
-    let streams = setting("MUX_BENCH_STREAMS", 4).max(1);
+    let streams = setting("MUX_BENCH_STREAMS", 8).max(1);
     let limits = engine::Options {
         requests_per_supplier: usize::try_from(streams).unwrap_or(usize::MAX),
         ..engine::Options::default()

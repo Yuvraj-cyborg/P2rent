@@ -273,7 +273,7 @@ answers at the address, so other tools can be timed fetching the same file
 from the same server:
 
 ```console
-$ just fetch http://127.0.0.1:8098/big.bin        # four streams
+$ just fetch http://127.0.0.1:8098/big.bin 4      # four streams
 $ just fetch http://127.0.0.1:8098/big.bin 1      # one stream
 $ time curl -s -o big.bin http://127.0.0.1:8098/big.bin
 $ time aria2c -q -x 4 -s 4 --file-allocation=none -o big.bin http://127.0.0.1:8098/big.bin
@@ -496,8 +496,7 @@ the median of three runs with the tools taken in turn, and the range
   600 ms. Four connections get up to speed sooner than one.
 - Where one connection is held back by itself, it stays three to four
   times as fast as curl: by the receive window at 1 Gbit/s and 100 ms, and
-  by loss in the row below it.
-  [#88](https://github.com/yuvichh/mux/issues/88) is about going further
+  by loss in the row below it. "How many streams" below goes further
   there.
 
 What the server counted, for the same runs:
@@ -526,6 +525,52 @@ rule looked right and were not:
   takes what it could fetch by the time the other would get there, so a
   slow one takes next to nothing from a fast one. Five runs then fell
   between 23.4 and 24.2 seconds.
+
+### How many streams
+
+Each stream is a connection, with its own congestion control and its own
+window. Where one connection is held back by itself, more of them carry
+more ([#88](https://github.com/yuvichh/mux/issues/88)). `mux cp` with
+four, eight and sixteen, MiB/s, two runs each:
+
+| Link, round trip | File | 4 | 8 | 16 |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.85 and 1.89 | 3.76 and 4.40 | 6.23 and 7.13 |
+| 1 Gbit/s, 100 ms | 1 GiB | 85.7 and 88.9 | 98.7 and 98.9 | 96.8 and 97.6 |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.62 and 9.80 | 9.75 and 9.88 | 9.38 and 9.50 |
+| 1 Gbit/s, 20 ms | 1 GiB | 110.8 and 111.0 | 111.1 and 111.3 | 111.5 and 112.1 |
+
+Eight cost nothing where four were enough, and gave twice as much with
+loss. Sixteen gave more again with loss, and began to cost far from the
+server. So the default is eight, where it was four. It could not have
+been before requests ended where the reading does: a stream that was not
+needed then cost a connection each time it moved.
+
+With eight, against curl, the median of three runs taken in turn and the
+range (four runs for the lossy row, and one of curl):
+
+| Link, round trip | File | curl | `mux cp` |
+| --- | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.03 (11.01 to 11.05) | 11.05 (10.98 to 11.09) |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.60 (9.46 to 9.61) | **9.98** (9.94 to 10.01) |
+| 100 Mbit/s, 600 ms | 128 MiB | 4.97 (4.86 to 5.13) | **5.27** (4.83 to 5.28) |
+| 1 Gbit/s, 20 ms | 1 GiB | 111.5 (111.1 to 111.6) | 111.7 (110.5 to 111.7) |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.6 (26.4 to 26.6) | **98.4** (98.4 to 99.7) |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.41 | **3.66** (3.25 to 3.83) |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0569 | 0.0569 |
+
+**A server that will not take eight.** Servers limit the connections they
+take from one address. A source was made to take two readers at a time
+and refuse a third. The copy stalled for ninety seconds and failed: one
+refused request counted as the whole server failing, every stream was
+stopped, and the retry made the same requests again. That fault was
+there with four streams too, against a server that takes fewer.
+
+A request that is refused, or starved, now steps aside if the server's
+other requests carry on, and the server is used with those it takes. The
+same copy then finishes with two streams and no waiting.
+
+The number does not yet follow the link, which is the rest of #88.
 
 **Over HTTPS.** A server that offers HTTP/2 could have had all four
 streams on one connection, which would lose what four connections are
