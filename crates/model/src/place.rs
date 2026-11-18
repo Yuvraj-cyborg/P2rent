@@ -180,6 +180,19 @@ impl Arrived {
     }
 }
 
+/// What a place found as it was made ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Begun {
+    /// The chunks the place holds, and has checked.
+    pub held: Bitfield,
+    /// The files that were given their final names as the place was made
+    /// ready, by their position among the entries of the tree: those that
+    /// are whole with what it holds, and did not have their names yet. A
+    /// file with no bytes is one, the first time. So is a file that an
+    /// earlier transfer stopped just short of naming.
+    pub named: Vec<usize>,
+}
+
 /// A place data can be written to.
 ///
 /// A file being written is kept apart from the file under its final name
@@ -206,7 +219,7 @@ pub trait Sink: fmt::Debug + Send + Sync {
         &self,
         expected: &Expected<'_>,
         examined: &(dyn Fn(u64) + Sync),
-    ) -> Result<Bitfield, Failure>;
+    ) -> Result<Begun, Failure>;
 
     /// Writes `data` into `file` at `offset`. Nothing of it is visible
     /// under the file's final name until [`Sink::commit`].

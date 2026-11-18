@@ -15,7 +15,7 @@ mod common;
 use common::assert_same_tree;
 use mux::artifact::Hash;
 use server::{Behaviour, Fault, Server};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mux");
@@ -316,6 +316,44 @@ async fn a_folder_is_copied_with_everything_in_it() {
     assert_same_tree(&a, &files.join("a.bin"));
     assert_same_tree(&sub, &files.join("sub"));
     assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 2);
+}
+
+/// A program is told of each file once as it gets its name: of one with no
+/// bytes too, which needs nothing fetched. Copied again, nothing gets a
+/// name, and nothing is told.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_file_of_a_folder_is_told_to_a_program_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    tree(&source);
+    let out = tmp.path().join("out");
+    let into = format!("{}/", text(&out));
+    let told = |output: &Output| {
+        let lines = String::from_utf8_lossy(&output.stdout).into_owned();
+        let lines = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap());
+        let lines: Vec<serde_json::Value> = lines.collect();
+        let mut files: Vec<PathBuf> = lines
+            .iter()
+            .filter(|line| line["event"] == "file")
+            .map(|line| PathBuf::from(line["path"].as_str().unwrap()))
+            .collect();
+        files.sort();
+        (lines[0]["files"].as_u64().unwrap(), files)
+    };
+
+    let output = mux(["cp", "--json", text(&source), &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    let copy = out.join("tree");
+    let (planned, files) = told(&output);
+    let all = ["a.bin", "empty", "sub/b.txt", "sub/deep/c"].map(|file| copy.join(file));
+    assert_eq!(files, all);
+    assert_eq!(planned, 4);
+
+    let output = mux(["cp", "--json", text(&source), &into]).await;
+    assert!(output.status.success(), "{}", said(&output));
+    assert_eq!(told(&output), (4, Vec::new()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
