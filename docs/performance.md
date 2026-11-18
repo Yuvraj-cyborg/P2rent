@@ -320,20 +320,8 @@ both.
 ### The other congestion control
 
 `--congestion bbr` is BBR in its third version here, where the library
-used before had the first. The figures under "Packets lost for other
-reasons" below are for that first version, and have not all been made
-again. One run each, when the switch was first tried, MiB/s:
-
-| Link, round trip | CUBIC | BBR 3 |
-| --- | ---: | ---: |
-| 100 Mbit/s, 50 ms, 1% loss | 0.57 | 9.07 |
-| 1 Gbit/s, 100 ms | 90.4 | 84.3 |
-| 100 Mbit/s, 50 ms | 10.6 | 9.7 |
-
-So it is as much faster where packets are lost, and 7 to 9% slower than
-CUBIC on these two clean links, where the first version was level or
-ahead. How it shares a link with another download has not been measured
-for this version: it is meant to be fairer than the first.
+used before had the first. It is measured under
+[Packets lost for other reasons](#packets-lost-for-other-reasons).
 
 ### Between two real machines
 
@@ -682,61 +670,160 @@ a link that loses packets for other reasons, such as Wi-Fi, a mobile
 network or a long route, it stays far below what the link carries. BBR
 measures what the link carries and holds that rate, whatever is lost.
 
-`mux seed --congestion bbr` chooses it. It is the sender's choice, so it
-is given to the machine that holds the data. CUBIC is still what is used
-unless it is asked for: see the last table for why
-([#82](https://github.com/yuvichh/mux/issues/82)).
+`--congestion bbr` chooses it. It is the sender's choice, so it is given
+to the machine that holds the data. CUBIC is still what is used unless it
+is asked for ([#82](https://github.com/yuvichh/mux/issues/82)).
 
 `mux get` from `mux seed` with each, MiB/s, the median of three runs
-taken in turn (two at 600 ms and over the slow link, and one of CUBIC with
-loss), 18 November 2026, the machine and method of the tables above:
+taken in turn (one of CUBIC and of curl where there is loss), 18 November
+2026, the machine and method of the tables above. BBR here is its third
+version, as iroh's QUIC has it:
 
 | Link, round trip | File | CUBIC | BBR | curl |
 | --- | ---: | ---: | ---: | ---: |
-| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.83 | **9.99** | 0.47 |
-| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | | 7.36 | |
-| 1 Gbit/s, 20 ms | 1 GiB | 107.9 | 109.4 | 111.3 |
-| 1 Gbit/s, 100 ms | 1 GiB | 92.0 | 95.5 | 26.6 |
-| 100 Mbit/s, 50 ms | 128 MiB | 10.70 | 10.64 | 11.05 |
-| 100 Mbit/s, 200 ms | 128 MiB | 8.95 | 9.30 | 9.40 |
-| 100 Mbit/s, 600 ms | 128 MiB | 5.59 | 6.34 | 5.05 |
-| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0564 | 0.0560 | 0.0569 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.71 | **8.36** | 0.43 |
+| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | 0.06 | **6.97** | 0.08 |
+| 1 Gbit/s, 20 ms | 1 GiB | 108.1 | 105.8 | |
+| 1 Gbit/s, 100 ms | 1 GiB | 91.1 | 85.7 | |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.78 | 8.82 | |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.44 | 5.08 | |
 
-- With loss it is twelve times as fast, and uses 84% of the link.
-- Without loss it is the same near the server and 4 to 13% faster far from
-  it.
+- With loss it is twelve times as fast at 50 ms, and over a hundred times
+  at 200 ms with 2% lost: nine seconds where CUBIC took eighteen minutes.
+  The curl run on that link was stopped after five minutes, at the rate
+  shown.
+- Without loss it is level at 100 Mbit/s and 200 ms, and 2 to 7% slower
+  on the other three links.
 - It does not send more to do so. The bytes that crossed the link for each
-  byte of the file were 1.053 to 1.056 with CUBIC and 1.053 to 1.063 with
-  BBR, over all the rows.
+  byte of the file were 1.053 to 1.054 with either.
 
 **What it does to others.** A `mux get` and a `curl` download of the same
-256 MiB file were started together over 100 Mbit/s at 50 ms, twice each.
-The link carries both in about 45 seconds. With fair shares both end
-then. One that ends well before has taken more than half while it ran.
-Seconds until each was done:
+128 MiB file were started together over 100 Mbit/s at 50 ms, three times
+each. The link carries both in about 22 seconds. With fair shares both
+end then. One that ends well before has taken more than half while it
+ran. Seconds until each was done:
 
 | The queue at the slow point | `mux get` with | `mux get` done | curl done |
 | --- | --- | ---: | ---: |
-| deep (100 ms) | (two curls, for comparison) | 42.9, 44.4 | 45.3, 45.2 |
-| | CUBIC | 26.7, 26.9 | 45.4, 45.4 |
-| | BBR | 45.4, 26.3 | 38.3, 45.4 |
-| shallow (10 ms) | (two curls, for comparison) | 46.9, 37.5 | 35.4, 45.2 |
-| | CUBIC | 27.5, 43.6 | 47.4, 47.3 |
-| | BBR | 23.5, 23.6 | 53.3, 53.3 |
+| deep (100 ms) | (two curls, for comparison) | 22.3, 22.8, 22.3 | 22.8, 16.7, 22.7 |
+| | CUBIC | 13.4, 13.7, 13.4 | 23.0, 22.9, 23.0 |
+| | BBR | 25.7, 36.6, 25.0 | 13.8, 13.7, 14.2 |
+| shallow (10 ms) | (two curls, for comparison) | 23.4, 22.8, 21.6 | 21.1, 21.4, 23.2 |
+| | CUBIC | 13.2, 13.3, 13.6 | 28.0, 23.1, 26.2 |
+| | BBR | 25.2, 24.0, 25.2 | 19.7, 21.4, 19.7 |
 
-- A `mux get` that is done after 27 seconds had about four fifths of the
-  link until then. With CUBIC that happens in three runs of four. It is
-  this QUIC library's CUBIC against Linux's, and it was not known before
-  this was measured.
-- With a deep queue BBR does the same or less. With a shallow queue it
-  took about nineteen twentieths of the link both times, and the curl
-  download got next to nothing until the transfer was over. That is a
-  known trait of this version of BBR, and the reason it is not made the
-  default here without being asked for.
+- With CUBIC, a `mux get` has about four fifths of the link while the
+  curl download runs, with either queue. It is this QUIC library's CUBIC
+  against Linux's, and it is what happens today by default.
+- With BBR and a shallow queue the two share about evenly, the curl
+  download a little ahead.
+- With BBR and a deep queue it is the other way round from CUBIC: the curl
+  download has about four fifths, and the transfer waits for it.
 
-The library calls its BBR experimental. Its newer version, BBR 3, is in
-the QUIC library that the move to iroh would bring
-([#19](https://github.com/yuvichh/mux/issues/19)).
+So of the two, BBR is the one that is kinder to what else is on the link,
+and by far the faster where packets are lost. What it costs is a few
+percent on a clean fast link, and its turn on a link with a deep queue
+that a TCP download is filling.
+
+The library used before iroh had the first version of BBR. That one gave
+9.99 MiB/s on the first row, was level or ahead on clean links, and with a
+shallow queue left a curl download a twentieth of the link. Its figures
+are in the history of this page.
+
+## The web and machines in one transfer
+
+A ticket can name a web address that holds the same file
+([#20](https://github.com/yuvichh/mux/issues/20)). A transfer then has
+suppliers of very different speeds, and its end used to wait for the
+slowest of them ([#104](https://github.com/yuvichh/mux/issues/104)).
+
+The made-up link again, with the web server behind 8 Mbit/s and 50 ms, and
+a machine that holds the file with nothing in its way. A 64 MiB file in
+chunks of 1 MiB. Seconds, three runs each:
+
+| Fetched from | Before | After |
+| --- | ---: | ---: |
+| The machine alone | 0.14, 0.14, 0.16 | 0.14, 0.14, 0.14 |
+| The machine and the web server | 9.30, 9.49, 9.30 | 1.16, 1.16, 1.16 |
+| The web server alone | 70.7 | |
+
+Before, the server sent 9.7 to 10.1 MiB of the 64. Eight chunks were being
+read from it when the machine had brought all the rest, and the transfer
+waited for them: 8 MiB at under a megabyte a second. After, it sent
+2.3 MiB, and none of that was waited for.
+
+Two things changed, and each is half of it.
+
+**What a slow supplier has still to ask for is taken over at once.** That
+was already the rule, but three things held it back. A fetcher that found
+nothing to take over looked again only a second later, and nothing told it
+when a slow run's speed became known. A take-over had to gain two seconds
+whoever took over, where one that is fifty times faster should need a
+fiftieth. And a machine, which answers many requests at once, was judged
+by how long one answer takes and not by how often one comes. Which
+supplier stored how much, in each tenth of a second of a 2 MiB transfer
+with a server paced at 640 KiB/s, is what showed the first of these:
+
+| Tenth of a second | The two machines | The web server |
+| --- | ---: | ---: |
+| 1st | 1.45 MiB | 36 KiB |
+| 2nd to 10th | nothing | about 64 KiB each |
+| 11th | 90 KiB | 28 KiB |
+
+The machines stood idle for nine tenths of a second and took over the
+rest on the second look. With the three changes that transfer takes 0.65 s
+where it took 1.5 s, and the server gives 4% of the file where it gave
+45%.
+
+**The chunk a slow supplier is reading is fetched from a quick one as
+well.** Whichever copy comes first is kept. A request is looked at after a
+second, and how much of its chunk has come says how long the whole will
+take, so a server that needs eight seconds for a megabyte is known for it
+before the megabyte is there. That one look is the second that the mixed
+transfer still takes over the machine alone.
+
+On the made-up network of the engine's tests, a supplier that needs eight
+seconds for a chunk beside one that needs three thousandths of one: the
+transfer ended after 8 s, after 3 s with the take-over alone, and after
+1 s with the look as well.
+
+With a server ten times as fast (80 Mbit/s) and a 256 MiB file:
+
+| Fetched from | Before | After |
+| --- | ---: | ---: |
+| The machine alone | 0.52, 0.52, 0.54 | 0.51, 0.52, 0.52 |
+| The machine and the web server | 3.29, 2.87, 3.10 | 1.18, 1.24, 1.21 |
+| The web server alone | 28.4 | |
+
+The server sent 31 to 35 MiB before and 14 to 16 MiB after. Here the
+server's first chunks take it under a second, so the mixed transfer ends
+when they come or at the look, whichever is first. It is still slower
+than the machine alone by what that takes: a transfer that a machine
+finishes in half a second is not helped by a server fifty times slower,
+and now costs a second for it and not three or nine.
+
+Nothing else got slower. `mux cp` from a web server alone, before and
+after, seconds, three runs each taken in turn:
+
+| Link, round trip | File | Before | After |
+| --- | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.61, 11.66, 11.60 | 11.57, 11.57, 11.57 |
+| 100 Mbit/s, 200 ms | 128 MiB | 13.23, 12.80, 12.83 | 12.81, 12.92, 12.98 |
+| 100 Mbit/s, 600 ms | 128 MiB | 28.39, 26.72, 26.04 | 27.04, 23.41, 26.44 |
+| 1 Gbit/s, 20 ms | 1 GiB | 9.26, 9.25, 9.21 | 9.19, 9.23, 9.21 |
+| 1 Gbit/s, 100 ms | 1 GiB | 10.81, 10.47, 10.70 | 11.00, 10.72, 10.49 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 17.17, 16.54, 17.93 | 13.61, 16.08, 15.99 |
+
+The server's log shows the same numbers of requests, connections and
+megabytes sent before and after, within what they vary by from run to run.
+The streams to one server are one supplier: none of them fetches a chunk
+another of them is reading.
+
+The two times at 600 ms, about 23 s and about 27 s, are in both columns
+and are not from this change. The slower runs have two or three
+connections more than the eight streams: a stream whose answer was cut
+off starts on a new connection, and at 600 ms that costs about two
+seconds each time ([#88](https://github.com/yuvichh/mux/issues/88)).
 
 ## Sending only what changed
 
@@ -747,7 +834,7 @@ three ways of finding what it can keep, on three kinds of change:
 
 - **Same place.** The new file is cut into chunks of one size, and a chunk
   is kept if the old file has the same bytes at the same place. This is
-  what a transfer does today when the digests are known.
+  the baseline when the digests are known.
 - **Search.** The same chunks, and a chunk is kept if the old file has its
   bytes anywhere. The old file is gone through once with a hash that rolls
   from each byte to the next, as `rsync` and `zsync` do.
@@ -803,13 +890,29 @@ Two things the measurement changed:
 | Asking a table at every byte whether a chunk starts there | First version: 170 MiB/s on a laptop. |
 | A bit for each of a million values of the hash, and the table asked only where the bit is set | Kept: 570 MiB/s on the same laptop. |
 
-A file made to collide could still make the hash match everywhere, so the
-search will stop after a set number of matches that were not the chunk,
-and fall back to comparing in place.
+A file can make the rolling hash match repeatedly with the wrong bytes.
+Per file, the receiver stops after at most 4,096 false matches, or one
+more than the number of full chunks in the old file, whichever is smaller.
+Each candidate must pass its BLAKE3 check.
+
+An end-to-end check used `mux cp TICKET FOLDER/` from Linux to macOS on
+the 10 Mbit/s LAN. The old file contained 24 MiB of pseudorandom data.
+The source inserted 4 KiB at offset 8 MiB + 29 bytes. With 1 MiB chunks,
+the earlier seeder supplied 16 MiB + 4 KiB of file data in 17.79 s.
+The seeder with hints supplied 1 MiB + 4 KiB in 1.89 s on the first
+request and 1.71 s on a second request to the same seeder. All copies
+matched the source byte for byte. Each timing is one run with a release
+seeder and debug receiver, starting after the ticket was ready.
+
+Computing hints during indexing increased sender user CPU for a 512 MiB
+Linux fixture from 0.22 s to 0.79 s (medians of three). The sender now
+computes hints on request, in pages covering at most 16 MiB of source
+data, and caches them for the lifetime of the share. Without a request,
+the same test measured 0.22 s before and 0.23 s after. Each page costs
+eight bytes of hash data per chunk.
 
 The rolling loop is written in safe Rust. It is the first candidate for
-the fast path below, once the search is part of a transfer and there is a
-link fast enough to be held up by it.
+the fast path below, if a link is fast enough for the scan to limit the transfer.
 
 ## The fast path
 

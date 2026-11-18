@@ -8,6 +8,7 @@ use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr};
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
 use model::pace;
 use model::place::Arrived;
+use model::search::ChunkHints;
 use model::ticket::NodeId;
 use noq_proto::congestion::Bbr3Config;
 use std::net::SocketAddr;
@@ -339,6 +340,46 @@ impl Connection {
         }
     }
 
+    /// Requests an optional table for a verified manifest. Its size comes
+    /// entirely from the manifest. Older servers may drop this stream.
+    pub(crate) async fn hints(
+        &self,
+        artifact: &model::artifact::Artifact,
+        wait: Duration,
+    ) -> Result<Option<ChunkHints>> {
+        let content = artifact.content_id();
+        let stalled = |_| Error::Transport("timed out waiting for chunk hints".into());
+        let reply = tokio::time::timeout(wait, self.request(&Request::Hints { content }))
+            .await
+            .map_err(stalled)??;
+        match reply {
+            (Response::Hints, mut recv) => {
+                let chunks = artifact.chunk_count();
+                // The verified manifest already holds a 32-byte digest for
+                // every 8-byte hint. A peer never controls an allocation.
+                let len = usize::try_from(chunks * 8)
+                    .map_err(|_| Error::Protocol("hint table too large".into()))?;
+                let page_len = proto::hint_page_chunks(artifact.chunk_size()) as usize * 8;
+                let mut bytes = vec![0; len];
+                for page in bytes.chunks_mut(page_len) {
+                    tokio::time::timeout(wait, recv.read_exact(page))
+                        .await
+                        .map_err(stalled)??;
+                }
+                if tokio::time::timeout(wait, recv.read(&mut [0]))
+                    .await
+                    .map_err(stalled)??
+                    .is_some()
+                {
+                    return Err(Error::Protocol("extra bytes after chunk hints".into()));
+                }
+                Ok(ChunkHints::decode(bytes, chunks))
+            }
+            (Response::NotFound, _) => Ok(None),
+            (other, _) => Err(unexpected(&other)),
+        }
+    }
+
     /// Asks which chunks of `content` the peer holds and which other peers it knows. `None`
     /// means the peer does not hold this content.
     ///
@@ -394,6 +435,7 @@ fn unexpected(response: &Response) -> Error {
         Response::Status(_) => "status",
         Response::Chunk { .. } => "chunk",
         Response::NotFound => "not-found",
+        Response::Hints => "hints",
     };
     Error::Protocol(format!("unexpected {kind} response"))
 }

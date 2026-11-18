@@ -172,6 +172,33 @@ async fn resumes_from_partial_data() {
     assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
 }
 
+/// A one-byte insertion moves every chunk after it, including matches
+/// that straddle two scan buffers. Two receivers use the same offer.
+#[tokio::test]
+async fn reuses_shifted_chunks_from_an_older_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("sample");
+    let old = pattern(12 * CHUNK, 17);
+    let mut new = old.clone();
+    new.insert(CHUNK / 2, 42);
+    fs::write(&path, &new).unwrap();
+    let seeder = node().await;
+    let (artifact, ticket) = seed(&seeder, &path);
+    let copy = async |name: &str| {
+        let dir = tmp.path().join(name);
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("sample"), &old).unwrap();
+        let report = get(&node().await, &ticket, &dir).await.unwrap();
+        let fetched = (CHUNK + 1) as u64;
+        assert_eq!(report.fetched_bytes, fetched);
+        assert_eq!(report.resumed_bytes, new.len() as u64 - fetched);
+        assert_eq!(fs::read(dir.join("sample")).unwrap(), new);
+    };
+    tokio::join!(copy("a"), copy("b"));
+    let share = seeder.share(artifact.content_id()).unwrap();
+    assert!(share.uploaded_bytes() >= 2 * (CHUNK + 1) as u64);
+}
+
 #[tokio::test]
 async fn a_complete_copy_fetches_nothing() {
     let tmp = tempfile::tempdir().unwrap();

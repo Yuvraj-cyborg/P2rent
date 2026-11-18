@@ -100,6 +100,10 @@ that holds it.
   it in, written with a slash at its end if it is not there yet.
 - A copy that was interrupted is carried on with when the command is run
   again: what is there is checked, and only what is missing is fetched.
+- If a file of the same name already exists, an indexed sender can supply
+  rolling hashes. The receiver searches that file for missing full chunks,
+  including chunks shifted by insertions or deletions. It verifies each
+  match against the ticket's manifest and fetches the rest.
 - `--streams` is not used. A machine is asked for as many chunks at once as
   its connection has room for. `--max-peers <N>` is the most machines to
   copy from at once, and is 8 unless it is given.
@@ -223,7 +227,7 @@ $ mux sync <SOURCE> <DESTINATION>
 
 Makes the destination hold what the source holds, and reads from the source
 only what the destination lacks or has in another version. The source is a
-web address, a file or a folder. The destination is the folder, or the
+ticket, web address, file or folder. The destination is the folder, or the
 file, that is made to match: `mux sync ./a ./b` makes `./b` match `./a`,
 where `mux cp ./a ./b/` puts a copy of `a` inside `b`.
 
@@ -233,6 +237,22 @@ remove	old-notes.txt
 add	run-7/config.json
 replace	run-7/model.bin
 ```
+
+On the sending machine, run `mux cp ./photos peer:` and keep it running.
+On the receiving machine, use the ticket it prints.
+
+```sh
+mux sync "$TICKET" ./backup/photos --dry-run
+mux sync "$TICKET" ./backup/photos
+```
+
+The ticket identifies one snapshot. To pull later edits, offer the updated
+folder and sync its new ticket to the same destination. Mux compares the
+verified manifest with the destination, then fetches the missing chunks of
+selected files from peers and any available web origins. It checks chunks
+recovered from an interrupted transfer or a previous version against the
+same manifest, including chunks shifted by an insertion. Add `--delete`
+to remove paths absent from the snapshot.
 
 Standard output has one line for each path where there was something to do,
 with a tab between the step and the path. `.` is the destination itself.
@@ -252,6 +272,7 @@ with a tab between the step and the path. `.` is the destination itself.
 | `--force` | Go on though more than half of what the destination has would be removed. |
 | `--no-trash` | Keep nothing of what is replaced or removed. |
 | `--streams`, `--stall-timeout` | As for `cp`. |
+| `--listen`, `--relay`, `--no-relay`, `--congestion` | How to reach the peers of a ticket, as for `cp`. |
 | `--json` | Write for a program: a `step` line for each step, the lines of the copy, and a `synced` line at the end, or `sync_plan` with `--dry-run`. |
 
 ### What keeps a sync from losing files
@@ -282,8 +303,11 @@ What a system cannot keep is not compared. On Windows that is a file's
 permissions beyond whether it may be written, and a folder's permissions
 and time.
 
-A file is synced with a file and a folder with a folder. The decision for
-each path is proven: see [proofs](../proofs/README.md).
+A file is synced with a file and a folder with a folder. Name the destination
+directly if its final path component is a symbolic link. Mux reserves the
+root-level name `.mux-trash` in every letter case and requires a real
+directory when it stores trash. The per-path rules are covered by the
+[mirror proofs](../proofs/README.md).
 
 ## For a program
 
@@ -303,8 +327,8 @@ field away or changes what one means.
 | `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked; and `origins`, a list of `address` and `unused`: why a copy would not read from that web address, or `null` if it would |
 | `offer` | A path is offered to other machines: by `cp` to `peer:`, by `seed`, or after a copy with `--seed`. | `ticket`, `name`, `bytes`, `files` |
 | `step` | One thing a sync does, or would do with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
-| `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` brought, and `trash`: where what was replaced or removed is, or `null` |
-| `sync_plan` | In place of `synced`, with `--dry-run`. | The same, without `trash` |
+| `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` in files added or replaced, `fetched` bytes read from suppliers, `kept` bytes reused in those files, and `trash` holding replacements and deletions (or `null`) |
+| `sync_plan` | In place of `synced`, with `--dry-run`. | The planned counts and `bytes` |
 | `error` | The command failed. It is the last line. | `code`, the exit code; `kind`, the same in a word; `message`; `hint`, or `null` |
 
 `checked` is `verified`, `consistent` or `already there`, as on standard

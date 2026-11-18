@@ -82,6 +82,8 @@ pub(super) enum Line<'a> {
         keep: usize,
         blocked: usize,
         bytes: u64,
+        fetched: u64,
+        kept: u64,
         trash: Option<&'a str>,
     },
     /// Everything a sync would do, from a dry run, after its steps.
@@ -261,9 +263,11 @@ mod tests {
                     keep: 5,
                     blocked: 6,
                     bytes: 7,
+                    fetched: 4,
+                    kept: 3,
                     trash: Some("./b/.mux-trash/1.000000002"),
                 },
-                r#"{"v":1,"event":"synced","source":"./a","destination":"./b","add":1,"replace":2,"touch":3,"remove":4,"keep":5,"blocked":6,"bytes":7,"trash":"./b/.mux-trash/1.000000002"}"#,
+                r#"{"v":1,"event":"synced","source":"./a","destination":"./b","add":1,"replace":2,"touch":3,"remove":4,"keep":5,"blocked":6,"bytes":7,"fetched":4,"kept":3,"trash":"./b/.mux-trash/1.000000002"}"#,
             ),
             (
                 Line::Error {

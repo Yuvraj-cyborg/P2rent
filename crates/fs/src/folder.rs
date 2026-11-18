@@ -4,10 +4,11 @@ use model::assembly::Assembly;
 use model::place::{
     Arrived, Begun, Capabilities, Description, Expected, Failure, Pending, Reader, Sink, Source,
 };
+use model::search::{ChunkHints, Searched, Wanted};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, Read, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -33,6 +34,8 @@ pub struct Folder(Arc<Inner>);
 struct Inner {
     tree: Arc<Tree>,
     root: PathBuf,
+    /// Stage even whole files when a sync needs to replace their metadata.
+    replace: bool,
     /// Whether each entry has its final name. Set after the rename, so a
     /// reader that sees it finds the file there.
     in_place: Vec<AtomicBool>,
@@ -43,6 +46,13 @@ struct Inner {
     skipped_links: AtomicUsize,
 }
 
+#[derive(Clone, Copy)]
+enum Start {
+    Whole,
+    Resume,
+    Replace,
+}
+
 impl Folder {
     /// Files that are already whole, as after indexing them. Nothing is
     /// read: the caller vouches for the content.
@@ -50,21 +60,30 @@ impl Folder {
     /// `root` is the file itself for a tree that is one file, or the
     /// directory that holds the tree.
     pub fn whole(tree: Arc<Tree>, root: PathBuf) -> Self {
-        Self::over(tree, root, true)
+        Self::over(tree, root, Start::Whole)
     }
 
     /// The tree inside `dir`, under its own name, to be filled in.
     /// Nothing is touched until [`Sink::begin`].
     pub fn inside(tree: Arc<Tree>, dir: &Path) -> Self {
         let root = dir.join(tree.name());
-        Self::over(tree, root, false)
+        Self::over(tree, root, Start::Resume)
     }
 
-    fn over(tree: Arc<Tree>, root: PathBuf, in_place: bool) -> Self {
+    /// The selected entries of a sync. Commit each selected file with the
+    /// requested metadata, including one whose old bytes all verify. The old
+    /// file may also have a hard link in the trash.
+    pub fn replacing(tree: Arc<Tree>, dir: &Path) -> Self {
+        let root = dir.join(tree.name());
+        Self::over(tree, root, Start::Replace)
+    }
+
+    fn over(tree: Arc<Tree>, root: PathBuf, start: Start) -> Self {
         Self(Arc::new(Inner {
             in_place: (0..tree.entries().len())
-                .map(|_| AtomicBool::new(in_place))
+                .map(|_| AtomicBool::new(matches!(start, Start::Whole)))
                 .collect(),
+            replace: matches!(start, Start::Replace),
             unflushed: Mutex::default(),
             skipped_links: AtomicUsize::new(0),
             tree,
@@ -153,7 +172,83 @@ impl Folder {
             }
         }
         self.0.skipped_links.store(skipped, Ordering::Relaxed);
-        Ok(Begun { held, named })
+        let older = found.iter().any(|file| file.older);
+        Ok(Begun { held, named, older })
+    }
+
+    /// The chunks of one file that its older version turned out to hold
+    /// somewhere, now copied to their places in the file being written.
+    fn look_through_one(
+        &self,
+        file: usize,
+        held: &Bitfield,
+        expected: &Expected<'_>,
+        hints: &ChunkHints,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Result<Vec<u64>> {
+        let tree = &self.0.tree;
+        if !tree.entries()[file].is_file() || self.is_in_place(file) {
+            return Ok(Vec::new());
+        }
+        // A short last chunk can still be kept at its original offset.
+        let size = tree.chunk_size();
+        let Some(old) = open_regular(&self.final_path(file))? else {
+            return Ok(Vec::new());
+        };
+        let old_len = old.metadata()?.len();
+        if old_len < u64::from(size) {
+            return Ok(Vec::new());
+        }
+        let misses = (old_len / u64::from(size) + 1).min(FALSE_FINDS);
+        let mut wanted = Wanted::new(size, misses);
+        for index in tree.file_chunks(file).filter(|&index| !held.get(index)) {
+            let whole = tree.locate(index).is_some_and(|at| at.len == size);
+            if let (true, Some(hint), Some(digest)) = (whole, hints.get(index), expected(index)) {
+                wanted.add(index, hint, digest);
+            }
+        }
+        if wanted.left() == 0 {
+            return Ok(Vec::new());
+        }
+        let mut old = old.take(old_len);
+        let target = OpenOptions::new().write(true).open(self.part_path(file))?;
+
+        let mut found = Vec::new();
+        // Keep the unsearched suffix between reads for matches that
+        // straddle two buffers.
+        let mut block = vec![0; 2 * size as usize];
+        let mut filled = 0;
+        loop {
+            let read = match old.read(&mut block[filled..]) {
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                other => other?,
+            };
+            if read == 0 {
+                return Ok(found);
+            }
+            filled += read;
+            examined(read as u64);
+            let mut written = Ok(());
+            let ended = wanted.search(&block[..filled], &mut |index, from| {
+                let bytes = &block[from..from + size as usize];
+                let put = tree
+                    .locate(index)
+                    .ok_or_else(out_of_range)
+                    .and_then(|place| io::write_all_at(&target, bytes, place.offset));
+                match put {
+                    Ok(()) => found.push(index),
+                    Err(failed) => written = Err(failed),
+                }
+            });
+            written?;
+            match ended {
+                Searched::On(kept) => {
+                    block.copy_within(kept..filled, 0);
+                    filled -= kept;
+                }
+                Searched::Done | Searched::GaveUp => return Ok(found),
+            }
+        }
     }
 
     /// Reads `len` bytes of `file` at `offset`, from its part file or from
@@ -396,6 +491,7 @@ impl Folder {
             return Ok(Found {
                 valid: Vec::new(),
                 in_place: true,
+                older: false,
             });
         };
         let chunks = tree.file_chunks(file);
@@ -404,13 +500,17 @@ impl Folder {
 
         // Whatever has the final name is only ever read.
         let existing = open_regular(&path)?;
-        let reusable = match &existing {
-            Some(old) => self.verify(file, old, expected, examined)?,
-            None => Vec::new(),
+        let (reusable, old_size) = match &existing {
+            Some(old) => (
+                self.verify(file, old, expected, examined)?,
+                old.metadata()?.len(),
+            ),
+            None => (Vec::new(), 0),
         };
-        if let Some(old) = &existing
+        if !self.0.replace
+            && existing.is_some()
             && reusable.len() as u64 == chunks.end - chunks.start
-            && old.metadata()?.len() == size
+            && old_size == size
         {
             // A part file beside a whole file is left over from a download
             // of something else.
@@ -418,6 +518,7 @@ impl Folder {
             return Ok(Found {
                 valid: reusable,
                 in_place: true,
+                older: false,
             });
         }
 
@@ -452,9 +553,17 @@ impl Folder {
                 .collect::<Result<Vec<Option<u64>>>>()?;
             valid.extend(copied.into_iter().flatten());
         }
+        let chunk_size = u64::from(tree.chunk_size());
+        let whole_chunks = size / chunk_size;
+        let older = old_size >= chunk_size && whole_chunks > 0 && {
+            let end = chunks.start + whole_chunks;
+            let held = valid.iter().filter(|&&index| index < end).count() as u64;
+            held < whole_chunks
+        };
         Ok(Found {
             valid,
             in_place: false,
+            older,
         })
     }
 
@@ -640,6 +749,29 @@ impl Sink for Folder {
         placed(self.prepare(expected, examined))
     }
 
+    fn search(
+        &self,
+        begun: &mut Begun,
+        expected: &Expected<'_>,
+        hints: &ChunkHints,
+        examined: &(dyn Fn(u64) + Sync),
+    ) -> Placed<()> {
+        let tree = &self.0.tree;
+        let found = (0..tree.entries().len())
+            .into_par_iter()
+            .map(|file| self.look_through_one(file, &begun.held, expected, hints, examined))
+            .collect::<Result<Vec<_>>>();
+        let mut assembly = Assembly::new(tree.layout().clone(), begun.held.clone());
+        for index in placed(found)?.into_iter().flatten() {
+            begun.held.set(index);
+            if let Some(file) = assembly.add(index) {
+                placed(self.put_in_place(file))?;
+                begun.named.push(file);
+            }
+        }
+        Ok(())
+    }
+
     fn write(&self, file: usize, offset: u64, data: &[u8]) -> Placed<()> {
         placed(self.write_at(file, offset, data))
     }
@@ -679,6 +811,8 @@ struct Found {
     valid: Vec<u64>,
     /// Whether that was the file under its final name.
     in_place: bool,
+    /// An older regular file could supply at least one missing full chunk.
+    older: bool,
 }
 
 /// Makes sure `path` is a directory, creating it if nothing is there. A link
@@ -695,6 +829,12 @@ fn ensure_directory(path: &Path) -> Result<()> {
         Err(e) => Err(e),
     }
 }
+
+/// How many places in an older version may have the rolling hash of a
+/// wanted chunk and not its bytes before a search of it gives up. Far more
+/// than chance gives a file of any size: it is a file made to do this that
+/// is stopped.
+const FALSE_FINDS: u64 = 4096;
 
 /// Opens `path` for reading, or returns `None` if nothing is there.
 fn open_regular(path: &Path) -> Result<Option<File>> {
