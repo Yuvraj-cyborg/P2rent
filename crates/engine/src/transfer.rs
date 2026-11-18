@@ -6,7 +6,7 @@
 //! place. What a supplier is, a machine or a web server or a folder, is
 //! nothing to this module.
 
-use crate::claims::{Claim, Claims, Shared};
+use crate::claims::{Claim, Claims, Next, Reserved, Shared, Size};
 use crate::store::{Put, Store};
 use crate::sync;
 use model::artifact::Bitfield;
@@ -15,7 +15,7 @@ use model::place::{Arrived, Event, Failure, Observer, Supplier, SupplierId, Supp
 use model::retry;
 use model::schedule::Owner;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
@@ -50,9 +50,10 @@ const MAX_OTHERS_PER_STATUS: usize = 64;
 pub struct Options {
     /// Suppliers to fetch from at the same time.
     pub max_suppliers: usize,
-    /// Chunks requested in parallel from each supplier whose requests are
-    /// each a connection of their own. A supplier that takes every request
-    /// on one connection is asked for as many as its route has room for.
+    /// Requests made at the same time to each supplier whose requests are
+    /// each a connection of their own. Each is for a run of chunks. A
+    /// supplier that takes every request on one connection is asked for as
+    /// many chunks at once as its route has room for.
     pub requests_per_supplier: usize,
     /// Give up when next to nothing has arrived for this long.
     pub stall_timeout: Duration,
@@ -261,6 +262,11 @@ struct Run {
     /// Woken when a chunk is released or the transfer completes.
     wake: Arc<Notify>,
     claims: Shared,
+    /// When the transfer started: what its times are counted from.
+    started: Instant,
+    /// How many pipelines are taking runs of chunks, each with a request
+    /// of its own.
+    streams: AtomicU64,
     /// The number the next supplier fetches under.
     owners: AtomicU32,
     found: mpsc::UnboundedSender<Arc<dyn Supplier>>,
@@ -296,6 +302,8 @@ impl Run {
             observer,
             wake,
             claims,
+            started: Instant::now(),
+            streams: AtomicU64::new(0),
             owners: AtomicU32::new(0),
             found,
             stored_from: Mutex::new(HashMap::new()),
@@ -372,10 +380,21 @@ impl Run {
         self.owners.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Reserves for `owner` a missing chunk that the supplier holds,
-    /// scanning from `cursor`.
-    fn claim(&self, owner: Owner, held: &Bitfield, cursor: &mut u64) -> Option<Claim> {
-        Claims::claim(&self.claims, owner, held, cursor)
+    /// The time, in microseconds since the transfer started.
+    fn now(&self) -> u64 {
+        micros(self.started.elapsed())
+    }
+
+    /// Reserves for `owner` a run of missing chunks that the supplier
+    /// holds, looking from `cursor` on.
+    fn reserve(
+        &self,
+        owner: Owner,
+        held: &Bitfield,
+        cursor: &mut u64,
+        size: Size,
+    ) -> Option<Reserved> {
+        Claims::reserve(&self.claims, owner, held, cursor, size, self.now())
     }
 
     /// Records a chunk that the store has verified and written.
@@ -504,35 +523,42 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
 
     let mut workers = JoinSet::new();
     let owner = run.new_owner();
-    let pipeline = |cursor: Cursor, paced: Option<Arc<Paced>>| Pipeline {
+    let capabilities = supply.capabilities();
+    // Every pipeline looks for its next chunks from one place, so that
+    // between them they take the chunks in a row. One stream is read from
+    // its start.
+    let from = if capabilities.random_access {
+        starting_point(&run.me, &id, chunks)
+    } else {
+        0
+    };
+    let cursor = Cursor::new(Mutex::new(from));
+    // A supplier that takes every request on one connection is asked for
+    // a chunk with each, by as many pipelines as its route has room for.
+    let paced = (capabilities.random_access && capabilities.multiplexed).then(|| {
+        let most = pace::most(u64::from(run.store.tree().chunk_size()));
+        Arc::new(Paced::new(most))
+    });
+    let pipeline = |paced: Option<Arc<Paced>>| Pipeline {
         run: run.clone(),
         supply: supply.clone(),
         from: id,
         view: view.clone(),
         owner,
-        cursor,
+        cursor: cursor.clone(),
         paced,
+        in_order: !capabilities.random_access,
     };
-    let capabilities = supply.capabilities();
-    let requests = run.options.requests_per_supplier.max(1) as u64;
-    // A supplier that takes every request on one connection is asked for
-    // the chunks in a row from one place, by as many pipelines as its
-    // route has room for.
-    let paced = (capabilities.random_access && capabilities.multiplexed).then(|| {
-        let most = pace::most(u64::from(run.store.tree().chunk_size()));
-        let from = starting_points(&run.me, &id, chunks, 1).next().unwrap_or(0);
-        Arc::new(Paced::new(most, from))
-    });
-    if paced.is_none() {
-        let cursors: Vec<u64> = if capabilities.random_access {
-            starting_points(&run.me, &id, chunks, requests).collect()
-        } else {
-            // One stream is read by one pipeline, from its start.
-            vec![0]
-        };
-        for cursor in cursors {
-            workers.spawn(work(pipeline(Cursor::new(Mutex::new(cursor)), None)));
-        }
+    // Any other makes a set number of requests, each for a run of chunks:
+    // one, if it gives its files only from their start.
+    let requests = match (&paced, capabilities.random_access) {
+        (Some(_), _) => 0,
+        (None, true) => run.options.requests_per_supplier.max(1) as u64,
+        (None, false) => 1,
+    };
+    let _streams = Streams::new(&run, requests);
+    for _ in 0..requests {
+        workers.spawn(work(pipeline(None)));
     }
 
     let mut ticker = tokio::time::interval(STATUS_INTERVAL);
@@ -541,7 +567,7 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
     loop {
         if let Some(paced) = &paced {
             for _ in 0..paced.to_start() {
-                workers.spawn(work(pipeline(paced.cursor.clone(), Some(paced.clone()))));
+                workers.spawn(work(pipeline(Some(paced.clone()))));
             }
         }
         tokio::select! {
@@ -566,17 +592,34 @@ async fn supply(run: Arc<Run>, supplier: Arc<dyn Supplier>) -> Ended {
     }
 }
 
-/// Where a pipeline looks for its next chunk. Pipelines that share one take
-/// the chunks in a row between them.
+/// Where the pipelines of one supplier look for their next chunks. Sharing
+/// it, they take the chunks in a row between them.
 type Cursor = Arc<Mutex<u64>>;
+
+/// Counts pipelines as taking runs for as long as it lives.
+struct Streams<'a> {
+    run: &'a Run,
+    count: u64,
+}
+
+impl<'a> Streams<'a> {
+    fn new(run: &'a Run, count: u64) -> Self {
+        run.streams.fetch_add(count, Ordering::Relaxed);
+        Self { run, count }
+    }
+}
+
+impl Drop for Streams<'_> {
+    fn drop(&mut self) {
+        self.run.streams.fetch_sub(self.count, Ordering::Relaxed);
+    }
+}
 
 /// The pipelines of one supplier that takes many requests at once: how many
 /// there are, and how many there are to be.
 struct Paced {
     /// The most there may be.
     most: u64,
-    /// Where all of them look for their next chunk.
-    cursor: Cursor,
     counts: Mutex<Counts>,
     /// Told when there are to be more pipelines than there are.
     more: Notify,
@@ -590,11 +633,10 @@ struct Counts {
 }
 
 impl Paced {
-    /// One pipeline to begin with, which looks for chunks from `from` on.
-    fn new(most: u64, from: u64) -> Self {
+    /// One pipeline to begin with.
+    fn new(most: u64) -> Self {
         Self {
             most,
-            cursor: Cursor::new(Mutex::new(from)),
             counts: Mutex::new(Counts {
                 wanted: 1,
                 running: 0,
@@ -605,9 +647,8 @@ impl Paced {
 
     /// Takes in how long a chunk took to come.
     fn learn(&self, taken: Duration) {
-        let millis = u64::try_from(taken.as_millis()).unwrap_or(u64::MAX);
         let mut counts = sync::lock(&self.counts);
-        counts.wanted = pace::next(counts.wanted, millis, self.most);
+        counts.wanted = pace::next(counts.wanted, millis(taken), self.most);
         if counts.wanted > counts.running {
             self.more.notify_one();
         }
@@ -671,11 +712,15 @@ struct Pipeline {
     owner: Owner,
     cursor: Cursor,
     /// Set if the supplier takes as many requests as its route has room
-    /// for.
+    /// for. Each is then for one chunk.
     paced: Option<Arc<Paced>>,
+    /// Whether the supplier gives its files only from their start. Its one
+    /// pipeline then takes every chunk it can in a row.
+    in_order: bool,
 }
 
-/// One request pipeline: claim a chunk, fetch it, and hand it to the store.
+/// One request pipeline: reserve a run of chunks, fetch them one after
+/// another, and hand each to the store.
 async fn work(pipeline: Pipeline) -> Result<(), Ended> {
     let Pipeline {
         run,
@@ -685,82 +730,133 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
         owner,
         cursor,
         paced,
+        in_order,
     } = pipeline;
-    // The chunk that follows the last one this pipeline fetched.
-    let mut reading_on: Option<u64> = None;
+    // How long a chunk took to come over the last run, in microseconds.
+    let mut micros_each = 0;
     loop {
         if run.is_complete() {
             return Ok(());
         }
-        let claim = {
-            let mut cursor = sync::lock(&cursor);
-            run.claim(owner, &sync::read(&view).held, &mut cursor)
+        let size = match (&paced, in_order) {
+            (Some(_), _) => Size::One,
+            (None, true) => Size::Run {
+                streams: 1,
+                micros_each,
+            },
+            (None, false) => Size::Run {
+                streams: run.streams.load(Ordering::Relaxed),
+                micros_each,
+            },
         };
-        // Going elsewhere, or nowhere for now: what the supplier kept open
-        // to be read on from is not going to be.
-        let next = claim.as_ref().map(|claim| claim.index);
-        if let Some(following) = reading_on
-            .take()
-            .filter(|&following| next != Some(following))
-        {
-            supply.leave(following);
-        }
-        let Some(claim) = claim else {
-            // The supplier has nothing we need right now. It may gain
-            // chunks, or another supplier may release one it holds.
+        let reserved = {
+            let mut cursor = sync::lock(&cursor);
+            run.reserve(owner, &sync::read(&view).held, &mut cursor, size)
+        };
+        let Some(mut reserved) = reserved else {
+            // Nothing is free that the supplier holds. Another pipeline
+            // may have more still to ask for than it will soon get to:
+            // then what this one could fetch of it in that time is put
+            // back, to be had from here.
+            let spared = {
+                let held = &sync::read(&view).held;
+                run.claims.spare(held, run.now(), micros_each)
+            };
+            if spared {
+                continue;
+            }
+            // Or the supplier may gain chunks, or another may release one
+            // it holds.
             tokio::select! {
                 () = run.wake.notified() => {}
                 () = tokio::time::sleep(IDLE_POLL) => {}
             }
             continue;
         };
-        let index = claim.index;
 
-        let asked = Instant::now();
-        let data = match fetch(&run, &*supply, index).await {
-            Some(Ok(data)) => data,
-            Some(Err(Failure::Absent(_))) => {
-                sync::write(&view).refuse(index);
-                continue;
-            }
-            Some(Err(failure)) => return Err(Ended::by(failure)),
-            None => {
-                return Err(Ended::Failed(format!(
-                    "chunk {index} did not arrive in time"
-                )));
-            }
-        };
-        if let Some(paced) = &paced {
-            paced.learn(asked.elapsed());
-        }
-        reading_on = Some(index + 1);
+        let (began, mut fetched) = (Instant::now(), 0u64);
+        loop {
+            let (claim, following) = match reserved.next() {
+                Next::Chunk(claim, following) => (claim, following),
+                Next::Over => break,
+                Next::Cut(at) => {
+                    // What the supplier kept open to be read on from is
+                    // not going to be.
+                    supply.leave(at);
+                    break;
+                }
+            };
+            let index = claim.index;
 
-        // From here the chunk is seen through, whatever becomes of this
-        // supplier: it is stored, counted and marked done as one step.
-        match tokio::spawn(keep(run.clone(), claim, from, data)).await {
-            Ok(Ok(Put::Refused)) => {
-                return Err(Ended::Dropped(format!("chunk {index} failed verification")));
+            let asked = Instant::now();
+            let data = match fetch(&run, &*supply, index, following).await {
+                Some(Ok(data)) => data,
+                Some(Err(Failure::Absent(_))) => {
+                    sync::write(&view).refuse(index);
+                    continue;
+                }
+                Some(Err(failure)) => return Err(Ended::by(failure)),
+                None => {
+                    return Err(Ended::Failed(format!(
+                        "chunk {index} did not arrive in time"
+                    )));
+                }
+            };
+            let taken = asked.elapsed();
+            if let Some(paced) = &paced {
+                paced.learn(taken);
             }
-            Ok(Ok(_)) => {}
-            Ok(Err(failure)) => return Err(Ended::Fatal(failure)),
-            Err(e) => {
-                return Err(Ended::Failed(format!(
-                    "storing chunk {index} was cut short: {e}"
-                )));
+            // How fast the run is going is taken over the whole of it. A
+            // link gives its bytes in bursts, and one chunk says little:
+            // judged by its last chunk, the stream that happens to finish
+            // first looks faster than it is and takes too much.
+            fetched += 1;
+            micros_each = (micros(began.elapsed()) / fetched).max(1);
+            reserved.learn(micros_each, run.now());
+
+            // From here the chunk is seen through, whatever becomes of this
+            // supplier: it is stored, counted and marked done as one step.
+            match tokio::spawn(keep(run.clone(), claim, from, data)).await {
+                Ok(Ok(Put::Refused)) => {
+                    return Err(Ended::Dropped(format!("chunk {index} failed verification")));
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(failure)) => return Err(Ended::Fatal(failure)),
+                Err(e) => {
+                    return Err(Ended::Failed(format!(
+                        "storing chunk {index} was cut short: {e}"
+                    )));
+                }
             }
-        }
-        if paced.as_ref().is_some_and(|paced| paced.is_over()) {
-            return Ok(());
+            if paced.as_ref().is_some_and(|paced| paced.is_over()) {
+                return Ok(());
+            }
         }
     }
 }
 
-/// Fetches chunk `index`, for as long as it keeps coming. `None` if next to
-/// nothing of it arrived for [`CHUNK_TIMEOUT`]: a chunk that is slow is
-/// waited for, and one that is not coming is not.
-async fn fetch(run: &Run, supply: &dyn Supply, index: u64) -> Option<Result<Vec<u8>, Failure>> {
+/// A length of time in whole milliseconds.
+fn millis(time: Duration) -> u64 {
+    u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A length of time in whole microseconds.
+fn micros(time: Duration) -> u64 {
+    u64::try_from(time.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Fetches chunk `index`, after which `following` more are to be asked
+/// for, for as long as it keeps coming. `None` if next to nothing of it
+/// arrived for [`CHUNK_TIMEOUT`]: a chunk that is slow is waited for, and
+/// one that is not coming is not.
+async fn fetch(
+    run: &Run,
+    supply: &dyn Supply,
+    index: u64,
+    following: u64,
+) -> Option<Result<Vec<u8>, Failure>> {
     let arrived = Arrived::default();
-    let mut chunk = supply.chunk(index, &arrived);
+    let mut chunk = supply.chunk(index, following, &arrived);
     let mut watch = tokio::time::interval_at(Instant::now() + WATCH, WATCH);
     watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // What had arrived when the request last made progress, and when.
@@ -803,20 +899,12 @@ async fn keep(
     Ok(put)
 }
 
-/// Where each of a supplier's `requests` pipelines starts looking for a
-/// chunk: spread evenly round the ring of chunks, from a place that differs
-/// for each pair of ends. Ends that start at the same moment therefore
-/// collect different chunks first and can trade them afterwards.
-fn starting_points(
-    me: &SupplierId,
-    supplier: &SupplierId,
-    chunks: u64,
-    requests: u64,
-) -> impl Iterator<Item = u64> {
-    let total = chunks.max(1);
-    // Reduced first, so that adding a pipeline's share cannot overflow.
-    let origin = stagger(me, supplier) % total;
-    (0..requests).map(move |pipeline| (origin + pipeline * total / requests) % total)
+/// Where the pipelines of a supplier start looking for chunks: a place on
+/// the ring of chunks that differs for each pair of ends. Ends that start
+/// at the same moment therefore collect different chunks first and can
+/// trade them afterwards.
+fn starting_point(me: &SupplierId, supplier: &SupplierId, chunks: u64) -> u64 {
+    stagger(me, supplier) % chunks.max(1)
 }
 
 /// A starting offset that differs for each pair of ends.
@@ -886,34 +974,21 @@ mod tests {
             let source = source_id(number);
             assert_ne!(source, HERE);
             assert_ne!(source, source_id(number + 1));
-            let points: Vec<u64> = starting_points(&HERE, &source, 8, 4).collect();
-            assert_eq!(points, [0, 2, 4, 6]);
+            assert_eq!(starting_point(&HERE, &source, 8), 0);
         }
     }
 
     #[test]
-    fn pipelines_start_evenly_spread_round_the_chunks() {
-        let (me, supplier) = (id(0), id(100));
-        let origin = stagger(&me, &supplier) % 8;
-        let points: Vec<u64> = starting_points(&me, &supplier, 8, 4).collect();
-        let spread = [0, 2, 4, 6].map(|step| (origin + step) % 8);
-        assert_eq!(points, spread);
-
-        // Three pipelines over ten chunks: as even as whole numbers allow.
-        let origin = stagger(&me, &supplier) % 10;
-        let points: Vec<u64> = starting_points(&me, &supplier, 10, 3).collect();
-        assert_eq!(points, [0, 3, 6].map(|step| (origin + step) % 10));
-    }
-
-    #[test]
     fn a_starting_point_is_always_a_chunk() {
-        // The last pair of ends has the largest stagger there is, which
-        // must not overflow on the way to a starting point.
+        let (me, supplier) = (id(0), id(100));
+        assert_eq!(
+            starting_point(&me, &supplier, 10),
+            stagger(&me, &supplier) % 10
+        );
+        // The last pair of ends has the largest stagger there is.
         for (me, supplier) in [(id(7), id(9)), ([0xff; 32], [0; 32])] {
-            for (chunks, requests) in [(0, 4), (1, 4), (3, 8), (u64::MAX / 8, 8)] {
-                let points: Vec<u64> = starting_points(&me, &supplier, chunks, requests).collect();
-                assert_eq!(points.len() as u64, requests);
-                assert!(points.iter().all(|&point| point < chunks.max(1)));
+            for chunks in [0, 1, 3, u64::MAX / 8] {
+                assert!(starting_point(&me, &supplier, chunks) < chunks.max(1));
             }
         }
     }

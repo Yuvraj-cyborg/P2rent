@@ -31,7 +31,7 @@ has. Otherwise it is the name the copy is given.
 | --- | --- |
 | `--hash <DIGEST>` | For a source on the web. The digest the source must have: `blake3:` or `sha256:` and 64 hex characters. A copy that does not have it is not kept. |
 | `--mirror <URL>` | For a source on the web. Another address that holds the same file, read together with the source. Repeatable. It needs a digest of the file, from `--hash` or from a server that sends one: nothing else tells that two servers hold the same bytes. |
-| `--streams <N>` | Parts of a file to fetch at once from each source. The default is 4. |
+| `--streams <N>` | Requests to make at once to each source, each for a part of a file. The default is 4. With 1, a file is one request. |
 | `--stall-timeout <SECONDS>` | Give up after this long with next to nothing received: under about a kilobyte a second on every stream. A slow link is waited for. The default is 60. |
 | `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
 | `--json` | Write for a program: see [below](#for-a-program). |
@@ -68,6 +68,17 @@ was written, its size in bytes, and how far it was checked.
 | `verified` | Every byte was compared with a digest given for the file. |
 | `consistent` | No digest was known. The source stayed what it was throughout. For a folder, nothing checks that: its files are read once, as they are. |
 | `already there` | Every file was there with the size and time the source gives, and nothing was read. |
+
+## `mux seed` and `mux get`
+
+`mux seed <PATH>...` offers files or folders to other machines and prints a
+ticket. `mux get <TICKET>` fetches what the ticket names, from every
+machine that has it. `--help` lists their flags. One of them is about
+speed:
+
+| Flag | |
+| --- | --- |
+| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: many times faster over a link that loses one packet in a hundred, and somewhat slower than `cubic` on a link that loses none. It is the sender's choice, so give it to `mux seed`. |
 
 ## `mux probe`
 

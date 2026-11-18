@@ -32,11 +32,14 @@ httpdate = "1"
 indicatif = "0.18"
 iroh = { version = "1.4", default-features = false, features = ["tls-ring"] }
 iroh-relay = { version = "1.4", default-features = false, features = ["server"] }
+# The QUIC library inside iroh, named for the one thing iroh does not pass
+# on: the congestion control that is not the default.
+noq-proto = { version = "1.4", default-features = false }
 nix = { version = "0.32", default-features = false, features = ["resource"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 proptest = "1.12"
 rayon = "1.10"
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-platform-verifier = "0.7"

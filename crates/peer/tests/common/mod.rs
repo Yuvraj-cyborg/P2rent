@@ -22,7 +22,7 @@ pub(crate) fn direct() -> Options {
     Options {
         listen: Some(localhost()),
         relays: Relays::Off,
-        direct: true,
+        ..Options::default()
     }
 }
 

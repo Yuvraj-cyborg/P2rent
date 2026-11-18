@@ -9,7 +9,7 @@ async fn endpoint(identity: &Identity) -> Endpoint {
     let options = Options {
         listen: Some("127.0.0.1:0".parse().unwrap()),
         relays: Relays::Off,
-        direct: true,
+        ..Options::default()
     };
     Endpoint::bind(identity, &options).await.unwrap()
 }

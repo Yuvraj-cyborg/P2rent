@@ -317,6 +317,24 @@ is the congestion control:
 [#82](https://github.com/yuvichh/mux/issues/82) has the first figures for
 both.
 
+### The other congestion control
+
+`--congestion bbr` is BBR in its third version here, where the library
+used before had the first. The figures under "Packets lost for other
+reasons" below are for that first version, and have not all been made
+again. One run each, when the switch was first tried, MiB/s:
+
+| Link, round trip | CUBIC | BBR 3 |
+| --- | ---: | ---: |
+| 100 Mbit/s, 50 ms, 1% loss | 0.57 | 9.07 |
+| 1 Gbit/s, 100 ms | 90.4 | 84.3 |
+| 100 Mbit/s, 50 ms | 10.6 | 9.7 |
+
+So it is as much faster where packets are lost, and 7 to 9% slower than
+CUBIC on these two clean links, where the first version was level or
+ahead. How it shares a link with another download has not been measured
+for this version: it is meant to be fairer than the first.
+
 ### Between two real machines
 
 A laptop on Wi-Fi fetched 20 MiB from a machine on the same home network,
@@ -453,11 +471,13 @@ a lower priority than the one before.
   congestion control, which halves its rate at each loss. `mux get` is one
   QUIC connection and does twice as well as one TCP connection, but tools
   that open four connections get four times one. A congestion control that
-  does not take every loss for congestion (BBR) is the thing to measure:
-  [#82](https://github.com/yuvichh/mux/issues/82).
-- **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl:
-  see "A reader left open" below, and
-  [#84](https://github.com/yuvichh/mux/issues/84).
+  does not take every loss for congestion (BBR) was measured next: see
+  "Packets lost for other reasons" below
+  ([#82](https://github.com/yuvichh/mux/issues/82)).
+- **`mux cp` from the web, far away.** At 200 ms it reached 62% of curl.
+  It is faster than curl there now: see "A reader left open" and
+  "Requests that end where the reading does" below
+  ([#84](https://github.com/yuvichh/mux/issues/84)).
 - **curl at 1 Gbit/s and 100 ms** is held to 26.5 MiB/s by the size of the
   receive window that Linux gives one TCP connection. It is the figure for
   one connection with nothing tuned, not a limit of TCP.
@@ -503,11 +523,175 @@ with the builds taken in turn, and the range:
 | 100 Mbit/s, 200 ms | 128 MiB | 6.6 (6.3 to 6.7) | 7.6 (7.5 to 7.8) | 9.3 |
 | 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 1.91 | 1.91 | 0.48 |
 
-What is left is the number of requests. Near the end of a copy a stream
-that has finished its part takes half of what another has left, again and
-again, and each time that is a new connection that starts slowly. One
-stream is as fast as curl on these links, and four are still slower where
-one connection can fill the link by itself. That is the rest of #84.
+What was left was the number of requests. Near the end of a copy a stream
+that had finished its part took half of what another had left, again and
+again, and each time that was a new connection that started slowly. One
+stream was as fast as curl on these links, and four were still slower
+where one connection can fill the link by itself.
+
+### Requests that end where the reading does
+
+Both faults had one root: a request never ended by itself, so a stream
+that ran into what another had fetched had to cut its answer off. That
+threw the connection away and wasted what was on its way.
+
+A stream now reserves a run of chunks and asks for those and no more. The
+answer ends by itself and the connection carries the next request. See
+"Transfer" in [architecture.md](architecture.md#transfer) for how long a
+run is.
+
+**The design was timed before it was built.** curl can fetch parts of a
+file over connections it uses again (`curl -Z --parallel-max 4` with a
+list of ranges), so it can act the design out. 128 MiB over 100 Mbit/s at
+200 ms:
+
+| | Seconds |
+| --- | ---: |
+| curl, one request | 13.4 |
+| 4 parts over 4 connections | 13.2 to 13.4 |
+| 8 parts over 4 connections | 12.6 |
+| 16 parts over 4 connections | 12.9 |
+| 32 parts over 4 connections | 14.0 |
+
+Too few parts, and the connections do not end together. Too many, and
+each start of a part costs a round trip.
+
+**The result.** `mux cp` from nginx with four streams against curl, MiB/s,
+the median of three runs with the tools taken in turn, and the range
+(four runs of each mux for the lossy row, and one of curl). 18 November
+2026, the machine and method of the tables above:
+
+| Link, round trip | File | curl | `mux cp` before | `mux cp` after |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms | 128 MiB | 11.05 (11.02 to 11.06) | 9.89 (9.89 to 10.16) | 11.09 (11.04 to 11.09) |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.40 (9.27 to 9.60) | 7.93 (7.59 to 8.18) | **9.78** (9.78 to 9.80) |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.05 (4.93 to 5.21) | 3.93 (3.87 to 4.08) | **5.49** (5.34 to 5.54) |
+| 1 Gbit/s, 20 ms | 1 GiB | 111.3 (111.0 to 111.7) | 107.6 (105.5 to 107.6) | 111.0 (110.9 to 111.1) |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.6 (26.5 to 26.6) | 86.7 (85.4 to 95.6) | **91.1** (90.1 to 92.1) |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.47 | 1.90 (1.85 to 1.93) | **1.91** (1.89 to 1.92) |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0569 | 0.0566 | 0.0569 |
+
+- Where one connection fills the link (the first, fourth and last rows)
+  `mux cp` is now as fast as curl, to within half of one per cent. No
+  tool can be faster there: the link is the limit.
+- Far from the server it is faster than curl, by 4% at 200 ms and 9% at
+  600 ms. Four connections get up to speed sooner than one.
+- Where one connection is held back by itself, it stays three to four
+  times as fast as curl: by the receive window at 1 Gbit/s and 100 ms, and
+  by loss in the row below it.
+  [#88](https://github.com/yuvichh/mux/issues/88) is about going further
+  there.
+
+What the server counted, for the same runs:
+
+| Link, round trip | | Requests | Connections | Sent for the file |
+| --- | --- | ---: | ---: | ---: |
+| 100 Mbit/s, 200 ms, 128 MiB | before | 12 to 15 | 11 to 13 | 155 to 161 MiB |
+| | after | 7 to 9 | 4 | 130 to 131 MiB |
+| 1 Gbit/s, 100 ms, 1 GiB | before | 6 to 11 | 4 to 9 | 1,038 to 1,057 MiB |
+| | after | 9 to 11 | 4 | 1,024 MiB |
+
+**What went wrong on the way**, because the first two versions of the
+rule looked right and were not:
+
+- A stream's speed was first taken from its last chunk. A link gives its
+  bytes in bursts, and the stream that finishes first is more often than
+  not one that just had a quick chunk. It looked faster than it was and
+  took too much. Speed is now taken over the whole run.
+- A stream with nothing to do first took over half of whatever another
+  had left, if that was more than two seconds of work. At 600 ms one
+  connection gets ahead and carries most of the link, and the others
+  crawl. They finished early and cut the fast one's answer off. Its next
+  request began on a new connection, which at 600 ms needed eight seconds
+  for 2 MiB, and the whole copy waited for it: times went from 21.7 to
+  28.4 seconds from run to run. The rule now compares speeds. A stream
+  takes what it could fetch by the time the other would get there, so a
+  slow one takes next to nothing from a fast one. Five runs then fell
+  between 23.4 and 24.2 seconds.
+
+**Over HTTPS.** A server that offers HTTP/2 could have had all four
+streams on one connection, which would lose what four connections are
+for ([#89](https://github.com/yuvichh/mux/issues/89)). It did not: the
+server's log shows HTTP/1.1 and four connections. `mux` sets up TLS
+itself and never offered HTTP/2, so the HTTP/2 code in the binary was
+never used. It has been taken out, which makes the binary 0.65 MiB
+smaller (6.82 to 6.18 MiB on Linux) and leaves seven crates fewer in it.
+
+nginx with a certificate and HTTP/2 on, MiB/s, two runs each:
+
+| Link, round trip | File | curl (HTTP/2) | curl `--http1.1` | `mux cp` |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 200 ms | 128 MiB | 9.18 and 9.43 | 9.58 and 9.58 | 9.41 and 9.49 |
+| 1 Gbit/s, 100 ms | 1 GiB | 26.6 and 26.7 | 27.0 and 27.0 | 80.8 and 84.9 |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.41 | 0.45 | 1.71 and 1.92 |
+
+Over HTTPS each new connection costs a round trip more to set up than
+over HTTP, which is why `mux cp` is level with curl at 200 ms here and
+not ahead of it.
+
+### Packets lost for other reasons
+
+A connection has to decide how fast it may send. The usual way (CUBIC)
+takes every lost packet for a sign of a full link and halves its rate. On
+a link that loses packets for other reasons, such as Wi-Fi, a mobile
+network or a long route, it stays far below what the link carries. BBR
+measures what the link carries and holds that rate, whatever is lost.
+
+`mux seed --congestion bbr` chooses it. It is the sender's choice, so it
+is given to the machine that holds the data. CUBIC is still what is used
+unless it is asked for: see the last table for why
+([#82](https://github.com/yuvichh/mux/issues/82)).
+
+`mux get` from `mux seed` with each, MiB/s, the median of three runs
+taken in turn (two at 600 ms and over the slow link, and one of CUBIC with
+loss), 18 November 2026, the machine and method of the tables above:
+
+| Link, round trip | File | CUBIC | BBR | curl |
+| --- | ---: | ---: | ---: | ---: |
+| 100 Mbit/s, 50 ms, 1% loss | 64 MiB | 0.83 | **9.99** | 0.47 |
+| 100 Mbit/s, 200 ms, 2% loss | 64 MiB | | 7.36 | |
+| 1 Gbit/s, 20 ms | 1 GiB | 107.9 | 109.4 | 111.3 |
+| 1 Gbit/s, 100 ms | 1 GiB | 92.0 | 95.5 | 26.6 |
+| 100 Mbit/s, 50 ms | 128 MiB | 10.70 | 10.64 | 11.05 |
+| 100 Mbit/s, 200 ms | 128 MiB | 8.95 | 9.30 | 9.40 |
+| 100 Mbit/s, 600 ms | 128 MiB | 5.59 | 6.34 | 5.05 |
+| 0.5 Mbit/s, 50 ms | 4 MiB | 0.0564 | 0.0560 | 0.0569 |
+
+- With loss it is twelve times as fast, and uses 84% of the link.
+- Without loss it is the same near the server and 4 to 13% faster far from
+  it.
+- It does not send more to do so. The bytes that crossed the link for each
+  byte of the file were 1.053 to 1.056 with CUBIC and 1.053 to 1.063 with
+  BBR, over all the rows.
+
+**What it does to others.** A `mux get` and a `curl` download of the same
+256 MiB file were started together over 100 Mbit/s at 50 ms, twice each.
+The link carries both in about 45 seconds. With fair shares both end
+then. One that ends well before has taken more than half while it ran.
+Seconds until each was done:
+
+| The queue at the slow point | `mux get` with | `mux get` done | curl done |
+| --- | --- | ---: | ---: |
+| deep (100 ms) | (two curls, for comparison) | 42.9, 44.4 | 45.3, 45.2 |
+| | CUBIC | 26.7, 26.9 | 45.4, 45.4 |
+| | BBR | 45.4, 26.3 | 38.3, 45.4 |
+| shallow (10 ms) | (two curls, for comparison) | 46.9, 37.5 | 35.4, 45.2 |
+| | CUBIC | 27.5, 43.6 | 47.4, 47.3 |
+| | BBR | 23.5, 23.6 | 53.3, 53.3 |
+
+- A `mux get` that is done after 27 seconds had about four fifths of the
+  link until then. With CUBIC that happens in three runs of four. It is
+  this QUIC library's CUBIC against Linux's, and it was not known before
+  this was measured.
+- With a deep queue BBR does the same or less. With a shallow queue it
+  took about nineteen twentieths of the link both times, and the curl
+  download got next to nothing until the transfer was over. That is a
+  known trait of this version of BBR, and the reason it is not made the
+  default here without being asked for.
+
+The library calls its BBR experimental. Its newer version, BBR 3, is in
+the QUIC library that the move to iroh would bring
+([#19](https://github.com/yuvichh/mux/issues/19)).
 
 ## Sending only what changed
 

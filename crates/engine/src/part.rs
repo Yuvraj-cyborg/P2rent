@@ -56,9 +56,9 @@ impl Source for Part {
         })
     }
 
-    fn open(&self, file: usize, offset: u64) -> Pending<'_, Box<dyn Reader>> {
+    fn open(&self, file: usize, offset: u64, len: u64) -> Pending<'_, Box<dyn Reader>> {
         match self.place_of(file) {
-            Ok(place) => self.source.open(place, offset),
+            Ok(place) => self.source.open(place, offset, len),
             Err(failure) => Box::pin(std::future::ready(Err(failure))),
         }
     }
@@ -164,7 +164,7 @@ mod tests {
         // Entry 1 of the part is the source's sub/c, one byte.
         let read = runtime.block_on(picked.read(1, 0, 1));
         assert_eq!(read.as_deref(), Ok(&sample.files[5][..]));
-        let mut reader = runtime.block_on(picked.open(1, 0)).unwrap();
+        let mut reader = runtime.block_on(picked.open(1, 0, 1)).unwrap();
         assert_eq!(
             runtime
                 .block_on(reader.read(1, &Arrived::default()))
@@ -177,7 +177,7 @@ mod tests {
                 Err(Failure::Absent(_))
             ));
             assert!(matches!(
-                runtime.block_on(picked.open(missing, 0)),
+                runtime.block_on(picked.open(missing, 0, 1)),
                 Err(Failure::Absent(_))
             ));
         }

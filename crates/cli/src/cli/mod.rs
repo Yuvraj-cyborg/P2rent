@@ -43,6 +43,25 @@ struct Cli {
     command: Command,
 }
 
+/// How a connection to another machine decides how fast it may send.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Congestion {
+    /// Halve the rate at each lost packet
+    Cubic,
+    /// Hold the rate the link carries, whatever is lost: much faster where
+    /// packets are lost
+    Bbr,
+}
+
+impl From<Congestion> for mux::net::Congestion {
+    fn from(chosen: Congestion) -> Self {
+        match chosen {
+            Congestion::Cubic => Self::Cubic,
+            Congestion::Bbr => Self::Bbr,
+        }
+    }
+}
+
 /// How this machine and others reach each other.
 #[derive(clap::Args)]
 struct Reach {
@@ -59,6 +78,10 @@ struct Reach {
     /// not at all
     #[arg(long)]
     no_relay: bool,
+
+    /// How to decide how fast to send to other machines
+    #[arg(long, value_enum, default_value = "cubic", value_name = "HOW")]
+    congestion: Congestion,
 }
 
 impl Reach {
@@ -74,6 +97,7 @@ impl Reach {
         Options {
             listen: self.listen,
             relays: self.relays(),
+            congestion: self.congestion.into(),
             ..Options::default()
         }
     }
