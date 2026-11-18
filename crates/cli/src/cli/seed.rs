@@ -1,3 +1,4 @@
+use super::tell::{self, Line};
 use super::{Reach, ui};
 use anyhow::{Context, bail};
 use mux::artifact::{DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
@@ -32,7 +33,20 @@ pub(super) struct Args {
     chunk_size: u32,
 }
 
-pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
+impl Args {
+    /// What `mux cp PATH... peer:` means: these paths, offered as `seed`
+    /// offers them when it is told nothing more.
+    pub(super) fn of(paths: Vec<PathBuf>, reach: Reach) -> Self {
+        Self {
+            paths,
+            reach,
+            advertise: Vec::new(),
+            chunk_size: DEFAULT_CHUNK_SIZE,
+        }
+    }
+}
+
+pub(super) async fn run(args: Args, identity: &Identity, json: bool) -> anyhow::Result<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&args.chunk_size) {
         bail!(
             "chunk size must be between {} and {} (default {})",
@@ -73,7 +87,18 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
             ui::plural(artifact.chunk_count(), "chunk"),
         );
         // The ticket is the only thing on stdout, so it can be piped.
-        println!("{}", node.ticket(artifact.id(), &advertised));
+        let ticket = node.ticket(artifact.id(), &advertised).to_string();
+        if json {
+            let files = artifact.entries().iter().filter(|e| e.is_file()).count();
+            tell::say(&Line::Offer {
+                ticket: &ticket,
+                name: artifact.name(),
+                bytes: artifact.total_size(),
+                files: files as u64,
+            });
+        } else {
+            println!("{ticket}");
+        }
         shares.push(share);
     }
 

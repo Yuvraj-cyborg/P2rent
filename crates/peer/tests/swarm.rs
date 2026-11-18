@@ -6,7 +6,7 @@ use common::{CHUNK, get, index, listing, node, options, pattern, peer_info, seed
 use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
-use peer::swarm::{Progress, announce, download};
+use peer::swarm::{Holder, Progress, TicketPeer, announce, download, find, holders};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -259,4 +259,52 @@ async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
     // What arrives is the artifact that was asked for: the first node's
     // name and times, not the second's.
     assert_eq!(listing(&out.join("tree")), expected);
+}
+
+/// The peers of a ticket are asked how much of it each holds: all of it, a
+/// part, or nothing that can be learned.
+#[tokio::test]
+async fn the_peers_of_a_ticket_say_how_much_of_it_each_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("model.bin");
+    let data = pattern(CHUNK * 8 + 100, 6);
+    fs::write(&source, &data).unwrap();
+    let whole = node().await;
+    let (artifact, _) = seed(&whole, &source);
+
+    // A node that has the first three chunks and can get no more: the one
+    // peer it knows sends other bytes.
+    let forged = tmp.path().join("forged");
+    fs::create_dir_all(&forged).unwrap();
+    fs::write(forged.join("model.bin"), pattern(data.len(), 97)).unwrap();
+    let liar = node().await;
+    liar.seed(artifact.clone(), forged.join("model.bin"));
+    let partial = node().await;
+    let out = tmp.path().join("out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(out.join("model.bin"), &data[..CHUNK * 3 + 50]).unwrap();
+    let stopped = get(&partial, &ticket_for(&liar, &artifact), &out).await;
+    assert!(matches!(stopped, Err(Error::NoPeerLeft(_))));
+
+    // And a node that nobody can reach: it is named by its id alone, and
+    // there is no directory to look it up in.
+    let absent = Identity::generate().node_id();
+    let mut ticket = ticket_for(&whole, &artifact);
+    ticket.peers.extend(ticket_for(&partial, &artifact).peers);
+    ticket.peers.push(TicketPeer {
+        node: absent,
+        at: None,
+    });
+
+    let asking = node().await;
+    let found = find(&asking, &ticket).await.unwrap();
+    let holds = |node, bytes| Holder { node, bytes };
+    assert_eq!(
+        holders(&asking, &found).await,
+        [
+            holds(whole.node_id(), Some(data.len() as u64)),
+            holds(partial.node_id(), Some((CHUNK * 3) as u64)),
+            holds(absent, None),
+        ]
+    );
 }
