@@ -91,14 +91,13 @@ impl Opened {
     /// at `at`, to the end of the last of the `following` chunks after it
     /// that is in the same file.
     fn reach(&self, index: u64, at: ChunkLocation, following: u64) -> u64 {
+        // No further than the last chunk of the file, so the chunk the
+        // reach ends with is one of the file's.
         let last_of_file = self.tree.file_chunks(at.file).end.saturating_sub(1);
         let last = index.saturating_add(following).min(last_of_file);
-        match self.tree.locate(last) {
-            Some(last) if last.file == at.file => {
-                (last.offset + u64::from(last.len)).saturating_sub(at.offset)
-            }
-            _ => u64::from(at.len),
-        }
+        self.tree.locate(last).map_or(u64::from(at.len), |last| {
+            (last.offset + u64::from(last.len)).saturating_sub(at.offset)
+        })
     }
 }
 
