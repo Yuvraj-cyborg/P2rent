@@ -3,6 +3,7 @@
 use crate::artifact::Hash;
 use crate::error::{Error, Result};
 use crate::hex;
+use crate::location::{percent_decode, web_address};
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
@@ -62,12 +63,25 @@ impl FromStr for NodeId {
 /// Written as `mux://<artifact>?peer=<node id>&peer=...`. A peer may be
 /// followed by `@` and where to reach it. The artifact id is a content
 /// hash, so a ticket also pins exactly what will be downloaded.
+///
+/// `&url=<web address>` may follow, once for each address: see
+/// [`Ticket::origins`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     /// The artifact to fetch.
     pub artifact: Hash,
     /// Peers to contact first.
     pub peers: Vec<TicketPeer>,
+    /// Web addresses said to hold the same bytes, for an artifact that is
+    /// one file: each as a [`Location::Web`](crate::location::Location)
+    /// holds it. They are one more place to fetch chunks from, and are
+    /// trusted no more than a peer is: every chunk is compared with the
+    /// digest the manifest gives for it.
+    ///
+    /// In a ticket's text `%`, `&`, `#` and `?` of an address are written
+    /// as `%25`, `%26`, `%23` and `%3F`, so that the address ends where the
+    /// next parameter begins.
+    pub origins: Vec<String>,
 }
 
 /// A peer named in a ticket.
@@ -168,23 +182,54 @@ impl FromStr for Ticket {
             .parse()
             .map_err(|_| invalid("the artifact id is 64 hex characters"))?;
 
-        let mut peers = Vec::new();
+        let (mut peers, mut origins) = (Vec::new(), Vec::new());
         for parameter in query.split('&').filter(|p| !p.is_empty()) {
             // Unknown parameters are skipped so tickets can grow new fields.
             if let Some(peer) = parameter.strip_prefix("peer=") {
                 peers.push(peer.parse()?);
+            } else if let Some(written) = parameter.strip_prefix("url=") {
+                origins.push(origin(written)?);
             }
         }
-        Ok(Self { artifact, peers })
+        Ok(Self {
+            artifact,
+            peers,
+            origins,
+        })
     }
+}
+
+/// Reads a web address as a ticket writes it.
+fn origin(written: &str) -> Result<String> {
+    let address = percent_decode(written).ok_or_else(|| {
+        invalid(format!(
+            "in the web address {written:?} a `%` is not followed by two hex digits"
+        ))
+    })?;
+    web_address(&address).map_err(|why| invalid(format!("it names a web address, and {why}")))
 }
 
 impl fmt::Display for Ticket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{SCHEME}{}", self.artifact)?;
-        for (i, peer) in self.peers.iter().enumerate() {
-            let separator = if i == 0 { '?' } else { '&' };
+        let mut separator = '?';
+        for peer in &self.peers {
             write!(f, "{separator}peer={peer}")?;
+            separator = '&';
+        }
+        for address in &self.origins {
+            write!(f, "{separator}url=")?;
+            separator = '&';
+            // What would end the address early, and the sign that says so.
+            for character in address.chars() {
+                match character {
+                    '%' => f.write_str("%25")?,
+                    '&' => f.write_str("%26")?,
+                    '#' => f.write_str("%23")?,
+                    '?' => f.write_str("%3F")?,
+                    other => fmt::Write::write_char(f, other)?,
+                }
+            }
         }
         Ok(())
     }
@@ -233,10 +278,40 @@ mod tests {
                     at: None,
                 },
             ],
+            origins: vec![
+                "https://example.org/big.iso".into(),
+                "http://[fd00::1]:8080/a%20b?x=1&y=2#part".into(),
+            ],
         };
         let text = ticket.to_string();
         assert!(text.starts_with("mux://"));
         assert_eq!(text.parse::<Ticket>().unwrap(), ticket);
+    }
+
+    #[test]
+    fn a_web_address_is_written_so_that_it_ends_where_the_next_parameter_begins() {
+        let id = Hash::of(b"a");
+        let ticket = Ticket {
+            artifact: id,
+            peers: Vec::new(),
+            origins: vec![
+                "https://example.org/a%20b?x=1&y=2#part".into(),
+                "http://mirror.example/b".into(),
+            ],
+        };
+        // An address that needs nothing written another way is as it is.
+        assert_eq!(
+            ticket.to_string(),
+            format!(
+                "mux://{id}?url=https://example.org/a%2520b%3Fx=1%26y=2%23part\
+                 &url=http://mirror.example/b"
+            )
+        );
+        // The scheme is kept in small letters, as a location keeps it.
+        let read: Ticket = format!("mux://{id}?url=HTTPS://Example.org/")
+            .parse()
+            .unwrap();
+        assert_eq!(read.origins, ["https://Example.org/"]);
     }
 
     #[test]
@@ -273,6 +348,7 @@ mod tests {
         let ticket = Ticket {
             artifact: Hash::of(b"artifact"),
             peers: Vec::new(),
+            origins: Vec::new(),
         };
         assert!(!ticket.to_string().contains('?'));
         assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
@@ -304,6 +380,14 @@ mod tests {
             format!("mux://{id}?peer={peer}@https://"),
             format!("mux://{id}?peer={peer}@https:///path"),
             format!("mux://{id}?peer={peer}@ftp://relay.example"),
+            format!("mux://{id}?url="),
+            format!("mux://{id}?url=example.org/file"),
+            format!("mux://{id}?url=ftp://example.org/file"),
+            format!("mux://{id}?url=https://"),
+            format!("mux://{id}?url=https://user@example.org/"),
+            format!("mux://{id}?url=https://example.org/a b"),
+            format!("mux://{id}?url=https://example.org/%zz"),
+            format!("mux://{id}?url=https://example.org/%2"),
         ] {
             assert!(text.parse::<Ticket>().is_err(), "{text:?} was accepted");
         }

@@ -7,6 +7,7 @@
 // Every public item is documented.
 #![warn(missing_docs)]
 
+pub mod origins;
 pub mod sync;
 
 pub use ::engine;

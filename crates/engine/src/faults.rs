@@ -1201,6 +1201,84 @@ fn a_source_that_changes_ends_the_transfer_and_leaves_nothing_half_written() {
     }
 }
 
+/// A supplier with a slow line and two quick ones, as a web server far away
+/// and two machines near by: the transfer ends long before it would from
+/// the slow one alone.
+#[test]
+fn a_slow_supplier_with_two_quick_ones_ends_long_before_it_would_alone() {
+    let sample = long(64);
+    let slow = || {
+        let script = Script {
+            line: Duration::from_secs(1),
+            ..Script::honest(&sample)
+        };
+        Made::new(1, script, &sample)
+    };
+    let quick = |number| {
+        let script = Script {
+            delay: Duration::from_millis(10),
+            ..Script::honest(&sample)
+        };
+        Made::new(number, script, &sample)
+    };
+
+    let alone = Setup::new(&sample).run(&[slow()]);
+    assert!(alone.has_every_file(&sample), "{:?}", alone.outcome);
+    let together = Setup::new(&sample).run(&[slow(), quick(2), quick(3)]);
+    assert!(together.has_every_file(&sample), "{:?}", together.outcome);
+    assert!(
+        together.took * 2 < alone.took,
+        "together {:?}, the slow one alone {:?}",
+        together.took,
+        alone.took
+    );
+}
+
+/// Where every chunk has its digest, a source that changes has spoiled
+/// nothing: it is dropped as one that sends wrong bytes is, what it sent
+/// before is kept, and another supplier finishes.
+#[test]
+fn a_source_that_changes_is_only_dropped_where_every_chunk_has_its_digest() {
+    let sample = sample();
+    let changing = Script {
+        changes_after: Some(2),
+        ..Script::honest(&sample)
+    };
+    // The other takes a second over each chunk, so the one that changes
+    // is sure to be asked for more than the two chunks it has to give.
+    let unhurried = Script {
+        delay: Duration::from_secs(1),
+        ..Script::honest(&sample)
+    };
+    let suppliers = [
+        Made::new(1, changing.clone(), &sample),
+        Made::new(2, unhurried, &sample),
+    ];
+    let ran = Setup::new(&sample).run(&suppliers);
+    assert!(ran.has_every_file(&sample), "{:?}", ran.outcome);
+    let summary = ran.outcome.as_ref().unwrap();
+    assert_eq!(summary.usable, [[2; 32]]);
+
+    // By itself it cannot finish, and what it sent is still there for a
+    // transfer that carries on.
+    let mut setup = Setup::new(&sample);
+    setup.options.requests_per_supplier = 1;
+    let alone = setup.run(&[Made::new(1, changing, &sample)]);
+    let Err(Error::Unsupplied(why)) = &alone.outcome else {
+        panic!("{:?}", alone.outcome);
+    };
+    assert_eq!(why, "the file is not what it was");
+    assert!(alone.has_no_wrong_file(&sample));
+    let carried_on = Setup::new(&sample).into(&alone.place).run(&[Made::new(
+        2,
+        Script::honest(&sample),
+        &sample,
+    )]);
+    assert!(carried_on.has_every_file(&sample));
+    let kept = carried_on.count(|event| matches!(event, Event::Stored { .. }));
+    assert_eq!(kept, chunks(&sample) - 2);
+}
+
 #[tokio::test]
 async fn with_no_digest_bytes_of_the_wrong_length_are_still_refused() {
     let sample = sample();
