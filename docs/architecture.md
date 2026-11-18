@@ -396,6 +396,13 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
                       done: fsync the directories
 ```
 
+It is two steps, so that a command can stop between them. `swarm::find`
+fetches the manifest and checks it against the ticket: that is all
+`mux probe` and `mux cp --dry-run` need. `swarm::holders` then asks each
+peer of the ticket how much it has, and `swarm::fetch` does the rest of
+the picture. `fetch` reports the events that a copy from any other place
+reports, so `mux cp` shows a ticket as it shows a web address.
+
 `peer` knows the wire protocol and nothing about fetching. A peer is a
 **supplier**: something that can be reached, asked which chunks it holds and
 whom else it knows, and asked for a chunk. The engine does the rest, and
@@ -549,9 +556,10 @@ chunk, because that waiter may have been stopped a moment before.
   that have no socket of their own.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
-- `tests/cli.rs` runs the compiled binary as separate processes, and kills
-  a download at random moments to check that only whole files have their
-  final names.
+- `tests/cli.rs` runs the compiled binary as separate processes: one
+  offers with `cp` to `peer:`, another copies from its ticket, probes it,
+  or reads the lines written for a program. It kills a download at random
+  moments to check that only whole files have their final names.
 - `cli/tests/cp.rs` does the same to a sync, from a folder and from a web
   address, into a destination that holds an older version. Whenever the
   sync is stopped, each file with its final name is the older version or

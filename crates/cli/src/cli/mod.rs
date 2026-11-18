@@ -13,16 +13,18 @@ mod ui;
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use mux::net::{Identity, Options, Relays};
+use mux::swarm::Node;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use tracing::Level;
 
 #[derive(Parser)]
 #[command(
     name = "mux",
     version,
-    about = "Swarm distribution of large artifacts over QUIC",
+    about = "Copies and syncs data between places: folders, the web and other machines",
     propagate_version = true
 )]
 struct Cli {
@@ -156,10 +158,10 @@ pub(crate) fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Command::Cp(args) => cp::run(args, cli.json).await,
-        Command::Probe(args) => probe::run(&args, cli.json).await,
+        Command::Cp(args) => cp::run(args, cli.json, cli.key.as_deref()).await,
+        Command::Probe(args) => probe::run(&args, cli.json, cli.key.as_deref()).await,
         Command::Sync(args) => sync::run(&args, cli.json).await,
-        Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?).await,
+        Command::Seed(args) => seed::run(args, &identity(cli.key.as_deref())?, cli.json).await,
         Command::Get(args) => get::run(args, &identity(cli.key.as_deref())?).await,
         Command::Id => {
             println!("{}", identity(cli.key.as_deref())?.node_id());
@@ -170,6 +172,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// A node of this machine, to reach other machines with: made only when a
+/// command has to do with another machine, so that no other command gives
+/// this one a key or opens a socket.
+async fn node(key: Option<&Path>, reach: &Reach) -> anyhow::Result<Arc<Node>> {
+    Node::bind(&identity(key)?, &reach.options())
+        .await
+        .context("cannot open a socket to listen on")
 }
 
 /// This machine's key, created on first use.

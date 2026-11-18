@@ -1,8 +1,9 @@
 //! Downloading from a swarm.
 //!
-//! A download fetches the manifest from any bootstrap peer, checks what is
-//! already on disk, then has the engine pull the missing chunks from as
-//! many peers as it can find. Every chunk is verified against the manifest
+//! A download finds what a ticket names: it fetches the manifest from any
+//! peer the ticket gives. Then it fetches that: it checks what is already
+//! on disk, and has the engine pull the missing chunks from as many peers
+//! as it can find. Every chunk is verified against the manifest
 //! before it is written, and is offered to other peers as soon as it lands.
 //! A file gets its final name only when every one of its chunks is in
 //! place.
@@ -15,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::net::{NodeId, PeerInfo};
 use engine::{Store, sync};
 use fs::Folder;
-use model::artifact::{Artifact, Hash};
+use model::artifact::{Artifact, Bitfield, Hash};
 use model::place::{Event, Observer};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -158,6 +159,26 @@ pub struct Report {
     pub elapsed: Duration,
 }
 
+/// What a ticket names, once a peer has said: the artifact, and the peers
+/// of the ticket with where each is.
+#[derive(Debug, Clone)]
+pub struct Found {
+    /// The artifact, with the digest of every chunk.
+    pub artifact: Arc<Artifact>,
+    /// The peers the ticket names, other than this node.
+    peers: Vec<PeerInfo>,
+}
+
+/// One peer of a ticket, and how much of the artifact it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    /// The peer.
+    pub node: NodeId,
+    /// How many bytes of the artifact it holds, or `None` if it could not
+    /// be asked or does not serve the artifact.
+    pub bytes: Option<u64>,
+}
+
 /// Downloads the ticket's artifact into `out_dir`, resuming from whatever is
 /// already there.
 ///
@@ -173,35 +194,118 @@ pub async fn download(
     options: DownloadOptions,
     progress: Arc<Progress>,
 ) -> Result<Report> {
-    let started = Instant::now();
     progress.set_phase(Phase::Connecting);
+    let found = find(node, ticket).await?;
+    fetch(node, found, out_dir, options, progress, Arc::new(|_| {})).await
+}
 
-    let bootstrap = resolve(node, ticket).await;
-    if bootstrap.is_empty() {
+/// Finds what a ticket names: asks the peers it gives for the manifest,
+/// and checks what comes back against the ticket.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached
+/// and [`Error::ManifestUnavailable`] if none supplies a valid manifest.
+pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
+    let peers = resolve(node, ticket).await;
+    if peers.is_empty() {
         return Err(Error::InvalidTicket(
             "the ticket names no peer that can be reached".into(),
         ));
     }
-    let artifact = Arc::new(fetch_manifest(node, ticket.artifact, &bootstrap).await?);
+    let artifact = Arc::new(fetch_manifest(node, ticket.artifact, &peers).await?);
+    Ok(Found { artifact, peers })
+}
+
+/// Asks each peer of the ticket how much of the artifact it holds. A peer
+/// that is itself still fetching holds a part.
+pub async fn holders(node: &Arc<Node>, found: &Found) -> Vec<Holder> {
+    let artifact = &found.artifact;
+    // All of them at once: peers that do not answer are waited for
+    // together, and not one after the other.
+    let asked: Vec<_> = found
+        .peers
+        .iter()
+        .map(|peer| {
+            let (node, peer, content) = (node.clone(), peer.clone(), artifact.content_id());
+            tokio::spawn(async move {
+                let asking = async {
+                    let connection = node.endpoint().connect(&peer).await?;
+                    let status = connection.status(content).await;
+                    connection.close();
+                    status
+                };
+                timeout(MANIFEST_TIMEOUT, asking).await
+            })
+        })
+        .collect();
+    let mut holders = Vec::with_capacity(asked.len());
+    for (peer, asked) in found.peers.iter().zip(asked) {
+        let held = match asked.await {
+            Ok(Ok(Ok(Some(status)))) => status.have.into_bitfield(artifact.chunk_count()).ok(),
+            _ => None,
+        };
+        holders.push(Holder {
+            node: peer.node,
+            bytes: held.map(|held| bytes_of(artifact, &held)),
+        });
+    }
+    holders
+}
+
+/// How many bytes the chunks in `held` come to.
+fn bytes_of(artifact: &Artifact, held: &Bitfield) -> u64 {
+    (0..artifact.chunk_count())
+        .filter(|&index| held.get(index))
+        .filter_map(|index| artifact.locate(index))
+        .map(|location| u64::from(location.len))
+        .sum()
+}
+
+/// Fetches what was found into `out_dir`, resuming from whatever is already
+/// there. Everything that happens is reported to `observer`, as a copy
+/// from any other kind of place reports it.
+///
+/// # Errors
+///
+/// Returns [`Error::Stalled`] if no chunk arrives within the stall timeout,
+/// and [`Error::Place`] for local disk failures.
+pub async fn fetch(
+    node: &Arc<Node>,
+    found: Found,
+    out_dir: &Path,
+    options: DownloadOptions,
+    progress: Arc<Progress>,
+    observer: Observer,
+) -> Result<Report> {
+    let started = Instant::now();
+    let Found {
+        artifact,
+        peers: bootstrap,
+    } = found;
     progress
         .total
         .store(artifact.total_size(), Ordering::Relaxed);
+    let files = artifact.entries().iter().filter(|e| e.is_file()).count();
+    observer(Event::Planned {
+        bytes: artifact.total_size(),
+        files: files as u64,
+    });
 
     progress.set_phase(Phase::Scanning);
     let scan_progress = progress.clone();
     let folder = Arc::new(Folder::inside(artifact.tree().clone(), out_dir));
+    let scan_observer = observer.clone();
     let examined = move |bytes| {
         scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
+        scan_observer(Event::Examined { bytes });
     };
     let store = Store::resume(artifact.clone(), folder.clone(), examined).await?;
     let have = store.held();
 
-    let resumed: u64 = (0..artifact.chunk_count())
-        .filter(|&index| have.get(index))
-        .filter_map(|index| artifact.locate(index))
-        .map(|location| u64::from(location.len))
-        .sum();
+    let resumed = bytes_of(&artifact, &have);
     progress.resumed.store(resumed, Ordering::Relaxed);
+    observer(Event::Kept { bytes: resumed });
 
     let share = node.register(Arc::new(Share::new(artifact.clone(), store)));
 
@@ -225,7 +329,10 @@ pub async fn download(
         ..engine::Options::default()
     };
     let watching = progress.clone();
-    let observer: Observer = Arc::new(move |event| watching.observe(event));
+    let observer: Observer = Arc::new(move |event| {
+        watching.observe(event);
+        observer(event);
+    });
     let me = *node.node_id().as_bytes();
     let summary = engine::transfer(share.store(), me, suppliers, limits, observer).await?;
 

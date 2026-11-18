@@ -121,6 +121,11 @@ have them.
   copy would do, `mux probe` says what is at a place, and `--json` writes
   either for a program to read.
   [docs/commands.md](docs/commands.md) has the details and the exit codes.
+- **`mux cp` copies between machines too.** `mux cp ./weights peer:` offers
+  a folder and prints a ticket, as `mux seed` does. `mux cp TICKET ./models/`
+  fetches what the ticket names from every machine that has it, as
+  `mux get` does. `mux probe TICKET` says what a ticket names and how much
+  of it each machine holds.
 - **`mux sync` makes a folder match a source,** and reads only what has
   changed. Nothing is removed without `--delete`, what is replaced or
   removed goes to a trash folder first, and a sync that would remove more

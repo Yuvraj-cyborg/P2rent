@@ -212,7 +212,7 @@ async fn how_a_copy_fails_is_told_by_how_the_command_ends() {
     assert_eq!(output.status.code(), Some(4), "{}", said(&output));
 
     // Places that cannot be copied between.
-    let output = cp([to, "peer:"]).await;
+    let output = cp([to, "https://example.org/there"]).await;
     assert_eq!(output.status.code(), Some(1), "{}", said(&output));
     assert!(
         said(&output).contains("cannot copy from"),
@@ -451,11 +451,18 @@ async fn a_dry_run_says_what_would_be_copied_and_copies_nothing() {
     assert!(!out.exists());
     assert_eq!(server.asked(), [Some("bytes=0-0".to_owned())]);
 
-    // Once it is there, a dry run says so.
+    // Once it is there, a dry run says so, wherever among the places the
+    // flag is written.
     let output = mux(["cp", &url, &into]).await;
     assert!(output.status.success(), "{}", said(&output));
-    let output = mux(["cp", "--dry-run", &url, &into]).await;
-    assert_result(&output, &saved, &size, "already there");
+    for line in [
+        ["cp", "--dry-run", &url, &into],
+        ["cp", &url, "--dry-run", &into],
+        ["cp", &url, &into, "--dry-run"],
+    ] {
+        let output = mux(line).await;
+        assert_result(&output, &saved, &size, "already there");
+    }
 
     // A folder, for a program.
     let source = tmp.path().join("tree");
