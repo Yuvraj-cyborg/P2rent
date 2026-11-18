@@ -463,6 +463,12 @@ fn a_part_file_that_is_already_whole_is_renamed_on_resume() {
     let dest = resume(&artifact, &out);
     assert!(dest.has(4));
     assert!(b.exists() && !part(&b).exists());
+    // It is said to have got its name now, as the file with no bytes is,
+    // and neither is said a second time.
+    let entries = artifact.entries();
+    let entry = |path| entries.iter().position(|entry| entry.path == path).unwrap();
+    assert_eq!(dest.named(), [entry("empty"), entry("nested/b.bin")]);
+    assert_eq!(resume(&artifact, &out).named(), [0usize; 0]);
 }
 
 #[test]

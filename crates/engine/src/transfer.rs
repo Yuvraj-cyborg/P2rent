@@ -122,6 +122,11 @@ pub async fn transfer(
     options: Options,
     observer: Observer,
 ) -> Result<Summary, Error> {
+    // A file that needed nothing fetched has its name already. It is told
+    // of like one whose last chunk arrives, and before any of those.
+    for file in store.named_at_the_start() {
+        observer(Event::Committed { file });
+    }
     let (found, mut discovered) = mpsc::unbounded_channel();
     let run = Run::new(store.clone(), me, options, observer, found);
     let mut slots: HashMap<SupplierId, Slot> = suppliers
