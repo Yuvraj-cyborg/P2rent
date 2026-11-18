@@ -42,6 +42,25 @@ struct Cli {
     command: Command,
 }
 
+/// How a connection to another machine decides how fast it may send.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Congestion {
+    /// Halve the rate at each lost packet
+    Cubic,
+    /// Hold the rate the link carries, whatever is lost: much faster where
+    /// packets are lost, and harder on what else uses the link
+    Bbr,
+}
+
+impl From<Congestion> for mux::net::Congestion {
+    fn from(chosen: Congestion) -> Self {
+        match chosen {
+            Congestion::Cubic => Self::Cubic,
+            Congestion::Bbr => Self::Bbr,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Copy from one place to another

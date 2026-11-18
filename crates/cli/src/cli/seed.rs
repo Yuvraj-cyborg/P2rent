@@ -28,6 +28,10 @@ pub(super) struct Args {
     /// Chunk size, between 4K and 16M
     #[arg(long, default_value = "1M", value_parser = ui::parse_size, value_name = "SIZE")]
     chunk_size: u32,
+
+    /// How to decide how fast to send
+    #[arg(long, value_enum, default_value = "cubic", value_name = "HOW")]
+    congestion: super::Congestion,
 }
 
 pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
@@ -41,7 +45,7 @@ pub(super) async fn run(args: Args, identity: &Identity) -> anyhow::Result<()> {
     }
 
     // Bind first so a busy port is reported before any hashing starts.
-    let node = Node::bind(identity, args.listen)
+    let node = Node::bind_with(identity, args.listen, args.congestion.into())
         .with_context(|| format!("cannot listen on {}", args.listen))?;
     let bound = node.local_addr()?;
     let advertised = advertised_addresses(&args.advertise, bound);

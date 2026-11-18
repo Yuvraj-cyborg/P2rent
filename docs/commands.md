@@ -69,6 +69,17 @@ was written, its size in bytes, and how far it was checked.
 | `consistent` | No digest was known. The source stayed what it was throughout. For a folder, nothing checks that: its files are read once, as they are. |
 | `already there` | Every file was there with the size and time the source gives, and nothing was read. |
 
+## `mux seed` and `mux get`
+
+`mux seed <PATH>...` offers files or folders to other machines and prints a
+ticket. `mux get <TICKET>` fetches what the ticket names, from every
+machine that has it. `--help` lists their flags. One of them is about
+speed:
+
+| Flag | |
+| --- | --- |
+| `--congestion <cubic\|bbr>` | How a connection decides how fast to send. `cubic`, the default, halves its rate at each lost packet. `bbr` holds the rate the link carries whatever is lost: about twelve times faster over a link that loses one packet in a hundred, and harder on what else uses the link. It is the sender's choice, so give it to `mux seed`. |
+
 ## `mux probe`
 
 ```console
