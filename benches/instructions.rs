@@ -27,7 +27,9 @@ use model::artifact::{
 };
 use model::assembly::Assembly;
 use model::place::Sink;
+use model::rolling::Rolling;
 use model::schedule::{Outcome, Schedule};
+use model::search::{Searched, Wanted};
 use std::hint::black_box;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -184,6 +186,26 @@ fn locate_every_chunk(artifact: Artifact) -> (u64, Artifact) {
     (black_box(total), artifact)
 }
 
+/// An old file with the wanted chunk starting at an unaligned offset.
+fn shifted_chunk() -> (Wanted, Vec<u8>) {
+    let mut old = vec![0; DEFAULT_CHUNK_SIZE as usize - 1];
+    let chunk = chunk_bytes();
+    let mut wanted = Wanted::new(DEFAULT_CHUNK_SIZE, 10);
+    wanted.add(0, Rolling::of(&chunk).value(), Hash::of(&chunk));
+    old.extend(chunk);
+    (wanted, old)
+}
+
+#[library_benchmark]
+#[bench::one_mib(setup = shifted_chunk)]
+fn find_shifted_chunk(input: (Wanted, Vec<u8>)) -> (Searched, Vec<u8>) {
+    let (mut wanted, old) = input;
+    let ended = wanted.search(&old, &mut |_, offset| {
+        black_box(offset);
+    });
+    (ended, old)
+}
+
 // Marking chunks as held and counting them: done as chunks arrive and each
 // time a peer says what it has.
 #[library_benchmark]
@@ -251,6 +273,7 @@ library_benchmark_group!(
         build_artifact,
         decode_artifact,
         locate_every_chunk,
+        find_shifted_chunk,
         mark_and_count,
         claim_every_chunk
 );

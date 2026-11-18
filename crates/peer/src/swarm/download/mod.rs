@@ -172,6 +172,8 @@ pub struct Found {
     peers: Vec<PeerInfo>,
     /// What else its chunks are to be fetched from.
     others: Vec<Arc<dyn Supplier>>,
+    /// A peer already known to be reachable and to serve this manifest.
+    manifest_peer: PeerInfo,
 }
 
 impl Found {
@@ -228,9 +230,10 @@ pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
             "the ticket names no peer that can be reached".into(),
         ));
     }
-    let artifact = Arc::new(fetch_manifest(node, ticket.artifact, &peers).await?);
+    let (artifact, manifest_peer) = fetch_manifest(node, ticket.artifact, &peers).await?;
     Ok(Found {
-        artifact,
+        artifact: Arc::new(artifact),
+        manifest_peer,
         peers,
         others: Vec::new(),
     })
@@ -301,6 +304,7 @@ pub async fn fetch(
     let Found {
         artifact,
         peers: bootstrap,
+        manifest_peer,
         others,
     } = found;
     progress
@@ -320,14 +324,19 @@ pub async fn fetch(
         scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
         scan_observer(Event::Examined { bytes });
     };
-    let store = Store::resume(artifact.clone(), folder.clone(), examined).await?;
+    let hints = fetch_hints(node, &manifest_peer, &artifact);
+    let store = Store::resume_with_hints(artifact.clone(), folder.clone(), examined, hints).await?;
     let have = store.held();
 
     let resumed = bytes_of(&artifact, &have);
     progress.resumed.store(resumed, Ordering::Relaxed);
     observer(Event::Kept { bytes: resumed });
 
-    let share = node.register(Arc::new(Share::new(artifact.clone(), store)));
+    let share = node.register(Arc::new(Share::new(
+        artifact.clone(),
+        store,
+        folder.clone(),
+    )));
 
     progress.set_phase(Phase::Downloading);
     let named = bootstrap.iter().filter_map(|peer| peer.relay.clone());
@@ -442,7 +451,26 @@ async fn resolve(node: &Node, ticket: &Ticket) -> Vec<PeerInfo> {
     peers
 }
 
-async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<Artifact> {
+/// A peer that cannot provide hints can still supply verified chunks.
+async fn fetch_hints(
+    node: &Node,
+    peer: &PeerInfo,
+    artifact: &Artifact,
+) -> Option<model::search::ChunkHints> {
+    let connection = timeout(MANIFEST_TIMEOUT, node.endpoint().connect(peer))
+        .await
+        .ok()?
+        .ok()?;
+    let hints = connection
+        .hints(artifact, MANIFEST_TIMEOUT)
+        .await
+        .ok()
+        .flatten();
+    connection.close();
+    hints
+}
+
+async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<(Artifact, PeerInfo)> {
     for attempt in 0..MANIFEST_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -470,7 +498,7 @@ async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<Art
                 }
             };
             match Artifact::decode(id, encoded) {
-                Ok(artifact) => return Ok(artifact),
+                Ok(artifact) => return Ok((artifact, peer.clone())),
                 Err(e) => warn!(peer = %peer.node.short(), "rejected manifest: {e}"),
             }
         }

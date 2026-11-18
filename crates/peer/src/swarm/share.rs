@@ -1,10 +1,16 @@
 use crate::net::{NodeId, PeerInfo};
+use crate::{Error, Result};
 use engine::{Store, sync};
+use fs::Folder;
 use model::artifact::{Artifact, Bitfield};
+use model::rolling::Rolling;
+use model::search::ChunkHints;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::OnceCell;
 
 /// A participant is forgotten if it has not asked for status for this long.
 const PARTICIPANT_TTL: Duration = Duration::from_secs(120);
@@ -20,6 +26,10 @@ const MAX_PARTICIPANTS: usize = 4096;
 pub struct Share {
     artifact: Arc<Artifact>,
     store: Arc<Store>,
+    files: Arc<Folder>,
+    /// Allocated on the first hint request. Concurrent readers share each
+    /// completed page. A cancelled response can resume with cached pages.
+    hints: OnceLock<Vec<OnceCell<ChunkHints>>>,
     participants: Mutex<HashMap<NodeId, Participant>>,
     uploaded: AtomicU64,
 }
@@ -32,10 +42,12 @@ struct Participant {
 }
 
 impl Share {
-    pub(crate) fn new(artifact: Arc<Artifact>, store: Arc<Store>) -> Self {
+    pub(crate) fn new(artifact: Arc<Artifact>, store: Arc<Store>, files: Arc<Folder>) -> Self {
         Self {
             artifact,
             store,
+            files,
+            hints: OnceLock::new(),
             participants: Mutex::new(HashMap::new()),
             uploaded: AtomicU64::new(0),
         }
@@ -64,6 +76,50 @@ impl Share {
     /// Whether every chunk is held.
     pub fn is_complete(&self) -> bool {
         self.store.is_complete()
+    }
+
+    /// Number of pages in the table for this share.
+    pub(super) fn hint_pages(&self) -> u64 {
+        self.artifact
+            .chunk_count()
+            .div_ceil(u64::from(crate::net::proto::hint_page_chunks(
+                self.artifact.chunk_size(),
+            )))
+    }
+
+    /// Computes each page on first use and shares it across receivers.
+    pub(super) async fn hint_page(&self, page: u64) -> Result<&ChunkHints> {
+        let pages = self
+            .hints
+            .get_or_init(|| (0..self.hint_pages()).map(|_| OnceCell::new()).collect());
+        let cell = usize::try_from(page)
+            .ok()
+            .and_then(|i| pages.get(i))
+            .ok_or_else(|| Error::Protocol("hint page out of range".into()))?;
+        cell.get_or_try_init(|| async {
+            let per_page = u64::from(crate::net::proto::hint_page_chunks(
+                self.artifact.chunk_size(),
+            ));
+            let first = page * per_page;
+            let end = (first + per_page).min(self.artifact.chunk_count());
+            let files = self.files.clone();
+            let artifact = self.artifact.clone();
+            tokio::task::spawn_blocking(move || {
+                let hashes = (first..end)
+                    .map(|index| {
+                        let at = artifact
+                            .locate(index)
+                            .ok_or_else(|| Error::Protocol("chunk outside manifest".into()))?;
+                        let data = files.read_at(at.file, at.offset, at.len)?;
+                        Ok(Rolling::of(&data).value())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(ChunkHints::pack(hashes.into_iter()))
+            })
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))?
+        })
+        .await
     }
 
     /// Bytes served to other peers so far.

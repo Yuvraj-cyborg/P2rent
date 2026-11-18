@@ -29,6 +29,58 @@ proptest! {
     // Each case writes real files, so fewer cases than the default.
     #![proptest_config(ProptestConfig::with_cases(48))]
 
+    /// Reordering, inserting, deleting or repeating bytes in the old file
+    /// can only change how much is fetched. Even hints for the wrong
+    /// bytes cannot change what gets committed.
+    #[test]
+    fn edited_files_are_reconstructed(
+        seed in any::<u32>(), old_len in 0..12usize * MIN_CHUNK_SIZE as usize,
+        edits in vec((any::<u16>(), any::<u16>(), 0usize..8), 1..9),
+        wrong_hints in any::<bool>(),
+    ) {
+        let mut state = seed;
+        let old: Vec<u8> = (0..old_len).map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            state.to_be_bytes()[0]
+        }).collect();
+        let mut new = Vec::new();
+        for (a, b, padding) in edits {
+            let offset = |n| usize::try_from(u64::from(n) * old.len() as u64 / u64::from(u16::MAX)).unwrap();
+            new.extend_from_slice(&old[offset(a.min(b))..offset(a.max(b))]);
+            new.extend(std::iter::repeat_n(7, padding));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("sample");
+        std::fs::write(&path, &new).unwrap();
+        let out = tmp.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let target = out.join("sample");
+        std::fs::write(&target, &old).unwrap();
+        let indexed = index(&path, MIN_CHUNK_SIZE, &|_| {}).unwrap();
+        let artifact = Arc::new(indexed.artifact);
+        let place = Arc::new(fs::Folder::inside(artifact.tree().clone(), &out));
+        let hints = if wrong_hints {
+            model::search::ChunkHints::pack((0..artifact.chunk_count()).map(|_| 0))
+        } else {
+            model::search::ChunkHints::pack(new.chunks(MIN_CHUNK_SIZE as usize)
+                .map(|bytes| model::rolling::Rolling::of(bytes).value()))
+        };
+        let store = crate::common::wait(engine::Store::resume_with_hints(
+            artifact.clone(), place, |_| {}, std::future::ready(Some(hints)),
+        )).unwrap();
+        if !store.is_complete() {
+            prop_assert_eq!(std::fs::read(&target).unwrap(), old);
+        }
+        for (index, chunk) in (0..).zip(new.chunks(MIN_CHUNK_SIZE as usize)) {
+            if !store.has(index) {
+                crate::common::wait(store.write_chunk(index, chunk.to_vec())).unwrap();
+            }
+        }
+        crate::common::wait(store.finish()).unwrap();
+        prop_assert!(store.is_complete());
+        prop_assert_eq!(std::fs::read(&target).unwrap(), new);
+    }
+
     /// Chunks may arrive in any order, and some may arrive twice. At every
     /// moment, a file under its final name is whole and right, and the
     /// destination ends up byte for byte the same as the source.
