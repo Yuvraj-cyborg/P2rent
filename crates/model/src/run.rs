@@ -35,9 +35,33 @@
 //! first is kept. A transfer then does not end by waiting for the slowest
 //! of its suppliers to finish what it happened to be reading.
 
-/// What is worth cutting an answer off for: bringing the end of what it
-/// carries forward by more than this.
+/// What is worth cutting an answer off for, where nothing is known of
+/// what a new request costs: bringing the end of what it carries forward
+/// by more than this.
 pub const WORTH_MICROS: u64 = 2_000_000;
+
+/// How many times as long as a request takes to begin being answered a
+/// stream is reckoned to lose by having to make a new one: the wait for
+/// the first byte, and then the slow start of a new connection.
+pub const RESTARTS: u64 = 3;
+
+/// The least and the most a new request is reckoned to cost.
+const RESTART_LEAST: u64 = 100_000;
+const RESTART_MOST: u64 = 10_000_000;
+
+/// What cutting off an answer costs a stream whose requests have taken
+/// `restart` at most to begin being answered: [`RESTARTS`] times that,
+/// within bounds, or [`WORTH_MICROS`] if it is not known (zero). A link
+/// with a long round trip makes a new connection dear, and a short one
+/// makes it cheap.
+pub fn restart_cost(restart: u64) -> u64 {
+    if restart == 0 {
+        return WORTH_MICROS;
+    }
+    restart
+        .saturating_mul(RESTARTS)
+        .clamp(RESTART_LEAST, RESTART_MOST)
+}
 
 /// The length of time speeds are counted over: [`speed`] is in chunks for
 /// each of these.
@@ -92,9 +116,10 @@ pub fn length(free: u64, streams: u64, micros_each: u64, micros_left: u64) -> u6
 /// It is what the other can fetch by the time the first would get there:
 /// the two then end together. Sooner than the first would have ended by
 /// what the first takes for those chunks, and if that is not more than is
-/// [`worth`] it, none are taken over. Nothing is known of a stream whose
+/// [`worth`] it, none are taken over. `cost` is what being cut off costs
+/// the first: see [`restart_cost`]. Nothing is known of a stream whose
 /// `micros_each` is zero, and nothing is taken from it.
-pub fn spare(left: u64, micros_each: u64, mine: u64) -> u64 {
+pub fn spare(left: u64, micros_each: u64, mine: u64, cost: u64) -> u64 {
     if micros_each == 0 {
         return 0;
     }
@@ -110,7 +135,7 @@ pub fn spare(left: u64, micros_each: u64, mine: u64) -> u64 {
     );
     let part = (wide_left * theirs).div_ceil(both);
     let part = u64::try_from(part).unwrap_or(left).min(left);
-    if part.saturating_mul(micros_each) > worth(micros_each, mine) {
+    if part.saturating_mul(micros_each) > worth(cost, micros_each, mine) {
         part
     } else {
         0
@@ -119,19 +144,20 @@ pub fn spare(left: u64, micros_each: u64, mine: u64) -> u64 {
 
 /// What a stream that takes `mine` for a chunk has to bring the end
 /// forward by, in microseconds, to take over from one that takes
-/// `micros_each`: [`WORTH_MICROS`] from a stream that is as fast or
-/// faster, and as many times less from a slower one as that one is slower.
+/// `micros_each` and that being cut off costs `cost`: all of `cost` from
+/// a stream that is as fast or faster, and as many times less from a
+/// slower one as that one is slower.
 ///
 /// Taking over costs the other stream its connection, and a connection is
 /// worth what would be fetched with it. What a stream ten times slower
 /// would fetch in the two seconds a new connection may cost it is what
 /// this one fetches in a fifth of a second.
-pub fn worth(micros_each: u64, mine: u64) -> u64 {
+pub fn worth(cost: u64, micros_each: u64, mine: u64) -> u64 {
     if mine >= micros_each {
-        return WORTH_MICROS;
+        return cost;
     }
-    let scaled = u128::from(WORTH_MICROS) * u128::from(mine) / u128::from(micros_each.max(1));
-    u64::try_from(scaled).unwrap_or(WORTH_MICROS)
+    let scaled = u128::from(cost) * u128::from(mine) / u128::from(micros_each.max(1));
+    u64::try_from(scaled).unwrap_or(cost)
 }
 
 /// Whether a stream with nothing to do should fetch the chunk another is
@@ -154,7 +180,7 @@ pub fn relieve(micros_each: u64, waited: u64, mine: u64) -> bool {
     } else {
         waited
     };
-    left.saturating_sub(mine) > worth(micros_each, mine)
+    left.saturating_sub(mine) > worth(WORTH_MICROS, micros_each, mine)
 }
 
 #[cfg(test)]
@@ -262,15 +288,18 @@ mod tests {
         // At 250 ms a chunk, taking over half of sixteen brings the end
         // forward by two seconds, which is not yet worth it. Half of
         // seventeen, rounded up, is.
-        assert_eq!(spare(16, 250 * MS, 250 * MS), 0);
-        assert_eq!(spare(17, 250 * MS, 250 * MS), 9);
-        assert_eq!(spare(40, 250 * MS, 250 * MS), 20);
+        assert_eq!(spare(16, 250 * MS, 250 * MS, WORTH_MICROS), 0);
+        assert_eq!(spare(17, 250 * MS, 250 * MS, WORTH_MICROS), 9);
+        assert_eq!(spare(40, 250 * MS, 250 * MS, WORTH_MICROS), 20);
         // A stream that has fetched nothing is taken to be as fast.
-        assert_eq!(spare(40, 250 * MS, 0), 20);
+        assert_eq!(spare(40, 250 * MS, 0, WORTH_MICROS), 20);
         // One chunk that takes long is given up whole.
-        assert_eq!(spare(1, WORTH_MICROS, WORTH_MICROS), 0);
-        assert_eq!(spare(1, WORTH_MICROS + 1, WORTH_MICROS + 1), 1);
-        assert_eq!(spare(0, u64::MAX, 1), 0);
+        assert_eq!(spare(1, WORTH_MICROS, WORTH_MICROS, WORTH_MICROS), 0);
+        assert_eq!(
+            spare(1, WORTH_MICROS + 1, WORTH_MICROS + 1, WORTH_MICROS),
+            1
+        );
+        assert_eq!(spare(0, u64::MAX, 1, WORTH_MICROS), 0);
     }
 
     #[test]
@@ -278,47 +307,69 @@ mod tests {
         // Forty chunks left to a stream that takes 125 ms for each: five
         // seconds. One that is eight times slower could fetch five of
         // them in that time, which saves under a second.
-        assert_eq!(spare(40, 125 * MS, 1_000 * MS), 0);
+        assert_eq!(spare(40, 125 * MS, 1_000 * MS, WORTH_MICROS), 0);
         // With a minute's worth left to the fast one, a ninth of it is
         // worth taking.
-        assert_eq!(spare(480, 125 * MS, 1_000 * MS), 54);
+        assert_eq!(spare(480, 125 * MS, 1_000 * MS, WORTH_MICROS), 54);
     }
 
     #[test]
     fn a_faster_stream_needs_less_of_a_gain() {
-        assert_eq!(worth(250 * MS, 250 * MS), WORTH_MICROS);
+        assert_eq!(worth(WORTH_MICROS, 250 * MS, 250 * MS), WORTH_MICROS);
         // A slower one needs the whole of it, however slow.
-        assert_eq!(worth(250 * MS, 1_000 * MS), WORTH_MICROS);
-        assert_eq!(worth(1, u64::MAX), WORTH_MICROS);
+        assert_eq!(worth(WORTH_MICROS, 250 * MS, 1_000 * MS), WORTH_MICROS);
+        assert_eq!(worth(WORTH_MICROS, 1, u64::MAX), WORTH_MICROS);
         // One ten times faster needs a tenth.
-        assert_eq!(worth(250 * MS, 25 * MS), WORTH_MICROS / 10);
-        assert_eq!(worth(u64::MAX, 1), 0);
+        assert_eq!(worth(WORTH_MICROS, 250 * MS, 25 * MS), WORTH_MICROS / 10);
+        assert_eq!(worth(WORTH_MICROS, u64::MAX, 1), 0);
 
         // Three chunks left to a stream that takes 100 ms for each. One as
         // fast leaves them: under a third of a second is to be had. One a
         // hundred times faster takes them all.
-        assert_eq!(spare(3, 100 * MS, 100 * MS), 0);
-        assert_eq!(spare(3, 100 * MS, MS), 3);
+        assert_eq!(spare(3, 100 * MS, 100 * MS, WORTH_MICROS), 0);
+        assert_eq!(spare(3, 100 * MS, MS, WORTH_MICROS), 3);
         // The last chunk too: it is not being read yet.
-        assert_eq!(spare(1, 100 * MS, MS), 1);
+        assert_eq!(spare(1, 100 * MS, MS, WORTH_MICROS), 1);
+    }
+
+    #[test]
+    fn a_new_request_costs_more_on_a_far_link_than_on_a_near_one() {
+        // Not known: what it was always taken to be.
+        assert_eq!(restart_cost(0), WORTH_MICROS);
+        // The first byte after 1.2 s, as over a round trip of 600 ms: a
+        // new request costs three times that.
+        assert_eq!(restart_cost(1_200 * MS), 3_600 * MS);
+        assert_eq!(restart_cost(200 * MS), 600 * MS);
+        // Within bounds, however near or far.
+        assert_eq!(restart_cost(1), 100 * MS);
+        assert_eq!(restart_cost(u64::MAX), 10_000 * MS);
+
+        // Streams of one speed, 250 ms a chunk, and twenty chunks left
+        // to one: taking half over gains two and a half seconds. That is
+        // worth it near by, and not far away.
+        assert_eq!(spare(20, 250 * MS, 250 * MS, restart_cost(200 * MS)), 10);
+        assert_eq!(spare(20, 250 * MS, 250 * MS, restart_cost(1_200 * MS)), 0);
     }
 
     #[test]
     fn a_fast_stream_takes_most_from_a_slow_one() {
         // Nine chunks left at a second each: one that is eight times
         // faster takes eight of them.
-        assert_eq!(spare(9, 1_000 * MS, 125 * MS), 8);
+        assert_eq!(spare(9, 1_000 * MS, 125 * MS, WORTH_MICROS), 8);
         // From a stream that has all but stopped, everything.
-        assert_eq!(spare(9, 3_600_000 * MS, 125 * MS), 9);
-        assert_eq!(spare(1, 3_000 * MS, 125 * MS), 1);
-        assert_eq!(spare(u64::MAX, u64::MAX, 1), u64::MAX);
-        assert_eq!(spare(u64::MAX, u64::MAX, u64::MAX), u64::MAX / 2 + 1);
+        assert_eq!(spare(9, 3_600_000 * MS, 125 * MS, WORTH_MICROS), 9);
+        assert_eq!(spare(1, 3_000 * MS, 125 * MS, WORTH_MICROS), 1);
+        assert_eq!(spare(u64::MAX, u64::MAX, 1, WORTH_MICROS), u64::MAX);
+        assert_eq!(
+            spare(u64::MAX, u64::MAX, u64::MAX, WORTH_MICROS),
+            u64::MAX / 2 + 1
+        );
     }
 
     #[test]
     fn nothing_is_taken_from_a_stream_of_which_nothing_is_known() {
-        assert_eq!(spare(u64::MAX, 0, 0), 0);
-        assert_eq!(spare(u64::MAX, 0, 250 * MS), 0);
+        assert_eq!(spare(u64::MAX, 0, 0, WORTH_MICROS), 0);
+        assert_eq!(spare(u64::MAX, 0, 250 * MS, WORTH_MICROS), 0);
     }
 }
 
@@ -367,7 +418,7 @@ mod proofs {
         let left: u64 = kani::any();
         let micros_each: u64 = kani::any();
         let mine: u64 = kani::any();
-        let spared = spare(left, micros_each, mine);
+        let spared = spare(left, micros_each, mine, WORTH_MICROS);
 
         assert!(spared <= left);
         if spared > 0 {
@@ -416,10 +467,19 @@ mod proofs {
         let faster: u64 = kani::any();
         kani::assume(faster <= mine);
 
-        assert!(worth(micros_each, mine) <= WORTH_MICROS);
+        let cost: u64 = kani::any();
+        assert!(worth(cost, micros_each, mine) <= cost);
         if mine >= micros_each {
-            assert!(worth(micros_each, mine) == WORTH_MICROS);
+            assert!(worth(cost, micros_each, mine) == cost);
         }
-        assert!(worth(micros_each, faster) <= worth(micros_each, mine));
+        assert!(worth(cost, micros_each, faster) <= worth(cost, micros_each, mine));
+
+        // What a new request is reckoned to cost is within its bounds,
+        // whatever was measured.
+        let restart: u64 = kani::any();
+        let reckoned = restart_cost(restart);
+        if restart > 0 {
+            assert!(reckoned >= RESTART_LEAST && reckoned <= RESTART_MOST);
+        }
     }
 }

@@ -349,6 +349,14 @@ pub trait Supply: fmt::Debug + Send + Sync {
     /// [`Capabilities::random_access`] is asked for one chunk at a time,
     /// from the first that is missing onwards.
     fn capabilities(&self) -> Capabilities;
+
+    /// The longest this supplier has taken to begin answering a request,
+    /// in microseconds: what it costs to break off an answer and ask
+    /// anew, where each request may need a connection of its own. Zero if
+    /// it cannot tell.
+    fn restart_micros(&self) -> u64 {
+        0
+    }
 }
 
 /// What a supplier says about itself.

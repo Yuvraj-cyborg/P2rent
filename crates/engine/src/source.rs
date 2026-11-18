@@ -14,6 +14,7 @@ use model::artifact::{Bitfield, ChunkLocation, Tree};
 use model::place::{
     Arrived, Capabilities, Failure, Pending, Reader, Source, Status, Supplier, SupplierId, Supply,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Most readers kept open with nobody reading from them. One more, and the
@@ -46,6 +47,7 @@ impl Supplier for OfSource {
             tree: self.tree.clone(),
             source: self.source.clone(),
             readers: Mutex::default(),
+            slowest_open: AtomicU64::new(0),
         });
         Box::pin(std::future::ready(Ok(opened)))
     }
@@ -57,6 +59,9 @@ struct Opened {
     tree: Arc<Tree>,
     source: Arc<dyn Source>,
     readers: Mutex<Vec<Waiting>>,
+    /// The longest a reader has taken to open, in microseconds: for a web
+    /// server, a request on a new connection until its answer begins.
+    slowest_open: AtomicU64,
 }
 
 /// A reader that has more to give.
@@ -126,10 +131,14 @@ impl Supply for Opened {
                 waiting
             } else {
                 let left = self.reach(index, at, following);
+                let asked = std::time::Instant::now();
+                let reader = self.source.open(at.file, at.offset, left).await?;
+                let took = u64::try_from(asked.elapsed().as_micros()).unwrap_or(u64::MAX);
+                self.slowest_open.fetch_max(took, Ordering::Relaxed);
                 Waiting {
                     next: index,
                     left,
-                    reader: self.source.open(at.file, at.offset, left).await?,
+                    reader,
                 }
             };
             let data = open.reader.read(at.len, arrived).await?;
@@ -150,5 +159,9 @@ impl Supply for Opened {
 
     fn capabilities(&self) -> Capabilities {
         self.source.capabilities()
+    }
+
+    fn restart_micros(&self) -> u64 {
+        self.slowest_open.load(Ordering::Relaxed)
     }
 }

@@ -811,10 +811,12 @@ async fn work(pipeline: Pipeline) -> Result<(), Ended> {
             (None, true) => Size::Run {
                 streams: 1,
                 micros_each,
+                restart: supply.restart_micros(),
             },
             (None, false) => Size::Run {
                 streams: run.streams.load(Ordering::Relaxed),
                 micros_each,
+                restart: supply.restart_micros(),
             },
         };
         let reserved = {

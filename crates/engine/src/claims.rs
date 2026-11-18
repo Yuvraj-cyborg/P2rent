@@ -66,6 +66,9 @@ struct Reading {
     /// When the last chunk came or, if none has, when the run was begun:
     /// microseconds since the transfer started.
     since: u64,
+    /// What it costs whoever reads the run to have its answer cut off and
+    /// ask anew, in microseconds: see [`run::restart_cost`].
+    cost: u64,
 }
 
 impl Reading {
@@ -91,7 +94,7 @@ impl Reading {
     /// How many chunks to give up from the end, at time `now`, to a
     /// fetcher that takes `mine` for a chunk: see [`run::spare`].
     fn spare(&self, now: u64, mine: u64) -> u64 {
-        run::spare(self.left(), self.each(now), mine)
+        run::spare(self.left(), self.each(now), mine, self.cost)
     }
 
     /// The chunk that is being read, if a fetcher that takes `mine` for a
@@ -118,6 +121,9 @@ pub(crate) enum Size {
         streams: u64,
         /// How long a chunk lately took this one, in microseconds.
         micros_each: u64,
+        /// The longest a request of this one's supplier has taken to
+        /// begin being answered, in microseconds, or zero if not known.
+        restart: u64,
     },
 }
 
@@ -191,6 +197,7 @@ impl Claims {
             Size::Run {
                 streams,
                 micros_each,
+                ..
             } => {
                 let schedule = &state.schedule;
                 let free = (0..schedule.len())
@@ -218,9 +225,14 @@ impl Claims {
                 run::length(free, streams, micros_each, run::micros_left(work, speeds))
             }
         };
-        let lately = match size {
-            Size::One => 0,
-            Size::Run { micros_each, .. } => micros_each,
+        let (lately, cost) = match size {
+            // A chunk that is a request of its own is never cut off.
+            Size::One => (0, run::WORTH_MICROS),
+            Size::Run {
+                micros_each,
+                restart,
+                ..
+            } => (micros_each, run::restart_cost(restart)),
         };
         let first = state.schedule.claim(owner, available, cursor)?;
         let mut end = first + 1;
@@ -243,6 +255,7 @@ impl Claims {
                 stream: matches!(size, Size::Run { .. }),
                 micros_each: lately,
                 since: now,
+                cost,
             },
         ));
         drop(state);
@@ -307,6 +320,7 @@ impl Claims {
                 stream: false,
                 micros_each: 0,
                 since: now,
+                cost: run::WORTH_MICROS,
             },
         ));
         drop(state);
@@ -532,6 +546,7 @@ mod tests {
         Size::Run {
             streams,
             micros_each: 0,
+            restart: 0,
         }
     }
 
@@ -618,6 +633,7 @@ mod tests {
         let size = Size::Run {
             streams: 2,
             micros_each: 100 * MS,
+            restart: 0,
         };
         let mut again = Claims::reserve(&claims, 1, &held, &mut cursor, size, 0).unwrap();
         taken(&mut again).0.len()
@@ -956,6 +972,7 @@ mod tests {
                     let size = Size::Run {
                         streams,
                         micros_each: fetcher.lately * MS,
+                        restart: 0,
                     };
                     let (owner, at) = (1, now * MS);
                     let mut reserved =
@@ -1147,6 +1164,7 @@ mod interleavings {
             let size = Size::Run {
                 streams: 1,
                 micros_each: 0,
+                restart: 0,
             };
             let mut reserved = Claims::reserve(&claims, 0, &all, &mut 0, size, 0).unwrap();
 
