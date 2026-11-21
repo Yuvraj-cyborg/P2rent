@@ -32,10 +32,21 @@ first. Each line names the pull request that made the change.
   every ticket did before (#126).
 - `mux probe` says whether a ticket is a swarm's (#126).
 
+- **Install in one line** on macOS and Linux:
+  `curl -fsSL https://raw.githubusercontent.com/yuvichh/mux/main/install.sh | sh`.
+  It takes the build for the machine, checks it against the release's
+  SHA-256 digest, and puts it in `~/.local/bin` (#127).
+- **Homebrew**: `brew install yuvichh/tap/mux` (#127).
+
 ### Changed
 
 - An error message names a ticket by the id of what it offers, and leaves
   its secret out (#126).
+
+### Fixed
+
+- The Nix flake builds again: `nix profile install github:yuvichh/mux`. It
+  had left out a member of the workspace (#127).
 
 ## 0.3.0
 

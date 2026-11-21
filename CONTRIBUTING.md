@@ -55,6 +55,10 @@ case around it.
   tests start real servers from the test code.
 - No shell or Python scripts. A development task that needs logic is written
   as a Rust `xtask` binary and run with `cargo xtask`.
+- The one shell script is `install.sh`, which has to run on a machine that
+  has nothing of mux yet. It is tested from Rust, against a release that is
+  a folder (`crates/cli/tests/install.rs`), and `just lint` runs
+  `shellcheck` on it.
 
 ## 5. Static analysis is required
 

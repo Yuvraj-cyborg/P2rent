@@ -37,6 +37,7 @@ lint:
     cargo clippy --locked --manifest-path fuzz/Cargo.toml -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --document-private-items
     typos
+    shellcheck install.sh
 
 # Needs the 1.91 toolchain: `rustup toolchain install 1.91`.
 

@@ -1,5 +1,5 @@
 {
-  description = "mux - swarm distribution of large artifacts over QUIC";
+  description = "mux - copies and syncs data between folders, the web and other machines";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -18,17 +18,25 @@
           version = workspace.version;
 
           # Only the files that affect the build, so editing docs does not
-          # trigger a rebuild.
+          # trigger a rebuild. Every member of the workspace has to be
+          # here, or cargo refuses the workspace.
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
               ./crates
+              ./benches
               ./xtask
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
+
+          # The tests start real nodes on sockets and run the install
+          # script with the system's tools, which a build in Nix's sandbox
+          # is not given. They run in CI on every change.
+          doCheck = false;
+          cargoBuildFlags = [ "--package" "cli" ];
 
           meta = {
             description = manifest.description;
@@ -46,7 +54,7 @@
 
         apps.default = flake-utils.lib.mkApp { drv = mux; };
 
-        # `nix flake check` builds the package, which runs the test suite.
+        # `nix flake check` builds the package.
         checks = { inherit mux; };
 
         devShells.default = pkgs.mkShell {
