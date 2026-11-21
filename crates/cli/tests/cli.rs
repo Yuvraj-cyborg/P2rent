@@ -536,7 +536,7 @@ fn probe_says_what_a_ticket_names_and_who_holds_it() {
     );
     let lines: Vec<&str> = said.lines().collect();
     assert_eq!(
-        lines[..6],
+        lines[..7],
         [
             "name     tree",
             "kind     folder",
@@ -544,9 +544,10 @@ fn probe_says_what_a_ticket_names_and_who_holds_it() {
             "files    3",
             "checked  verified, if it is copied",
             "parts    read several at once",
+            "swarm    no: it is fetched from the machines the ticket names alone",
         ]
     );
-    assert_eq!(lines[6], format!("holder   {}  all of it", &id[..8]));
+    assert_eq!(lines[7], format!("holder   {}  all of it", &id[..8]));
 
     let probed = with_ticket(&key, ["--json", "probe"], &ticket)
         .output()
@@ -559,6 +560,7 @@ fn probe_says_what_a_ticket_names_and_who_holds_it() {
         (&"tree".into(), &"folder".into())
     );
     assert_eq!(line["checked"], "verified");
+    assert_eq!(line["swarm"], false);
     assert_eq!(
         line["holders"],
         serde_json::json!([{ "node": id, "bytes": 3_000_000 }])
@@ -664,25 +666,20 @@ fn an_offer_is_told_to_a_program_as_a_line_with_its_ticket() {
     assert_eq!(files_under(&out.join("tree")), files_under(&source));
 }
 
-/// A machine that copied with `--seed` goes on offering what it copied:
-/// with the first offer gone, the next machine copies from it alone.
-#[test]
-fn a_copy_that_goes_on_offering_serves_the_next_machine() {
-    let tmp = tempfile::tempdir().unwrap();
-    let source = tmp.path().join("tree");
-    small_tree(&source);
-    let (offering, ticket) = offer(&tmp.path().join("offer.key"), &source);
-
+/// A second machine that copies what `ticket` names with `--seed`, at a
+/// port of its own. Gives the process, where it listens, its node id, and
+/// what it writes on standard output after the line for what it saved.
+fn copy_and_go_on_offering(tmp: &Path, ticket: &str) -> (KillOnDrop, String, String, impl BufRead) {
     // A port for the second machine, so that a ticket can say where it is.
     let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let at = free.local_addr().unwrap().to_string();
     drop(free);
-    let key = tmp.path().join("second.key");
+    let key = tmp.join("second.key");
     let id = String::from_utf8(mux(&key).arg("id").output().unwrap().stdout).unwrap();
-    let second = tmp.path().join("second");
+    let second = tmp.join("second");
     let mut copying = KillOnDrop(
         mux(&key)
-            .args(["cp", &ticket])
+            .args(["cp", ticket])
             .arg(format!("{}/", second.display()))
             .args(["--seed", "--no-relay", "--listen", &at])
             .stdout(Stdio::piped())
@@ -691,15 +688,80 @@ fn a_copy_that_goes_on_offering_serves_the_next_machine() {
             .unwrap(),
     );
     // It says what it wrote once that is whole, and does not end.
+    let mut said = BufReader::new(copying.0.stdout.take().unwrap());
     let mut line = String::new();
-    BufReader::new(copying.0.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
+    said.read_line(&mut line).unwrap();
     assert!(line.trim_end().ends_with("\tverified"), "{line:?}");
+    (copying, at, id.trim().to_owned(), said)
+}
+
+/// `ticket` with the machine `id` at `at` in place of the one it names.
+fn naming(ticket: &str, id: &str, at: &str) -> String {
+    let (before, after) = ticket.split_once("&peer=").unwrap();
+    let rest = after
+        .split_once('&')
+        .map_or(String::new(), |(_, rest)| format!("&{rest}"));
+    format!("{before}&peer={id}@{at}{rest}")
+}
+
+/// A machine that copied with `--seed` goes on offering what it copied,
+/// under a ticket of its own: with the first offer gone, the next machine
+/// copies from it alone. The ticket it was given opens nothing there.
+#[test]
+fn a_copy_that_goes_on_offering_serves_the_next_machine() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let (offering, ticket) = offer(&tmp.path().join("offer.key"), &source);
+
+    let (_copying, at, id, mut said) = copy_and_go_on_offering(tmp.path(), &ticket);
+    let mut own = String::new();
+    said.read_line(&mut own).unwrap();
+    let own = own.trim();
+    assert!(own.starts_with("mux://"), "{own:?}");
+    assert!(own.contains(&id), "{own:?}");
     drop(offering);
 
-    let content = ticket.split('?').next().unwrap();
-    let from_the_second = format!("{content}?peer={}@{at}", id.trim());
+    let third = tmp.path().join("third");
+    let copied = with_ticket(&tmp.path().join("third.key"), ["cp"], own)
+        .arg(format!("{}/", third.display()))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&copied.stderr).into_owned();
+    assert!(copied.status.success(), "{said}");
+    assert!(said.contains("from 1 machine"), "{said}");
+    assert_eq!(files_under(&third.join("tree")), files_under(&source));
+
+    // The first ticket, pointed at the second machine: its secret is that
+    // of the first offer, and the second machine holds nothing under it.
+    let passed_on = naming(&ticket, &id, &at);
+    let fourth = tmp.path().join("fourth");
+    let refused = with_ticket(&tmp.path().join("fourth.key"), ["cp"], &passed_on)
+        .arg(format!("{}/", fourth.display()))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert_eq!(refused.status.code(), Some(3), "{said}");
+    assert!(!fourth.join("tree").exists());
+}
+
+/// What a swarm's ticket names is passed on under that ticket: with the
+/// first offer gone, the next machine copies from the second with it.
+#[test]
+fn a_copy_of_what_a_swarms_ticket_names_is_passed_on_under_that_ticket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let key = tmp.path().join("offer.key");
+    let (offering, ticket) =
+        ticket_from(mux(&key).args(["cp", "--swarm"]).arg(&source).arg("peer:"));
+    assert!(ticket.ends_with("&swarm=1"), "{ticket:?}");
+
+    let (_copying, at, id, _said) = copy_and_go_on_offering(tmp.path(), &ticket);
+    drop(offering);
+
+    let from_the_second = naming(&ticket, &id, &at);
+    assert!(from_the_second.ends_with("&swarm=1"), "{from_the_second:?}");
     let third = tmp.path().join("third");
     let copied = with_ticket(&tmp.path().join("third.key"), ["cp"], &from_the_second)
         .arg(format!("{}/", third.display()))
@@ -709,6 +771,136 @@ fn a_copy_that_goes_on_offering_serves_the_next_machine() {
     assert!(copied.status.success(), "{said}");
     assert!(said.contains("from 1 machine"), "{said}");
     assert_eq!(files_under(&third.join("tree")), files_under(&source));
+}
+
+/// The last line a command wrote for a program, which says how it failed.
+fn failure(stdout: &[u8]) -> serde_json::Value {
+    let said = String::from_utf8_lossy(stdout);
+    serde_json::from_str(said.lines().last().unwrap()).unwrap()
+}
+
+/// What is offered with `--to` is copied by the machines that are named.
+/// Another machine that has the ticket is refused, and told what to do.
+#[test]
+fn an_offer_to_named_machines_refuses_every_other() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let named = tmp.path().join("named.key");
+    let id = String::from_utf8(mux(&named).arg("id").output().unwrap().stdout).unwrap();
+    let offering = mux(&tmp.path().join("offer.key"));
+    let mut offering = offering;
+    let (_offering, ticket) = ticket_from(
+        offering
+            .args(["cp", "--to", id.trim()])
+            .arg(&source)
+            .arg("peer:"),
+    );
+
+    let out = tmp.path().join("other");
+    let refused = with_ticket(&tmp.path().join("other.key"), ["--json", "cp"], &ticket)
+        .arg(format!("{}/", out.display()))
+        .output()
+        .unwrap();
+    let why = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert_eq!(refused.status.code(), Some(7), "{why}");
+    assert!(why.contains("does not let this machine fetch it"), "{why}");
+    assert!(why.contains("hint: ") && why.contains("--to"), "{why}");
+    // What is said names the ticket and leaves its secret out.
+    assert!(!why.contains("secret="), "{why}");
+    let line = failure(&refused.stdout);
+    assert_eq!(
+        (&line["event"], &line["code"], &line["kind"]),
+        (&"error".into(), &7.into(), &"refused".into())
+    );
+    assert!(!out.exists(), "a copy that was refused wrote something");
+
+    let out = tmp.path().join("named");
+    let copied = with_ticket(&named, ["cp"], &ticket)
+        .arg(format!("{}/", out.display()))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&copied.stderr).into_owned();
+    assert!(copied.status.success(), "{said}");
+    assert_eq!(files_under(&out.join("tree")), files_under(&source));
+}
+
+/// What is offered with `--once` is copied by the first machine that asks,
+/// as often as it asks, and by no machine after it.
+#[test]
+fn an_offer_made_once_is_for_the_first_machine_that_asks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let mut offering = mux(&tmp.path().join("offer.key"));
+    let (_offering, ticket) = ticket_from(offering.args(["seed", "--once"]).arg(&source));
+
+    let copy = |key: &str, out: &str| {
+        with_ticket(&tmp.path().join(key), ["cp"], &ticket)
+            .arg(format!("{}/", tmp.path().join(out).display()))
+            .output()
+            .unwrap()
+    };
+    let first = copy("first.key", "first");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        files_under(&tmp.path().join("first/tree")),
+        files_under(&source)
+    );
+
+    let second = copy("second.key", "second");
+    let why = String::from_utf8_lossy(&second.stderr).into_owned();
+    assert_eq!(second.status.code(), Some(7), "{why}");
+    assert!(!tmp.path().join("second").exists());
+
+    // The first machine is still let in: it finds all of it there.
+    let again = copy("first.key", "first");
+    let said = String::from_utf8_lossy(&again.stderr).into_owned();
+    assert!(again.status.success(), "{said}");
+    assert!(said.contains("already there"), "{said}");
+}
+
+/// Who may fetch is said of what is offered. A command that offers nothing,
+/// or one that passes a swarm on, is refused as it is typed: it opens no
+/// socket, and gives this machine no key.
+#[test]
+fn who_may_fetch_can_be_said_only_of_what_is_offered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("tree");
+    small_tree(&source);
+    let key = tmp.path().join("unused.key");
+    let out = format!("{}/", tmp.path().join("out").display());
+    let id = "ab".repeat(32);
+    let of_a_swarm = format!(
+        "mux://{id}?secret={}&peer={id}@127.0.0.1:9&swarm=1",
+        "5e".repeat(16)
+    );
+    let source = source.to_str().unwrap();
+    let cases: [(&[&str], &str); 5] = [
+        (&["cp", source, &out, "--once"], "offers nothing"),
+        (&["cp", source, &out, "--swarm"], "offers nothing"),
+        (&["cp", source, &out, "--to", &id], "offers nothing"),
+        (
+            &["cp", &of_a_swarm, &out, "--seed", "--once"],
+            "every holder of that ticket",
+        ),
+        (
+            &["cp", source, "peer:", "--swarm", "--to", &id],
+            "cannot be used with",
+        ),
+    ];
+    for (typed, why) in cases {
+        let refused = mux(&key).args(typed).output().unwrap();
+        let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+        assert_eq!(refused.status.code(), Some(2), "{typed:?}: {said}");
+        assert!(said.contains(why), "{typed:?}: {said}");
+    }
+    assert!(!key.exists());
+    assert!(!tmp.path().join("out").exists());
 }
 
 /// Runs a sync against the same live peer, and returns its JSON events.

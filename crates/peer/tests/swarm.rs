@@ -2,11 +2,14 @@
 
 mod common;
 
-use common::{CHUNK, get, index, listing, node, options, pattern, peer_info, seed, ticket_for};
+use common::{
+    CHUNK, get, index, listing, node, options, pattern, peer_info, seed, seed_for, swarm,
+    ticket_for,
+};
 use model::artifact::PART_SUFFIX;
 use peer::Error;
 use peer::net::{Endpoint, Identity};
-use peer::swarm::{Holder, Progress, TicketPeer, announce, download, fetch, find, holders};
+use peer::swarm::{Access, Holder, Progress, TicketPeer, announce, download, fetch, find, holders};
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +22,7 @@ async fn a_downloader_becomes_a_source() {
     fs::write(&source, &data).unwrap();
 
     let origin = node().await;
-    let (artifact, ticket) = seed(&origin, &source);
+    let (artifact, ticket) = seed_for(&origin, &source, swarm());
     let first = node().await;
     get(&first, &ticket, &tmp.path().join("first"))
         .await
@@ -48,30 +51,35 @@ async fn status_lists_other_participants() {
     fs::write(&source, pattern(CHUNK * 8, 2)).unwrap();
 
     let origin = node().await;
-    let (artifact, ticket) = seed(&origin, &source);
+    let (artifact, ticket) = seed_for(&origin, &source, swarm());
     let downloader = node().await;
     get(&downloader, &ticket, &tmp.path().join("out"))
         .await
         .unwrap();
 
-    let observer = Endpoint::bind(&Identity::generate(), &common::direct())
-        .await
-        .unwrap();
-    let connection = observer.connect(&peer_info(&origin)).await.unwrap();
-    let status = connection
-        .status(artifact.content_id())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(status.peers, [peer_info(&downloader)]);
+    // One that only looks, and one that asks to be listed.
+    let endpoint = || async {
+        let bound = Endpoint::bind(&Identity::generate(), &common::direct()).await;
+        bound.unwrap()
+    };
+    let (looker, joiner) = (endpoint().await, endpoint().await);
+    let looking = looker.connect(&peer_info(&origin)).await.unwrap();
+    let joining = joiner.connect(&peer_info(&origin)).await.unwrap();
+    let content = artifact.content_id();
+    let peers = |status: Option<peer::net::proto::Status>| status.unwrap().peers;
 
-    // The observer is now a participant too, but is never listed to itself.
-    let again = connection
-        .status(artifact.content_id())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(again.peers, [peer_info(&downloader)]);
+    let seen = looking.status(content, &ticket.secret, false).await;
+    assert_eq!(peers(seen.unwrap()), [peer_info(&downloader)]);
+    // Whoever asks to be listed is, but never to itself.
+    for _ in 0..2 {
+        let seen = joining.status(content, &ticket.secret, true).await;
+        assert_eq!(peers(seen.unwrap()), [peer_info(&downloader)]);
+    }
+    // The one that only looked was not listed. The one that joined is, and
+    // comes first: it asked last.
+    let seen = looking.status(content, &ticket.secret, false).await;
+    let listed: Vec<_> = peers(seen.unwrap()).into_iter().map(|p| p.node).collect();
+    assert_eq!(listed, [joiner.node_id(), downloader.node_id()]);
 }
 
 #[tokio::test]
@@ -86,16 +94,18 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     let forged_dir = tmp.path().join("forged");
     fs::create_dir_all(&forged_dir).unwrap();
     fs::write(forged_dir.join("model.bin"), pattern(CHUNK * 20, 99)).unwrap();
+    // Both are of one swarm: they hold its secret.
+    let access = swarm();
     let liar = node().await;
-    liar.seed(artifact.clone(), forged_dir.join("model.bin"));
+    liar.seed(
+        artifact.clone(),
+        forged_dir.join("model.bin"),
+        access.clone(),
+    );
 
     let honest = node().await;
-    honest.seed(artifact.clone(), root);
-    let announcer = tokio::spawn(announce(
-        honest.clone(),
-        artifact.content_id(),
-        vec![peer_info(&liar)],
-    ));
+    let share = honest.seed(artifact.clone(), root, access.clone());
+    let announcer = tokio::spawn(announce(honest.clone(), share, vec![peer_info(&liar)]));
 
     // Wait until the liar knows about the honest node.
     let observer = Endpoint::bind(&Identity::generate(), &common::direct())
@@ -105,7 +115,7 @@ async fn a_lying_seeder_is_dropped_and_an_honest_peer_is_found_through_it() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let status = connection
-                .status(artifact.content_id())
+                .status(artifact.content_id(), &access.secret, false)
                 .await
                 .unwrap()
                 .unwrap();
@@ -142,7 +152,11 @@ async fn forged_data_is_never_accepted() {
     fs::create_dir_all(&forged_dir).unwrap();
     fs::write(forged_dir.join("model.bin"), pattern(CHUNK * 6, 98)).unwrap();
     let liar = node().await;
-    liar.seed(artifact.clone(), forged_dir.join("model.bin"));
+    liar.seed(
+        artifact.clone(),
+        forged_dir.join("model.bin"),
+        Access::new(),
+    );
 
     let downloader = node().await;
     let out = tmp.path().join("out");
@@ -196,6 +210,9 @@ async fn many_downloaders_share_one_origin() {
     while let Some(joined) = downloads.join_next().await {
         let (out, report) = joined.unwrap();
         assert_eq!(fs::read(out.join("model.bin")).unwrap(), data);
+        // The ticket is no swarm's: all of it came from the origin, and
+        // none from another machine that was fetching it.
+        assert_eq!(report.sources, [(origin.node_id(), data.len() as u64)]);
         total_fetched += report.fetched_bytes;
     }
     assert_eq!(total_fetched, 6 * data.len() as u64);
@@ -204,7 +221,8 @@ async fn many_downloaders_share_one_origin() {
 /// Two nodes hold the same bytes under different names, permissions and
 /// times. Their manifests differ, so their tickets differ, but the content
 /// is one swarm: a download that asked for the first node's artifact is fed
-/// by the second.
+/// by the second, which offers its copy to the holders of the first's
+/// ticket.
 #[tokio::test]
 async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
     let tmp = tempfile::tempdir().unwrap();
@@ -227,24 +245,21 @@ async fn the_same_bytes_under_other_names_and_times_are_one_swarm() {
 
     let (first, second) = (node().await, node().await);
     let (wanted, ticket) = seed(&first, &first_root);
-    let (other, _) = seed(&second, &second_root);
+    let (other, _) = seed_for(&second, &second_root, Access::of(&ticket));
     assert_ne!(wanted.id(), other.id());
     assert_eq!(wanted.content_id(), other.content_id());
+    let secret = ticket.secret;
 
     // The second node holds the content, but not the first node's manifest.
     let observer = Endpoint::bind(&Identity::generate(), &common::direct())
         .await
         .unwrap();
     let connection = observer.connect(&peer_info(&second)).await.unwrap();
-    assert!(connection.manifest(wanted.id()).await.unwrap().is_none());
-    assert!(connection.manifest(other.id()).await.unwrap().is_some());
-    assert!(
-        connection
-            .status(wanted.content_id())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let manifest = |id| connection.manifest(id, &secret);
+    assert!(manifest(wanted.id()).await.unwrap().is_none());
+    assert!(manifest(other.id()).await.unwrap().is_some());
+    let status = connection.status(wanted.content_id(), &secret, false);
+    assert!(status.await.unwrap().is_some());
 
     // Take the first node's files away. It can still say what the artifact
     // is, and every chunk has to come from the second node.
@@ -269,8 +284,11 @@ async fn the_peers_of_a_ticket_say_how_much_of_it_each_holds() {
     let source = tmp.path().join("model.bin");
     let data = pattern(CHUNK * 8 + 100, 6);
     fs::write(&source, &data).unwrap();
+    // All three are of one swarm: the one that fetches a part answers for
+    // what it has.
+    let access = swarm();
     let whole = node().await;
-    let (artifact, _) = seed(&whole, &source);
+    let (artifact, _) = seed_for(&whole, &source, access.clone());
 
     // A node that has the first three chunks and can get no more: the one
     // peer it knows sends other bytes.
@@ -278,7 +296,7 @@ async fn the_peers_of_a_ticket_say_how_much_of_it_each_holds() {
     fs::create_dir_all(&forged).unwrap();
     fs::write(forged.join("model.bin"), pattern(data.len(), 97)).unwrap();
     let liar = node().await;
-    liar.seed(artifact.clone(), forged.join("model.bin"));
+    liar.seed(artifact.clone(), forged.join("model.bin"), access);
     let partial = node().await;
     let out = tmp.path().join("out");
     fs::create_dir_all(&out).unwrap();
@@ -325,7 +343,7 @@ async fn a_supplier_that_is_no_peer_fills_in_for_a_peer_that_lies() {
     fs::create_dir_all(&forged).unwrap();
     fs::write(forged.join("model.bin"), pattern(data.len(), 96)).unwrap();
     let liar = node().await;
-    liar.seed(artifact.clone(), forged.join("model.bin"));
+    liar.seed(artifact.clone(), forged.join("model.bin"), Access::new());
 
     let downloader = node().await;
     let mut found = find(&downloader, &ticket_for(&liar, &artifact))

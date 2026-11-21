@@ -1,7 +1,7 @@
 //! `mux get`: `mux cp TICKET FOLDER`, under the name it had first.
 
-use super::Reach;
 use super::cp::{self, Get};
+use super::{Reach, Sharing};
 use mux::swarm::{Ticket, TicketPeer};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
@@ -14,9 +14,14 @@ pub(super) struct Args {
     #[arg(short, long, default_value = ".", value_name = "DIR")]
     out: PathBuf,
 
-    /// Keep serving the artifact to other machines after the download
+    /// Go on offering the artifact to other machines after the download:
+    /// in its swarm if the ticket is a swarm's, and under a ticket of its
+    /// own if not
     #[arg(long)]
     seed: bool,
+
+    #[command(flatten)]
+    sharing: Sharing,
 
     /// Additional peer to try, by its node id and, if known, where it is
     /// (repeatable)
@@ -46,6 +51,7 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
         max_peers: args.max_peers,
         stall_timeout: args.stall_timeout,
         reach: args.reach,
+        sharing: args.sharing,
     };
     cp::run(cp::Args::get(ticket.to_string(), folder, told), json, key).await
 }

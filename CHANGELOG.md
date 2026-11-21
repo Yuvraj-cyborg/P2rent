@@ -3,6 +3,40 @@
 What changed for someone who uses `mux`, release by release. The newest is
 first. Each line names the pull request that made the change.
 
+## Unreleased
+
+### Coming from 0.3.0
+
+- **This version does not talk to 0.3.** A request now has to prove that
+  it knows the secret of a ticket, and a 0.3 ticket has none. Every machine
+  has to move together, and tickets have to be made again. An old ticket is
+  refused with a line that says so (#126).
+- **A machine that fetches no longer serves.** In 0.3 every machine that
+  copied from a ticket also gave what it had to anyone who named the
+  content, and was listed to the others. Now that happens only for a ticket
+  made with `--swarm`. A fleet that fills from one machine adds `--swarm`
+  where it offers (#126).
+- `--seed` after a ticket that is not a swarm's writes a ticket of its own
+  for the copy (#126).
+
+### Added
+
+- **A secret in every ticket.** A machine that offers answers only who
+  proves it knows the secret. Without it a machine learns nothing, not even
+  whether the files are there. Each offer has a new secret, so stopping an
+  offer makes its ticket useless for good (#126).
+- **`--to NODE`** lets only the machines that are named fetch, and
+  **`--once`** only the first machine that asks. A machine that is not let
+  in ends with the new exit code 7, `refused` (#126).
+- **`--swarm`** makes a ticket whose holders fetch from each other, as
+  every ticket did before (#126).
+- `mux probe` says whether a ticket is a swarm's (#126).
+
+### Changed
+
+- An error message names a ticket by the id of what it offers, and leaves
+  its secret out (#126).
+
 ## 0.3.0
 
 [Release notes and downloads](https://github.com/yuvichh/mux/releases/tag/v0.3.0)

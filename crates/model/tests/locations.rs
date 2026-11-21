@@ -1,6 +1,7 @@
 //! Properties of tickets and locations, checked on generated inputs.
 
 use model::Error;
+use model::access::Secret;
 use model::artifact::Hash;
 use model::location::{Location, Protocol};
 use model::ticket::{NodeId, Ticket, TicketPeer, Whereabouts};
@@ -67,11 +68,19 @@ fn whereabouts() -> impl Strategy<Value = Option<Whereabouts>> {
 fn ticket() -> impl Strategy<Value = Ticket> {
     let peer = (node(), whereabouts()).prop_map(|(node, at)| TicketPeer { node, at });
     let origins = vec(web_address().prop_map(|(_, kept)| kept), 0..3);
-    (hash(), vec(peer, 0..5), origins).prop_map(|(artifact, peers, origins)| Ticket {
-        artifact,
-        peers,
-        origins,
-    })
+    let access = (
+        any::<[u8; 16]>().prop_map(Secret::from_bytes),
+        any::<bool>(),
+    );
+    (hash(), access, vec(peer, 0..5), origins).prop_map(
+        |(artifact, (secret, swarm), peers, origins)| Ticket {
+            artifact,
+            secret,
+            swarm,
+            peers,
+            origins,
+        },
+    )
 }
 
 /// A path as a person types it, with no scheme: relative, absolute, or on a
@@ -171,10 +180,15 @@ proptest! {
 
     #[test]
     fn parsing_a_near_ticket_never_panics(artifact in hash(), tail in "[ -~]{0,120}") {
-        let text = format!("mux://{artifact}{tail}");
-        if let Ok(ticket) = text.parse::<Ticket>() {
-            prop_assert_eq!(ticket.artifact, artifact);
-            prop_assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
+        // With a secret and without: most of what a ticket can hold is
+        // read only once it has one.
+        let secret = format!("?secret={}", "5e".repeat(16));
+        for start in ["", secret.as_str()] {
+            let text = format!("mux://{artifact}{start}{tail}");
+            if let Ok(ticket) = text.parse::<Ticket>() {
+                prop_assert_eq!(ticket.artifact, artifact);
+                prop_assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
+            }
         }
     }
 

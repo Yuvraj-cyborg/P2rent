@@ -1,13 +1,14 @@
 //! The wire protocol.
 //!
 //! Every request travels on its own bidirectional QUIC stream. The requester
-//! sends one framed [`Request`] and closes its side; the responder answers
+//! sends one framed [`Call`] and closes its side; the responder answers
 //! with one framed [`Response`], followed by raw payload bytes when the
 //! response announces them. A frame is a big-endian `u32` length and a
 //! postcard-encoded message.
 
 use crate::error::{Error, Result};
 use iroh::endpoint::{RecvStream, SendStream};
+use model::access::Proof;
 use model::artifact::{Bitfield, Hash};
 use model::place::Arrived;
 use model::ticket::NodeId;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
 /// Protocol identifier negotiated during the TLS handshake.
-pub const ALPN: &[u8] = b"mux/4";
+pub const ALPN: &[u8] = b"mux/5";
 
 /// Requests are tiny; anything larger is a misbehaving peer.
 pub const MAX_REQUEST_BYTES: usize = 1024;
@@ -31,7 +32,21 @@ pub(crate) fn hint_page_chunks(chunk_size: u32) -> u32 {
     (16 * 1024 * 1024 / chunk_size.max(1)).max(1)
 }
 
-/// A request, sent as the first frame on a new stream.
+/// The first frame on a new stream: a request, and the proof that the
+/// requester knows the secret of what it asks for.
+///
+/// The proof is beside every request and not once for a connection, so
+/// that no request can be answered before it has been looked at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Call {
+    /// What [`Secret::proof`](model::access::Secret::proof) gives for the
+    /// two ends of this connection.
+    pub proof: Proof,
+    /// What is asked for.
+    pub request: Request,
+}
+
+/// What a peer is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     /// The encoded manifest of an artifact.
@@ -39,13 +54,16 @@ pub enum Request {
         /// The id of the artifact whose manifest is wanted.
         artifact: Hash,
     },
-    /// Which chunks the peer holds and which other peers it knows. Sending
-    /// this also registers the requester as a participant.
+    /// Which chunks the peer holds and, in a swarm, which other peers it
+    /// knows.
     Status {
         /// The content id being asked about. Peers that hold the same
         /// content under different names, permissions or times are one
         /// swarm.
         content: Hash,
+        /// Whether the requester serves this content too, and asks to be
+        /// told of to the others of the swarm. Only a swarm lists anyone.
+        listed: bool,
     },
     /// One chunk.
     Chunk {
@@ -76,10 +94,16 @@ pub enum Response {
         /// Length of the chunk that follows.
         len: u32,
     },
-    /// The peer does not have what was asked for.
+    /// The peer does not have what was asked for, or the proof beside
+    /// the request is not one for anything it has: the two are not told
+    /// apart, so that only who knows a secret learns what a peer holds.
     NotFound,
     /// Followed by one little-endian u64 for each chunk in the manifest.
     Hints,
+    /// The requester knows the secret, and is still not let in: what it
+    /// asks for is offered to other machines, or as many have fetched it
+    /// as may.
+    Refused,
 }
 
 /// What a peer holds of an artifact and whom else it knows.
@@ -87,7 +111,8 @@ pub enum Response {
 pub struct Status {
     /// Chunks the peer holds.
     pub have: Have,
-    /// Other participants the peer has seen recently.
+    /// Other participants the peer has seen recently. None, unless what
+    /// was asked about is a swarm's.
     pub peers: Vec<PeerInfo>,
 }
 

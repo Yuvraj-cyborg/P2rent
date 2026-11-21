@@ -104,6 +104,19 @@ impl Location {
     }
 }
 
+impl Location {
+    /// The place as a message names it: as it is written, but for a ticket
+    /// only as far as the id of what it names. What follows the id holds
+    /// the ticket's secret, and a message is read by more people than a
+    /// ticket is meant for.
+    pub fn in_a_message(&self) -> String {
+        match self {
+            Self::Ticket(ticket) => format!("mux://{}", ticket.artifact),
+            other => format!("{other}"),
+        }
+    }
+}
+
 impl fmt::Display for Location {
     /// Prints text that [`Location::parse`] reads back as the same place.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -465,7 +478,9 @@ mod tests {
     #[test]
     fn a_ticket_and_this_machine_are_places() {
         let id = Hash::of(b"content");
-        let text = format!("mux://{id}?peer={}@10.0.0.5:4433", "ab".repeat(32));
+        let secret = "5e".repeat(16);
+        let peer = "ab".repeat(32);
+        let text = format!("mux://{id}?secret={secret}&peer={peer}@10.0.0.5:4433");
         let Location::Ticket(ticket) = parse(&text).unwrap() else {
             panic!("not a ticket");
         };
@@ -475,6 +490,11 @@ mod tests {
             parse(&text.replacen("mux", "MUX", 1)).unwrap(),
             Location::Ticket(ticket)
         );
+
+        // A message names the ticket and leaves its secret out.
+        let named = parse(&text).unwrap().in_a_message();
+        assert_eq!(named, format!("mux://{id}"));
+        assert_eq!(parse("./a b").unwrap().in_a_message(), "./a b");
 
         assert_eq!(parse("peer:").unwrap(), Location::Serve);
         assert_eq!(parse("PEER:").unwrap(), Location::Serve);

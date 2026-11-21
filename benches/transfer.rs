@@ -23,7 +23,7 @@ mod timing;
 use ::fs as store;
 use model::artifact::DEFAULT_CHUNK_SIZE;
 use peer::net::{Identity, Options, Relays};
-use peer::swarm::{DownloadOptions, Node, Progress, Ticket, download};
+use peer::swarm::{Access, DownloadOptions, Node, Progress, Ticket, download};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -64,8 +64,12 @@ fn main() {
         relays: Relays::Off,
         ..Options::default()
     };
+    // One offer, held by every seeder: the ticket names them all.
+    let access = Access::new();
     let mut ticket = Ticket {
         artifact: artifact.id(),
+        secret: access.secret,
+        swarm: false,
         peers: Vec::new(),
         origins: Vec::new(),
     };
@@ -75,11 +79,9 @@ fn main() {
         let node = runtime
             .block_on(Node::bind(&Identity::generate(), &localhost))
             .expect("cannot start a seeder");
-        node.seed(artifact.clone(), indexed.root.clone());
+        let share = node.seed(artifact.clone(), indexed.root.clone(), access.clone());
         let addr = node.local_addrs()[0].to_string();
-        ticket
-            .peers
-            .extend(node.ticket(artifact.id(), &[addr]).peers);
+        ticket.peers.extend(node.ticket(&share, &[addr]).peers);
         seeding.push((runtime, node));
     }
 

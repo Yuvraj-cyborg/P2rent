@@ -46,6 +46,12 @@ pub enum Error {
     #[error("no reachable peer could provide the manifest")]
     ManifestUnavailable,
 
+    /// A peer knows this machine has the ticket, and still does not let it
+    /// fetch: what the ticket names is offered to other machines, or as
+    /// many have fetched it as may.
+    #[error("the machine that offers it does not let this machine fetch it")]
+    Refused,
+
     /// No chunk arrived for the whole of the stall timeout.
     #[error("download stalled: no peer made progress for {0:?}")]
     Stalled(std::time::Duration),

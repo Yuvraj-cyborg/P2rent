@@ -28,7 +28,7 @@ pub(super) async fn run(args: &Args, json: bool, key: Option<&Path>) -> anyhow::
     if let Location::Ticket(ticket) = &place {
         return on_other_machines(args, ticket, json, key)
             .await
-            .with_context(|| format!("cannot look at {place}"));
+            .with_context(|| format!("cannot look at {}", place.in_a_message()));
     }
     let sources = cp::sources(&place, None, args.hash, &[])
         .await
@@ -64,6 +64,7 @@ pub(super) async fn run(args: &Args, json: bool, key: Option<&Path>) -> anyhow::
             checked,
             parts,
             digests,
+            swarm: None,
             holders: None,
             origins: None,
         });
@@ -125,6 +126,7 @@ async fn on_other_machines(
             checked: "verified",
             parts: true,
             digests: Vec::new(),
+            swarm: Some(found.swarm()),
             holders: Some(
                 holders
                     .iter()
@@ -152,6 +154,14 @@ async fn on_other_machines(
     println!("files    {files}");
     println!("checked  verified, if it is copied");
     println!("parts    read several at once");
+    println!(
+        "swarm    {}",
+        if found.swarm() {
+            "yes: the machines that fetch it fetch from each other too"
+        } else {
+            "no: it is fetched from the machines the ticket names alone"
+        }
+    );
     for holder in &holders {
         let holds = match holder.bytes {
             Some(held) if held == bytes => "all of it".to_owned(),

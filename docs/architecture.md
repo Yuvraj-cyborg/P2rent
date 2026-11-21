@@ -41,7 +41,7 @@ crates/
 │   │   ├── net/       identity.rs  endpoint.rs  proto.rs
 │   │   ├── swarm/     node.rs  share.rs  server.rs
 │   │   │   └── download/  mod.rs  supplier.rs
-│   └── tests/         connection.rs  download.rs  swarm.rs  properties.rs
+│   └── tests/         connection.rs  download.rs  swarm.rs  access.rs  properties.rs
 └── cli/
     ├── src/           lib.rs  main.rs  cli/
     └── tests/         cli.rs
@@ -104,7 +104,7 @@ disk and no network.
 | `./data`, `/srv/data`, `C:\data` | a local path, kept as typed |
 | `file:///srv/a%20b` | the local path it holds, `/srv/a b` |
 | `https://example.org/big.iso` | a web address, kept as typed |
-| `mux://<id>?peer=…` | a ticket |
+| `mux://<id>?secret=…&peer=…` | a ticket |
 | `peer:` | this machine, serving |
 
 A text is a path unless it starts with a scheme of two or more characters
@@ -371,16 +371,59 @@ the figures.
 ## Swarm
 
 A `Node` owns the endpoint and a table of `Share`s. A share is one artifact
-plus the bitfield of chunks held locally and a short-lived list of peers that
-recently asked about it.
+plus the bitfield of chunks held locally, who may fetch it, and, for a
+swarm, a short-lived list of peers that recently asked about it.
+
+### Who may fetch
+
+A share has an `Access`: a secret, whether it is a swarm's, and which
+machines it lets in. The ticket carries the secret and says whether it is a
+swarm's.
+
+```
+                      ┌─ no share by that id ──────────────▶ not found
+ request, with ──▶ ───┤
+ a proof              │               ┌─ wrong ────────────▶ not found
+                      └─ the proof ───┤
+                                      │               ┌─ no ▶ refused
+                                      └─ right ─ let in? ┤
+                                                      └─ yes ▶ answered
+```
+
+- **The proof.** Every request is a `Call`: the request, and BLAKE3 keyed
+  with the secret over the server's node id and the client's
+  (`Secret::proof`). The handshake has proven both ids. So the secret is
+  never sent, a proof that one node was shown is of no use to it with
+  another, and a proof that one node may show is of no use to another node.
+- **One gate.** `server::asked_for` looks at the proof before anything is
+  answered, whatever is asked for: the manifest, the status, a chunk or the
+  hints. A node that cannot prove it knows the secret gets the answer a
+  node that holds nothing would give, so only who has the ticket learns
+  what a node holds.
+- **Who is let in.** `model::access::Guests` is the rule: everyone who
+  knows the secret, the nodes that are named, or the first so many that
+  ask. A node that is let in stays let in, so that it can carry on with a
+  copy that was cut short. A node that knows the secret and is not let in
+  is told so (`Response::Refused`), and the command ends with 7.
+- **A swarm or not.** Unless the share is a swarm's, a node that fetches
+  registers no share, asks to be listed nowhere and calls on nobody but the
+  peers of the ticket, and a node that serves keeps no list of who asked
+  and tells nobody of anybody. In a swarm every holder of the ticket serves
+  what it has to every other, and each is told where the others are.
+
+The proof and the rule are in `model`, with no network in them: property
+tests cover both, and Kani proves for every order of asking that no more
+nodes are let in than there is room for and that a node that is not named
+never is.
 
 ### Serving
 
 Each inbound handshake and each request runs in its own task. A request is
-one of: send the manifest, report status, or send a chunk. A status reply
-contains the node's bitfield and the other participants it knows; asking for
-status is also what registers the requester as a participant. This is the
-whole of peer discovery: there is no tracker.
+one of: send the manifest, report status, send the hints, or send a chunk.
+A status reply contains the node's bitfield and, in a swarm, the other
+participants it knows; asking for status with `listed` set is what
+registers the requester as a participant. This is the whole of peer
+discovery: there is no tracker.
 
 A peer may have many requests for chunks waiting on one connection. At most
 four of them are reading from disk at a time, and the chunks go out one
@@ -396,10 +439,10 @@ ticket ──► fetch manifest ──► verify against ticket ──► scan d
                                                               │
         ┌─────────────────────────────────────────────────────┘
         ▼
-   register share (start serving) ──► the engine's transfer ──► done
-                                         │
-                      one supplier for each peer
-                      done: fsync the directories
+   in a swarm: register share (start serving) ──► the engine's transfer ──► done
+                                                     │
+                                  one supplier for each peer
+                                  done: fsync the directories
 ```
 
 It is two steps, so that a command can stop between them. `swarm::find`
@@ -593,6 +636,9 @@ chunk, because that waiter may have been stopped a moment before.
   that have no socket of their own.
 - `tests/download.rs` covers files, trees, resume, repair and error cases.
 - `tests/swarm.rs` covers relaying, peer exchange and dishonest seeders.
+- `tests/access.rs` covers who may fetch: a node without the secret, a node
+  that is not named, the second node to ask where one may, and what a node
+  that fetches gives away of itself.
 - `tests/cli.rs` runs the compiled binary as separate processes: one
   offers with `cp` to `peer:`, another copies from its ticket, probes it,
   or reads the lines written for a program. It kills a download at random

@@ -33,11 +33,20 @@ The [release][release] includes archives and SHA-256 checksums.
 ## Share a folder
 
 On the sender, run this command and leave it running. Send the full ticket it
-prints to the recipient. Anyone with the ticket can download the snapshot.
+prints to the recipient. The ticket holds a secret: whoever has it can
+download the snapshot while the command runs, and nobody else can.
 
 ```sh
 mux cp ./photos peer:
 ```
+
+To let fewer machines in, add one of these.
+
+| Add | Who can download |
+| --- | --- |
+| `--once` | Only the first machine that uses the ticket. |
+| `--to ID` | Only the machine with that id. Run `mux id` on it to print the id. |
+| `--swarm` | Anyone with the ticket, and they also download from each other. |
 
 On the receiver, replace `TICKET` with the ticket you received. This creates
 `./downloads/photos`. Run the same command again to resume an interrupted transfer.

@@ -5,13 +5,13 @@
 
 use super::exit::misuse;
 use super::tell::{self, Line};
-use super::{Reach, seed, ui};
+use super::{Reach, Sharing, seed, ui};
 use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, FileDigest, Tree};
 use mux::origins::Origin;
 use mux::place::{Event, Observer, Source, Verification};
 use mux::store::Folder;
-use mux::swarm::{DownloadOptions, Node, Report, Ticket, announce};
+use mux::swarm::{DownloadOptions, Node, Report, Share, Ticket, announce};
 use mux::{Location, engine};
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -50,9 +50,14 @@ pub(super) struct Args {
     dry_run: bool,
 
     /// Go on offering what was copied to other machines, until stopped.
-    /// What came from the web gets a ticket that names its address too
+    /// What a swarm's ticket named is offered on in that swarm. Anything
+    /// else gets a ticket of its own, which names the web address too if
+    /// it came from one
     #[arg(long)]
     seed: bool,
+
+    #[command(flatten)]
+    sharing: Sharing,
 
     /// The most machines to copy from at once, for what a ticket names
     #[arg(long, default_value_t = 8, value_name = "N")]
@@ -68,6 +73,7 @@ pub(super) struct Get {
     pub(super) max_peers: usize,
     pub(super) stall_timeout: u64,
     pub(super) reach: Reach,
+    pub(super) sharing: Sharing,
 }
 
 impl Args {
@@ -83,6 +89,7 @@ impl Args {
             seed: told.seed,
             max_peers: told.max_peers,
             reach: told.reach,
+            sharing: told.sharing,
         }
     }
 
@@ -111,6 +118,9 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
     // with one written wrong copies nothing.
     let located: Result<Vec<Location>, _> = from.iter().map(|place| mux::locate(place)).collect();
     let sources = located?;
+    if let Some(why) = sharing_refused(&args, &sources) {
+        return misuse(why);
+    }
     // Made when the first ticket is met: a copy that has to do with no
     // other machine opens no socket.
     let mut node: Option<Arc<Node>> = None;
@@ -120,8 +130,9 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
     for source in sources {
         let Location::Local(to) = &to else {
             return misuse(format!(
-                "`cp` cannot copy from {source} to {to}. It copies into a folder, or to \
-                 `peer:`, which offers a file or a folder to other machines."
+                "`cp` cannot copy from {} to {to}. It copies into a folder, or to \
+                 `peer:`, which offers a file or a folder to other machines.",
+                source.in_a_message()
             ));
         };
         let from = source.to_string();
@@ -149,7 +160,7 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
             let path = copy.run(&source).await;
             path.map(|path| saved.extend(path.map(|path| Saved::of(path, &source))))
         };
-        outcome = copied.with_context(|| format!("cannot copy from {source}"));
+        outcome = copied.with_context(|| format!("cannot copy from {}", source.in_a_message()));
         if outcome.is_err() {
             break;
         }
@@ -159,7 +170,15 @@ pub(super) async fn run(args: Args, json: bool, key: Option<&Path>) -> anyhow::R
             Some(node) => node.clone(),
             None => node.insert(super::node(key, &args.reach).await?).clone(),
         };
-        outcome = keep_offering(&node, &args.reach, &fetched, &saved, json).await;
+        // What a ticket named, and no swarm passes on, is offered as
+        // any other copy is.
+        let (passed_on, own): (Vec<_>, Vec<_>) =
+            fetched.into_iter().partition(|report| report.share.swarm());
+        saved.extend(own.into_iter().map(|report| Saved {
+            path: report.root,
+            origin: None,
+        }));
+        outcome = keep_offering(&node, &args, &passed_on, &saved, json).await;
     }
     if let Some(node) = node {
         node.shutdown().await;
@@ -236,39 +255,56 @@ fn say_fetched(report: &Report, origins: &[Origin]) {
     }
 }
 
+/// Why the command line cannot say who may fetch what is offered, if it
+/// says so and cannot.
+fn sharing_refused(args: &Args, sources: &[Location]) -> Option<&'static str> {
+    if !args.sharing.is_said() {
+        return None;
+    }
+    if !args.seed {
+        return Some(
+            "--to, --once and --swarm say who may fetch what is offered, and this copy \
+             offers nothing. `peer:` as the destination offers a file or a folder, and \
+             `--seed` offers what was copied.",
+        );
+    }
+    let of_a_swarm = |source: &Location| matches!(source, Location::Ticket(ticket) if ticket.swarm);
+    sources.iter().any(of_a_swarm).then_some(
+        "what a swarm's ticket names is offered on in that swarm, to every holder of that \
+         ticket: --to, --once and --swarm cannot change who that is",
+    )
+}
+
 /// Goes on offering what was copied until the command is stopped.
 ///
-/// What a ticket named is offered under that ticket, and this machine is
-/// kept listed with those it fetched from, so that machines that come
-/// later are told of it. What came from a folder or from the web is
+/// What a swarm's ticket named, `passed_on`, is offered under that ticket,
+/// and this machine is kept listed with those it fetched from, so that
+/// machines that come later are told of it. Everything else, `saved`, is
 /// offered as `mux seed` offers it, and its ticket is written.
 async fn keep_offering(
     node: &Arc<Node>,
-    reach: &Reach,
-    fetched: &[Report],
+    args: &Args,
+    passed_on: &[Report],
     saved: &[Saved],
     json: bool,
 ) -> anyhow::Result<()> {
-    let listed: Vec<_> = fetched
+    let listed: Vec<_> = passed_on
         .iter()
         .map(|report| {
-            let content = report.share.artifact().content_id();
-            tokio::spawn(announce(node.clone(), content, report.peers.clone()))
+            let listing = announce(node.clone(), report.share.clone(), report.peers.clone());
+            tokio::spawn(listing)
         })
         .collect();
-    let mut shares: Vec<_> = fetched.iter().map(|report| report.share.clone()).collect();
+    let mut shares: Vec<Arc<Share>> = passed_on.iter().map(|r| r.share.clone()).collect();
     if !saved.is_empty() {
-        let advertised = seed::advertised(node, reach, &[]).await;
+        let advertised = seed::advertised(node, &args.reach, &[]).await;
         for copy in saved {
-            let origins = copy.origin.as_slice();
-            let offering = seed::offer(
-                node,
-                &copy.path,
-                DEFAULT_CHUNK_SIZE,
-                &advertised,
-                origins,
-                json,
-            );
+            let offered = seed::Offered {
+                path: &copy.path,
+                chunk_size: DEFAULT_CHUNK_SIZE,
+                origins: copy.origin.as_slice(),
+            };
+            let offering = seed::offer(node, &offered, &advertised, &args.sharing, json);
             shares.push(offering.await?);
         }
     }
@@ -300,13 +336,13 @@ async fn offer(args: Args, json: bool, key: Option<&Path>) -> anyhow::Result<()>
             other => {
                 return misuse(format!(
                     "{other} cannot be offered to other machines with `cp`: a file or a \
-                     folder on this machine can. To pass on what a ticket names while \
-                     fetching it, there is `mux get --seed`."
+                     folder on this machine can. To offer what a ticket names once it is \
+                     fetched, there is `mux cp TICKET FOLDER/ --seed`."
                 ));
             }
         }
     }
-    seed::run(seed::Args::of(paths, args.reach), key, json).await
+    seed::run(seed::Args::of(paths, args.reach, args.sharing), key, json).await
 }
 
 /// What `location` holds, as sources to copy from. `to` is where the copy

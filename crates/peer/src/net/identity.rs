@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use iroh::SecretKey;
+use model::access::Secret;
 use model::hex;
 use model::ticket::NodeId;
 use std::fmt;
@@ -28,6 +29,17 @@ fn read_pkcs8(pkcs8: &[u8]) -> Option<([u8; 32], Option<[u8; 32]>)> {
     let public = rest.strip_prefix(&PUBLIC_FOLLOWS)?;
     let public = <[u8; 32]>::try_from(public).ok()?;
     (*form == KEY_WITH_PUBLIC).then_some((*secret, Some(public)))
+}
+
+/// Sixteen bytes from the source of randomness a node's key comes from: the
+/// secret of a new offer.
+pub(crate) fn random_secret() -> Secret {
+    // The private half of a key that is used for nothing else is 32 random
+    // bytes. Half of them are kept.
+    let bytes = SecretKey::generate().to_bytes();
+    let mut half = [0u8; 16];
+    half.copy_from_slice(&bytes[..16]);
+    Secret::from_bytes(half)
 }
 
 /// A node's long-lived Ed25519 key pair.

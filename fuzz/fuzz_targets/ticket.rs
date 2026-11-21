@@ -15,12 +15,17 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
-    if let Ok(ticket) = text.parse::<Ticket>() {
-        let again = ticket
-            .to_string()
-            .parse::<Ticket>()
-            .expect("a printed ticket parses");
-        assert_eq!(again, ticket);
+    // Most of what a ticket can hold follows its id and its secret, and
+    // random text seldom gets that far by itself.
+    let near = format!("mux://{}?secret={}{text}", "ab".repeat(32), "5e".repeat(16));
+    for written in [text, near.as_str()] {
+        if let Ok(ticket) = written.parse::<Ticket>() {
+            let again = ticket
+                .to_string()
+                .parse::<Ticket>()
+                .expect("a printed ticket parses");
+            assert_eq!(again, ticket);
+        }
     }
     if let Ok(hash) = text.parse::<Hash>() {
         assert_eq!(hash.to_string().parse::<Hash>().ok(), Some(hash));

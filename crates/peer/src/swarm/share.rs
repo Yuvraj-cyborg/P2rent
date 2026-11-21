@@ -2,9 +2,11 @@ use crate::net::{NodeId, PeerInfo};
 use crate::{Error, Result};
 use engine::{Store, sync};
 use fs::Folder;
+use model::access::{Guests, Proof, Secret};
 use model::artifact::{Artifact, Bitfield};
 use model::rolling::Rolling;
 use model::search::ChunkHints;
+use model::ticket::Ticket;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,12 +23,70 @@ const MAX_ADVERTISED_PEERS: usize = 32;
 /// Most participants remembered per artifact.
 const MAX_PARTICIPANTS: usize = 4096;
 
+/// Who may fetch a share, and whether those who do pass it on.
+#[derive(Debug, Clone)]
+pub struct Access {
+    /// What a machine must show it knows before it is answered. The
+    /// share's ticket carries it.
+    pub secret: Secret,
+    /// Whether the machines that fetch the share give it to each other:
+    /// see [`Ticket::swarm`].
+    pub swarm: bool,
+    /// Which of the machines that know the secret this node lets in. The
+    /// rule is this node's alone: the others of a swarm have no way to know
+    /// of it, and let in every machine that knows the secret. So a rule
+    /// narrower than that means something only where there is no swarm.
+    pub guests: Guests,
+}
+
+impl Access {
+    /// For a new offer: a secret of its own, every machine that is given
+    /// the ticket, and no swarm.
+    pub fn new() -> Self {
+        Self {
+            secret: crate::net::random_secret(),
+            swarm: false,
+            guests: Guests::anyone(),
+        }
+    }
+
+    /// What `ticket` says of the offer it names: for a machine that holds
+    /// the same bytes and gives them to the holders of that ticket.
+    pub fn of(ticket: &Ticket) -> Self {
+        Self {
+            secret: ticket.secret,
+            swarm: ticket.swarm,
+            guests: Guests::anyone(),
+        }
+    }
+}
+
+impl Default for Access {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What a share says to a machine that asks for any of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// It did not show that it knows the secret.
+    Unproven,
+    /// It knows the secret, and the share is for other machines.
+    Refused,
+    /// It may have what it asks for.
+    Admitted,
+}
+
 /// One artifact this node holds, fully or partly, and offers to peers.
 #[derive(Debug)]
 pub struct Share {
     artifact: Arc<Artifact>,
     store: Arc<Store>,
     files: Arc<Folder>,
+    secret: Secret,
+    swarm: bool,
+    guests: Mutex<Guests>,
     /// Allocated on the first hint request. Concurrent readers share each
     /// completed page. A cancelled response can resume with cached pages.
     hints: OnceLock<Vec<OnceCell<ChunkHints>>>,
@@ -42,11 +102,19 @@ struct Participant {
 }
 
 impl Share {
-    pub(crate) fn new(artifact: Arc<Artifact>, store: Arc<Store>, files: Arc<Folder>) -> Self {
+    pub(crate) fn new(
+        artifact: Arc<Artifact>,
+        store: Arc<Store>,
+        files: Arc<Folder>,
+        access: Access,
+    ) -> Self {
         Self {
             artifact,
             store,
             files,
+            secret: access.secret,
+            swarm: access.swarm,
+            guests: Mutex::new(access.guests),
             hints: OnceLock::new(),
             participants: Mutex::new(HashMap::new()),
             uploaded: AtomicU64::new(0),
@@ -61,6 +129,31 @@ impl Share {
     /// Where its chunks are kept.
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// What a machine must show it knows before it is answered.
+    pub fn secret(&self) -> Secret {
+        self.secret
+    }
+
+    /// Whether the machines that fetch the share give it to each other.
+    pub fn swarm(&self) -> bool {
+        self.swarm
+    }
+
+    /// Whether `peer`, which showed `proof` to this node, `me`, may have
+    /// what it asks for.
+    ///
+    /// The secret is looked at first, so that only a machine that knows it
+    /// can take one of the places there are.
+    pub(crate) fn admit(&self, me: &NodeId, peer: &NodeId, proof: &Proof) -> Admission {
+        if self.secret.proof(me, peer) != *proof {
+            Admission::Unproven
+        } else if sync::lock(&self.guests).admit(peer) {
+            Admission::Admitted
+        } else {
+            Admission::Refused
+        }
     }
 
     /// Whether chunk `index` is held.
@@ -131,8 +224,13 @@ impl Share {
         self.uploaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Records that `peer` is taking part in this swarm.
+    /// Records that `peer` is taking part in this swarm, if the share is a
+    /// swarm's. Otherwise nobody is told of anybody else, and nothing is
+    /// kept.
     pub(crate) fn note_participant(&self, peer: PeerInfo) {
+        if !self.swarm {
+            return;
+        }
         let now = Instant::now();
         let mut participants = sync::lock(&self.participants);
         if participants.len() >= MAX_PARTICIPANTS && !participants.contains_key(&peer.node) {
@@ -145,6 +243,7 @@ impl Share {
     }
 
     /// Recently seen participants other than `except`, most recent first.
+    /// There are none unless the share is a swarm's.
     pub(crate) fn participants(&self, except: NodeId) -> Vec<PeerInfo> {
         let now = Instant::now();
         let mut participants = sync::lock(&self.participants);

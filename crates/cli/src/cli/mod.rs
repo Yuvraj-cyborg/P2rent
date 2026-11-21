@@ -12,8 +12,8 @@ mod ui;
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
-use mux::net::{Identity, Options, Relays};
-use mux::swarm::Node;
+use mux::net::{Identity, NodeId, Options, Relays};
+use mux::swarm::{Access, Guests, Node};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -101,6 +101,56 @@ impl Reach {
             relays: self.relays(),
             congestion: self.congestion.into(),
             ..Options::default()
+        }
+    }
+}
+
+/// Who may fetch what a command offers to other machines.
+#[derive(clap::Args, Default)]
+struct Sharing {
+    /// Let only this machine fetch what is offered: its node id, which
+    /// `mux id` prints there (repeatable)
+    #[arg(long, value_name = "NODE")]
+    to: Vec<NodeId>,
+
+    /// Let only the first machine that asks fetch what is offered
+    #[arg(long, conflicts_with = "to")]
+    once: bool,
+
+    /// Let the machines that fetch what is offered fetch it from each
+    /// other too: each is told where the others are
+    #[arg(long, conflicts_with_all = ["to", "once"])]
+    swarm: bool,
+}
+
+impl Sharing {
+    /// Whether the command line says anything of who may fetch.
+    fn is_said(&self) -> bool {
+        self.swarm || self.once || !self.to.is_empty()
+    }
+
+    /// Who may fetch one thing that is offered. Each has a secret of its
+    /// own, and its own count of the machines that came.
+    fn access(&self) -> Access {
+        let guests = match self.to.as_slice() {
+            [] if self.once => Guests::first(1),
+            [] => Guests::anyone(),
+            named => Guests::only(named.to_vec()),
+        };
+        Access {
+            swarm: self.swarm,
+            guests,
+            ..Access::new()
+        }
+    }
+
+    /// Who may fetch, in words, for the line under what is offered.
+    fn in_words(&self) -> String {
+        match self.to.len() {
+            0 if self.swarm => "whoever has the ticket, and they fetch from each other".to_owned(),
+            0 if self.once => "the first machine that asks with the ticket".to_owned(),
+            0 => "whoever has the ticket".to_owned(),
+            named => format!("{}, with the ticket", ui::plural(named, "named machine")),
         }
     }
 }

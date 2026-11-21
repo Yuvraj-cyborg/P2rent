@@ -1,5 +1,6 @@
 //! Tickets: the text one machine hands another so it can fetch something.
 
+use crate::access::Secret;
 use crate::artifact::Hash;
 use crate::error::{Error, Result};
 use crate::hex;
@@ -57,19 +58,27 @@ impl FromStr for NodeId {
     }
 }
 
-/// Everything needed to join a swarm: the artifact id and the first peers
-/// to ask.
+/// Everything needed to fetch what a machine offers: the artifact id, the
+/// secret that lets its holder ask, and the first peers to ask.
 ///
-/// Written as `mux://<artifact>?peer=<node id>&peer=...`. A peer may be
-/// followed by `@` and where to reach it. The artifact id is a content
-/// hash, so a ticket also pins exactly what will be downloaded.
+/// Written as `mux://<artifact>?secret=<secret>&peer=<node id>&peer=...`. A
+/// peer may be followed by `@` and where to reach it. The artifact id is a
+/// content hash, so a ticket also pins exactly what will be downloaded.
 ///
-/// `&url=<web address>` may follow, once for each address: see
-/// [`Ticket::origins`].
+/// `&swarm=1` may follow: see [`Ticket::swarm`]. And `&url=<web address>`,
+/// once for each address: see [`Ticket::origins`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     /// The artifact to fetch.
     pub artifact: Hash,
+    /// What a machine must show it knows before a peer answers it. It is
+    /// made new for each offer, so a ticket is good for that offer alone.
+    pub secret: Secret,
+    /// Whether the machines that fetch this also give it to each other.
+    /// Each then serves what it has to every holder of the ticket, and is
+    /// told where the others are. Otherwise only the peers of the ticket
+    /// serve, and nobody is told of anybody else.
+    pub swarm: bool,
     /// Peers to contact first.
     pub peers: Vec<TicketPeer>,
     /// Web addresses said to hold the same bytes, for an artifact that is
@@ -183,16 +192,40 @@ impl FromStr for Ticket {
             .map_err(|_| invalid("the artifact id is 64 hex characters"))?;
 
         let (mut peers, mut origins) = (Vec::new(), Vec::new());
+        let (mut secret, mut swarm) = (None, false);
         for parameter in query.split('&').filter(|p| !p.is_empty()) {
             // Unknown parameters are skipped so tickets can grow new fields.
             if let Some(peer) = parameter.strip_prefix("peer=") {
                 peers.push(peer.parse()?);
             } else if let Some(written) = parameter.strip_prefix("url=") {
                 origins.push(origin(written)?);
+            } else if let Some(written) = parameter.strip_prefix("secret=") {
+                let read = written
+                    .parse()
+                    .map_err(|_| invalid("the secret is 32 hex characters"))?;
+                if secret.replace(read).is_some() {
+                    return Err(invalid("it has two secrets"));
+                }
+            } else if let Some(written) = parameter.strip_prefix("swarm=") {
+                swarm = match written {
+                    "1" => true,
+                    "0" => false,
+                    _ => return Err(invalid("`swarm=` is followed by 1 or 0")),
+                };
             }
         }
+        // Tickets had no secret before 0.4, and what made them does not
+        // speak to this version.
+        let secret = secret.ok_or_else(|| {
+            invalid(
+                "it has no secret, so an older mux made it, and this one does not talk \
+                 to that. Ask for a new ticket.",
+            )
+        })?;
         Ok(Self {
             artifact,
+            secret,
+            swarm,
             peers,
             origins,
         })
@@ -211,15 +244,20 @@ fn origin(written: &str) -> Result<String> {
 
 impl fmt::Display for Ticket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{SCHEME}{}", self.artifact)?;
-        let mut separator = '?';
+        write!(
+            f,
+            "{SCHEME}{}?secret={}",
+            self.artifact,
+            self.secret.to_hex()
+        )?;
         for peer in &self.peers {
-            write!(f, "{separator}peer={peer}")?;
-            separator = '&';
+            write!(f, "&peer={peer}")?;
+        }
+        if self.swarm {
+            f.write_str("&swarm=1")?;
         }
         for address in &self.origins {
-            write!(f, "{separator}url=")?;
-            separator = '&';
+            f.write_str("&url=")?;
             // What would end the address early, and the sign that says so.
             for character in address.chars() {
                 match character {
@@ -247,6 +285,13 @@ mod tests {
         NodeId::from_bytes([byte; 32])
     }
 
+    const SECRET: Secret = Secret::from_bytes([0x5e; 16]);
+
+    /// The text of a ticket for `id` with [`SECRET`], and then `rest`.
+    fn written(id: Hash, rest: &str) -> String {
+        format!("mux://{id}?secret={}{rest}", "5e".repeat(16))
+    }
+
     #[test]
     fn a_node_id_prints_as_hex() {
         let id = node(0xab);
@@ -265,6 +310,8 @@ mod tests {
         };
         let ticket = Ticket {
             artifact: Hash::of(b"artifact"),
+            secret: SECRET,
+            swarm: true,
             peers: vec![
                 at(node(1), "10.0.0.5:4433"),
                 at(node(2), "[fd00::1]:4433"),
@@ -286,6 +333,46 @@ mod tests {
         let text = ticket.to_string();
         assert!(text.starts_with("mux://"));
         assert_eq!(text.parse::<Ticket>().unwrap(), ticket);
+
+        let alone = Ticket {
+            swarm: false,
+            ..ticket
+        };
+        assert_eq!(alone.to_string().parse::<Ticket>().unwrap(), alone);
+    }
+
+    #[test]
+    fn a_ticket_says_its_secret_and_whether_it_is_a_swarms() {
+        let id = Hash::of(b"a");
+        let ticket = Ticket {
+            artifact: id,
+            secret: SECRET,
+            swarm: false,
+            peers: vec![TicketPeer {
+                node: node(7),
+                at: None,
+            }],
+            origins: Vec::new(),
+        };
+        let peer = format!("&peer={}", node(7));
+        assert_eq!(ticket.to_string(), written(id, &peer));
+        let swarm = Ticket {
+            swarm: true,
+            ..ticket.clone()
+        };
+        assert_eq!(swarm.to_string(), written(id, &format!("{peer}&swarm=1")));
+        // Written out, a ticket that is not a swarm's reads the same.
+        let read: Ticket = written(id, &format!("{peer}&swarm=0")).parse().unwrap();
+        assert_eq!(read, ticket);
+        // The secret is not in what a log line shows of a ticket.
+        assert!(!format!("{ticket:?}").contains(&"5e".repeat(16)));
+    }
+
+    #[test]
+    fn a_ticket_from_before_there_were_secrets_says_to_ask_for_a_new_one() {
+        let old = format!("mux://{}?peer={}@h:1", Hash::of(b"a"), node(7));
+        let refused = old.parse::<Ticket>().unwrap_err().to_string();
+        assert!(refused.contains("Ask for a new ticket"), "{refused}");
     }
 
     #[test]
@@ -293,6 +380,8 @@ mod tests {
         let id = Hash::of(b"a");
         let ticket = Ticket {
             artifact: id,
+            secret: SECRET,
+            swarm: false,
             peers: Vec::new(),
             origins: vec![
                 "https://example.org/a%20b?x=1&y=2#part".into(),
@@ -302,15 +391,14 @@ mod tests {
         // An address that needs nothing written another way is as it is.
         assert_eq!(
             ticket.to_string(),
-            format!(
-                "mux://{id}?url=https://example.org/a%2520b%3Fx=1%26y=2%23part\
+            written(
+                id,
+                "&url=https://example.org/a%2520b%3Fx=1%26y=2%23part\
                  &url=http://mirror.example/b"
             )
         );
         // The scheme is kept in small letters, as a location keeps it.
-        let read: Ticket = format!("mux://{id}?url=HTTPS://Example.org/")
-            .parse()
-            .unwrap();
+        let read: Ticket = written(id, "&url=HTTPS://Example.org/").parse().unwrap();
         assert_eq!(read.origins, ["https://Example.org/"]);
     }
 
@@ -344,19 +432,22 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_without_peers_is_just_the_artifact() {
+    fn a_ticket_without_peers_is_the_artifact_and_its_secret() {
         let ticket = Ticket {
             artifact: Hash::of(b"artifact"),
+            secret: SECRET,
+            swarm: false,
             peers: Vec::new(),
             origins: Vec::new(),
         };
-        assert!(!ticket.to_string().contains('?'));
+        assert_eq!(ticket.to_string(), written(ticket.artifact, ""));
         assert_eq!(ticket.to_string().parse::<Ticket>().unwrap(), ticket);
     }
 
     #[test]
     fn ignores_unknown_parameters() {
-        let text = format!("mux://{}?future=1&peer={}@h:1", Hash::of(b"a"), node(7));
+        let peer = format!("&future=1&peer={}@h:1", node(7));
+        let text = written(Hash::of(b"a"), &peer);
         assert_eq!(text.parse::<Ticket>().unwrap().peers.len(), 1);
     }
 
@@ -364,30 +455,47 @@ mod tests {
     fn rejects_malformed_tickets() {
         let id = Hash::of(b"a");
         let peer = node(7);
+        // Each is wrong in one way alone: with what is wrong taken out,
+        // it is read.
+        assert!(
+            written(id, &format!("&peer={peer}@h:1"))
+                .parse::<Ticket>()
+                .is_ok()
+        );
+        let secret = "5e".repeat(16);
         for text in [
             String::new(),
             format!("{id}"),
             "mux://abc".to_owned(),
-            format!("mux://{id}?peer=nope@h:1"),
-            format!("mux://{id}?peer=nope"),
-            format!("mux://{id}?peer={peer}@"),
-            format!("mux://{id}?peer={peer}@host"),
-            format!("mux://{id}?peer={peer}@:1"),
-            format!("mux://{id}?peer={peer}@h:99999"),
-            format!("mux://{id}?peer={peer}@h:1@h:2"),
-            format!("mux://{id}?peer={peer}@h:1#x"),
-            format!("mux://{id}?peer={peer}@h :1"),
-            format!("mux://{id}?peer={peer}@https://"),
-            format!("mux://{id}?peer={peer}@https:///path"),
-            format!("mux://{id}?peer={peer}@ftp://relay.example"),
-            format!("mux://{id}?url="),
-            format!("mux://{id}?url=example.org/file"),
-            format!("mux://{id}?url=ftp://example.org/file"),
-            format!("mux://{id}?url=https://"),
-            format!("mux://{id}?url=https://user@example.org/"),
-            format!("mux://{id}?url=https://example.org/a b"),
-            format!("mux://{id}?url=https://example.org/%zz"),
-            format!("mux://{id}?url=https://example.org/%2"),
+            format!("mux://{id}"),
+            format!("mux://{id}?peer={peer}@h:1"),
+            format!("mux://{id}?secret="),
+            format!("mux://{id}?secret=5e5e"),
+            format!("mux://{id}?secret={secret}5e"),
+            format!("mux://{id}?secret={}", "zz".repeat(16)),
+            written(id, &format!("&secret={secret}")),
+            written(id, "&swarm="),
+            written(id, "&swarm=yes"),
+            written(id, "&peer=nope@h:1"),
+            written(id, "&peer=nope"),
+            written(id, &format!("&peer={peer}@")),
+            written(id, &format!("&peer={peer}@host")),
+            written(id, &format!("&peer={peer}@:1")),
+            written(id, &format!("&peer={peer}@h:99999")),
+            written(id, &format!("&peer={peer}@h:1@h:2")),
+            written(id, &format!("&peer={peer}@h:1#x")),
+            written(id, &format!("&peer={peer}@h :1")),
+            written(id, &format!("&peer={peer}@https://")),
+            written(id, &format!("&peer={peer}@https:///path")),
+            written(id, &format!("&peer={peer}@ftp://relay.example")),
+            written(id, "&url="),
+            written(id, "&url=example.org/file"),
+            written(id, "&url=ftp://example.org/file"),
+            written(id, "&url=https://"),
+            written(id, "&url=https://user@example.org/"),
+            written(id, "&url=https://example.org/a b"),
+            written(id, "&url=https://example.org/%zz"),
+            written(id, "&url=https://example.org/%2"),
         ] {
             assert!(text.parse::<Ticket>().is_err(), "{text:?} was accepted");
         }
