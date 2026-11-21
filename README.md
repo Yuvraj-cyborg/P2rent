@@ -9,7 +9,29 @@ Peers connect directly when possible and can use an encrypted relay connection.
 
 ## Install
 
-Download the executable for your machine.
+On **macOS or Linux**, run this in a terminal.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yuvichh/mux/main/install.sh | sh
+```
+
+It downloads the build for your machine, checks its SHA-256 digest and puts
+`mux` in `~/.local/bin`. Run it again to upgrade. To remove mux, delete that
+file.
+
+| Or with | Run |
+| --- | --- |
+| Homebrew, on macOS or Linux | `brew install yuvichh/tap/mux` |
+| Nix | `nix profile install github:yuvichh/mux` |
+
+The Nix command builds the current source, which is newer than the latest
+release.
+
+On **Windows**, download [mux.exe][windows] and run `.\mux.exe --version` in
+PowerShell from the download folder. Put `mux.exe` in a directory on your
+`PATH` to use it from anywhere.
+
+You can also download a build yourself.
 
 | Platform | Download |
 | --- | --- |
@@ -17,17 +39,6 @@ Download the executable for your machine.
 | Linux (glibc 2.17+) | [x86-64][linux-intel] · [ARM64][linux-arm] |
 | Windows | [x64 executable][windows] |
 
-On **macOS or Linux**, you can also install from a terminal. Run these commands in a writable directory.
-
-```sh
-asset="mux-$(uname -s)-$(uname -m)"
-curl -fLO "https://github.com/yuvichh/mux/releases/download/v0.3.0/$asset" &&
-  mkdir -p "$HOME/.local/bin" && install -m 755 "$asset" "$HOME/.local/bin/mux"
-```
-
-If your shell cannot find `mux`, run `export PATH="$HOME/.local/bin:$PATH"`.
-On **Windows**, run `.\mux.exe --version` in PowerShell from the download
-folder. Put `mux.exe` in a directory on your `PATH` to use it from anywhere.
 The [release][release] includes archives and SHA-256 checksums.
 
 ## Share a folder
