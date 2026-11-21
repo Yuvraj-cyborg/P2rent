@@ -1,10 +1,11 @@
 use super::identity::Identity;
-use super::proto::{self, ALPN, PeerInfo, Request, Response, Status};
+use super::proto::{self, ALPN, Call, PeerInfo, Request, Response, Status};
 use crate::error::{Error, Result};
 use iroh::endpoint::{
     MtuDiscoveryConfig, Path, QuicTransportConfig, RecvStream, SendStream, VarInt, presets,
 };
 use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, TransportAddr};
+use model::access::Secret;
 use model::artifact::{Hash, MAX_MANIFEST_BYTES};
 use model::pace;
 use model::place::Arrived;
@@ -220,13 +221,15 @@ impl Endpoint {
         Ok(Connection {
             inner,
             peer: expected,
+            me: self.node_id,
         })
     }
 
     /// Waits for the next inbound connection attempt. Returns `None` once the
     /// endpoint is closed.
     pub async fn accept(&self) -> Option<Incoming> {
-        self.inner.accept().await.map(Incoming)
+        let incoming = self.inner.accept().await?;
+        Some(Incoming(incoming, self.node_id))
     }
 
     /// Closes every connection and stops accepting new ones. Returns once
@@ -238,7 +241,7 @@ impl Endpoint {
 
 /// An inbound connection whose handshake has not completed yet.
 #[derive(Debug)]
-pub struct Incoming(iroh::endpoint::Incoming);
+pub struct Incoming(iroh::endpoint::Incoming, NodeId);
 
 impl Incoming {
     /// Completes the handshake. Run this off the accept loop so a slow or
@@ -250,7 +253,11 @@ impl Incoming {
     pub async fn establish(self) -> Result<Connection> {
         let inner = self.0.await.map_err(|e| Error::Transport(e.to_string()))?;
         let peer = NodeId::from_bytes(*inner.remote_id().as_bytes());
-        Ok(Connection { inner, peer })
+        Ok(Connection {
+            inner,
+            peer,
+            me: self.1,
+        })
     }
 }
 
@@ -259,6 +266,8 @@ impl Incoming {
 pub struct Connection {
     inner: iroh::endpoint::Connection,
     peer: NodeId,
+    /// This end's own id, which the peer was shown during the handshake.
+    me: NodeId,
 }
 
 impl Connection {
@@ -310,23 +319,32 @@ impl Connection {
         Ok(self.inner.accept_bi().await?)
     }
 
-    async fn request(&self, request: &Request) -> Result<(Response, RecvStream)> {
+    /// Sends `request` to the peer this end dialled, with the proof that
+    /// this end knows `secret`. An answer that this machine is not let in
+    /// is an error, whatever was asked for.
+    async fn request(&self, secret: &Secret, request: Request) -> Result<(Response, RecvStream)> {
+        let call = Call {
+            proof: secret.proof(&self.peer, &self.me),
+            request,
+        };
         let (mut send, mut recv) = self.inner.open_bi().await?;
-        proto::write_frame(&mut send, request).await?;
+        proto::write_frame(&mut send, &call).await?;
         send.finish()?;
-        let response = proto::read_frame(&mut recv, proto::MAX_RESPONSE_BYTES).await?;
-        Ok((response, recv))
+        match proto::read_frame(&mut recv, proto::MAX_RESPONSE_BYTES).await? {
+            Response::Refused => Err(Error::Refused),
+            response => Ok((response, recv)),
+        }
     }
 
     /// Fetches the encoded manifest. `None` means the peer does not serve
-    /// this artifact. The bytes are unverified.
+    /// this artifact to whoever knows `secret`. The bytes are unverified.
     ///
     /// # Errors
     ///
-    /// Returns an error if the request fails or the peer answers with something other than a
-    /// manifest.
-    pub async fn manifest(&self, artifact: Hash) -> Result<Option<Vec<u8>>> {
-        match self.request(&Request::Manifest { artifact }).await? {
+    /// Returns [`Error::Refused`] if the peer does not let this machine in, and another error
+    /// if the request fails or the peer answers with something other than a manifest.
+    pub async fn manifest(&self, artifact: Hash, secret: &Secret) -> Result<Option<Vec<u8>>> {
+        match self.request(secret, Request::Manifest { artifact }).await? {
             (Response::Manifest { len }, mut recv) => {
                 let len = usize::try_from(len)
                     .ok()
@@ -345,13 +363,13 @@ impl Connection {
     pub(crate) async fn hints(
         &self,
         artifact: &model::artifact::Artifact,
+        secret: &Secret,
         wait: Duration,
     ) -> Result<Option<ChunkHints>> {
         let content = artifact.content_id();
         let stalled = |_| Error::Transport("timed out waiting for chunk hints".into());
-        let reply = tokio::time::timeout(wait, self.request(&Request::Hints { content }))
-            .await
-            .map_err(stalled)??;
+        let asked = self.request(secret, Request::Hints { content });
+        let reply = tokio::time::timeout(wait, asked).await.map_err(stalled)??;
         match reply {
             (Response::Hints, mut recv) => {
                 let chunks = artifact.chunk_count();
@@ -380,14 +398,23 @@ impl Connection {
         }
     }
 
-    /// Asks which chunks of `content` the peer holds and which other peers it knows. `None`
-    /// means the peer does not hold this content.
+    /// Asks which chunks of `content` the peer holds and, in a swarm, which other peers it
+    /// knows. `listed` asks the peer to tell the others of the swarm of this machine: for one
+    /// that serves the content too. `None` means the peer does not hold this content for
+    /// whoever knows `secret`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the request fails or the answer is not a status.
-    pub async fn status(&self, content: Hash) -> Result<Option<Status>> {
-        match self.request(&Request::Status { content }).await? {
+    /// Returns [`Error::Refused`] if the peer does not let this machine in, and another error
+    /// if the request fails or the answer is not a status.
+    pub async fn status(
+        &self,
+        content: Hash,
+        secret: &Secret,
+        listed: bool,
+    ) -> Result<Option<Status>> {
+        let asked = Request::Status { content, listed };
+        match self.request(secret, asked).await? {
             (Response::Status(status), _) => Ok(Some(status)),
             (Response::NotFound, _) => Ok(None),
             (other, _) => Err(unexpected(&other)),
@@ -400,16 +427,19 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Protocol`] if the peer announces a different length, and a transport error
-    /// if the request fails.
+    /// Returns [`Error::Protocol`] if the peer announces a different length,
+    /// [`Error::Refused`] if it does not let this machine in, and a transport error if the
+    /// request fails.
     pub async fn chunk(
         &self,
         content: Hash,
         index: u64,
         expected_len: u32,
+        secret: &Secret,
         arrived: &Arrived,
     ) -> Result<Option<Vec<u8>>> {
-        match self.request(&Request::Chunk { content, index }).await? {
+        let asked = Request::Chunk { content, index };
+        match self.request(secret, asked).await? {
             (Response::Chunk { len }, mut recv) if len == expected_len => {
                 let whole = proto::read_payload(&mut recv, len as usize, arrived);
                 Ok(Some(whole.await?))
@@ -436,6 +466,7 @@ fn unexpected(response: &Response) -> Error {
         Response::Chunk { .. } => "chunk",
         Response::NotFound => "not-found",
         Response::Hints => "hints",
+        Response::Refused => "refused",
     };
     Error::Protocol(format!("unexpected {kind} response"))
 }

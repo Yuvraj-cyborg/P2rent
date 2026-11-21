@@ -1,6 +1,8 @@
 # Commands
 
-This describes the commands of release 0.3. Release 0.2.0 had `seed`,
+This describes the commands of the coming release 0.4. Release 0.3 has the
+same commands, but its tickets carry no secret and it does not talk to this
+version: see [who may fetch](#who-may-fetch). Release 0.2.0 had `seed`,
 `get` and `id` only, under the name `p2rent`.
 
 Progress and notes for people go to standard error. What a command produced
@@ -36,6 +38,7 @@ has. Otherwise it is the name the copy is given.
 | `--stall-timeout <SECONDS>` | Give up after this long with next to nothing received: under about a kilobyte a second on every stream. A slow link is waited for. The default is 60. |
 | `--dry-run` | Say what would be copied, in the same form as a result, and copy nothing. A source on the web is asked what it holds and for none of the file. |
 | `--seed` | When the copy is whole, go on offering it to other machines until stopped: see [below](#the-web-and-other-machines-at-once). |
+| `--to <NODE>`, `--once`, `--swarm` | For what is offered, with `peer:` or `--seed`: [who may fetch it](#who-may-fetch). |
 | `--json` | Write for a program: see [below](#for-a-program). |
 
 A flag may be written before, between or after the places.
@@ -78,7 +81,8 @@ was written, its size in bytes, and how far it was checked.
 ```console
 $ mux cp ./weights peer:
 seeding  weights  (400.68 MiB, 402 chunks)
-mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./
+for      whoever has the ticket
+mux://450b9c6b…6d2bfc54?secret=24591239…55097e5f&peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./
 ```
 
 `mux cp <PATH>... peer:` offers files or folders on this machine to others.
@@ -87,12 +91,12 @@ until it is stopped with Ctrl-C. Only what is on this machine can be
 offered.
 
 ```console
-$ mux cp 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./' ./models/
+$ mux cp 'mux://450b9c6b…6d2bfc54?secret=24591239…55097e5f&peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./' ./models/
 ./models/weights	420143104	verified
 ```
 
-`mux cp <TICKET> <FOLDER>` fetches what the ticket names, from every machine
-that holds it.
+`mux cp <TICKET> <FOLDER>` fetches what the ticket names, from the machines
+the ticket names.
 
 - Every chunk is compared with the digest the ticket carries, so the copy
   is always `verified`. `--hash` and `--mirror` are not for a ticket.
@@ -107,10 +111,67 @@ that holds it.
 - `--streams` is not used. A machine is asked for as many chunks at once as
   its connection has room for. `--max-peers <N>` is the most machines to
   copy from at once, and is 8 unless it is given.
+- While it copies, this machine serves nothing and is told of to nobody,
+  unless the ticket is a [swarm's](#who-may-fetch).
 - With `--seed` the command does not end when the copy is whole. It goes on
   offering what it copied to other machines, until it is stopped with
-  Ctrl-C. Each machine that does this is one more to copy from: the ticket
-  stays the same, and a machine that asks one holder is told of the others.
+  Ctrl-C. It writes a ticket of its own for it, after the line that says
+  what was written. What a swarm's ticket names is offered on under that
+  ticket.
+
+### Who may fetch
+
+A ticket holds a secret, made new each time something is offered. A machine
+is answered only if it shows that it knows the secret. The secret itself is
+never sent: what is sent is good for the two machines of one connection and
+for nothing else. A machine without it learns nothing, not even whether
+this machine holds what it asked for.
+
+So a ticket is to be passed on the way a password is. Whoever has it can
+fetch, for as long as the offer runs. Stopping the offer ends that, and
+offering the same folder again makes a ticket with a new secret: the old
+one opens nothing.
+
+Three flags narrow or widen this, for `cp` to `peer:`, for `seed`, and for
+`--seed` after a copy:
+
+| Flag | Who may fetch |
+| --- | --- |
+| none | Whoever has the ticket, from this machine. |
+| `--to <NODE>` | Only that machine, with the ticket. `NODE` is what `mux id` prints there. Repeatable. A ticket that reaches anyone else is of no use to them. |
+| `--once` | Only the first machine that asks with the ticket. It can ask again, to carry on with a copy that was cut short. Every machine after it is refused. |
+| `--swarm` | Whoever has the ticket, from this machine and from each other. |
+
+```console
+$ mux id                                   # on the machine that is to fetch
+35964d95…f14dd0e7
+$ mux cp ./weights peer: --to 35964d95…f14dd0e7
+seeding  weights  (400.68 MiB, 402 chunks)
+for      1 named machine, with the ticket
+mux://450b9c6b…
+```
+
+A machine that has the ticket and is not let in ends with 7, and is told
+so:
+
+```console
+$ mux cp 'mux://450b9c6b…' ./models/
+error: cannot copy from mux://450b9c6b…6d2bfc54: the machine that offers it does not let this machine fetch it
+hint: the ticket is for other machines, or was for the first to ask. Whoever offers it can name this machine with `--to` and what `mux id` prints here
+```
+
+**A swarm.** Without `--swarm`, a machine that fetches serves nothing, and
+the machine that offers tells nobody who else fetched. With it, the ticket
+ends in `&swarm=1`, and every machine that fetches with it also serves what
+it has to the other holders of the ticket, from the first chunk on. A
+machine that asks one of them is told where the others are. That is what
+makes many machines quick to fill from one. It also means every holder of
+the ticket learns the addresses of the others, so it is for machines that
+may know of each other. `--to` and `--once` cannot be joined with
+`--swarm`: the others of a swarm have no way to know of the list.
+
+An error message names a ticket by the id of what it offers and leaves the
+rest out, so that a message pasted somewhere gives no secret away.
 
 ### The web and other machines at once
 
@@ -118,17 +179,18 @@ The second machine to want a file from the web need not load the server
 again. The first copies it with `--seed`:
 
 ```console
-$ mux cp https://example.org/big.iso ./downloads/ --seed
+$ mux cp https://example.org/big.iso ./downloads/ --seed --swarm
 ./downloads/big.iso	1288490188	consistent
-mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./&url=https://example.org/big.iso
+mux://450b9c6b…6d2bfc54?secret=24591239…55097e5f&peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./&swarm=1&url=https://example.org/big.iso
 ```
 
 After the line that says what was written comes a ticket, and the command
 goes on offering the file. The ticket names this machine and the web
-address the file came from. Every other machine copies with it:
+address the file came from, and with `--swarm` it is a
+[swarm's](#who-may-fetch). Every other machine copies with it:
 
 ```console
-$ mux cp 'mux://450b9c6b…?peer=35964d95…&url=https://example.org/big.iso' ./downloads/ --seed
+$ mux cp 'mux://450b9c6b…?secret=24591239…&peer=35964d95…&swarm=1&url=https://example.org/big.iso' ./downloads/ --seed
 ./downloads/big.iso	1288490188	verified
 ```
 
@@ -146,13 +208,19 @@ $ mux cp 'mux://450b9c6b…?peer=35964d95…&url=https://example.org/big.iso' ./
   copy from the web. Give the first machine `--hash` if the digest of the
   file is known.
 
+- Each machine that copies with `--seed` is one more to copy from: the
+  ticket stays the same, and a machine that asks one holder is told of the
+  others. Without `--swarm` on the first, each would offer its copy under
+  a ticket of its own.
+
 `--seed` offers what was copied from a folder too, as copying it to `peer:`
 would.
 
-A ticket is all another machine needs, and whoever has it can fetch the
-data. It names the content by its hash and each machine by its key, with
-where that machine can be reached: a relay, as in the examples here, or an
-address. The ids are shortened in this page: each is 64 characters.
+A ticket is all another machine needs. It names the content by its hash,
+carries the secret that lets its holder ask, and names each machine by its
+key, with where that machine can be reached: a relay, as in the examples
+here, or an address. The ids are shortened in this page: each is 64
+characters, and the secret is 32.
 
 These flags say how the two machines reach each other. They are the
 same for `cp`, `probe`, `seed` and `get`:
@@ -170,7 +238,8 @@ same for `cp`, `probe`, `seed` and `get`:
 `mux seed <PATH>...` is `mux cp <PATH>... peer:`, and `mux get <TICKET>
 --out <FOLDER>` is `mux cp <TICKET> <FOLDER>/`. They came first and are the
 same code: what one prints, takes with `--json` and ends with, the other
-does. Three flags are theirs alone:
+does. `seed` takes `--to`, `--once` and `--swarm`, and so does `get` with
+`--seed`. Three flags are theirs alone:
 
 | Flag | |
 | --- | --- |
@@ -204,17 +273,19 @@ server sends, which is then listed. `parts` says whether the place can be
 read at several points at once, or only in order from its start.
 
 ```console
-$ mux probe 'mux://450b9c6b…6d2bfc54?peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./'
+$ mux probe 'mux://450b9c6b…6d2bfc54?secret=24591239…55097e5f&peer=35964d95…f14dd0e7@https://euc1-1.relay.n0.iroh.link./'
 name     weights
 kind     folder
 size     420143104 bytes (400.68 MiB)
 files    12
 checked  verified, if it is copied
 parts    read several at once
+swarm    no: it is fetched from the machines the ticket names alone
 holder   35964d95  all of it
 ```
 
-For a ticket there is a `holder` line for each machine the ticket names:
+For a ticket, `swarm` says whether the machines that fetch it fetch from
+each other too. There is a `holder` line for each machine the ticket names:
 `all of it`, how many bytes of it, or `could not be asked` for a machine
 that did not answer. If the ticket names web addresses, each has an
 `origin` line that says whether a copy would read from it, and if not, why.
@@ -324,7 +395,7 @@ field away or changes what one means.
 | `file` | A file is whole and has just been given its final name. Each file that is copied gets one line: a file with no bytes as the copy begins. A file that was there already and is kept gets none. | `path` |
 | `done` | A copy is finished. | `path`, `bytes`, `checked`, `fetched`, and `kept` from an earlier copy |
 | `plan` | In place of all the above, with `--dry-run`. | `source`, `destination`, `path`, `bytes`, `files`, `checked` |
-| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked; and `origins`, a list of `address` and `unused`: why a copy would not read from that web address, or `null` if it would |
+| `probe` | The answer of `mux probe`. | `place`, `name`, `kind`, `bytes`, `files`, `checked`, `parts`, and `digests`, a list of `path` and `digest`. For a ticket also `swarm`, whether its holders fetch from each other; `holders`, a list of `node` and `bytes`: how much of it that machine has, or `null` if it could not be asked; and `origins`, a list of `address` and `unused`: why a copy would not read from that web address, or `null` if it would |
 | `offer` | A path is offered to other machines: by `cp` to `peer:`, by `seed`, or after a copy with `--seed`. | `ticket`, `name`, `bytes`, `files` |
 | `step` | One thing a sync does, or would do with `--dry-run`. | `step` and `path`, as on standard output without `--json` |
 | `synced` | A sync is finished. | `source`, `destination`, how many paths got each step (`add`, `replace`, `touch`, `remove`, `keep`, `blocked`), `bytes` in files added or replaced, `fetched` bytes read from suppliers, `kept` bytes reused in those files, and `trash` holding replacements and deletions (or `null`) |
@@ -333,8 +404,8 @@ field away or changes what one means.
 
 `checked` is `verified`, `consistent` or `already there`, as on standard
 output without `--json`. The words for `kind` are `failed`, `usage`,
-`absent`, `unreachable`, `changed` and `corrupt`, in the order of the exit
-codes from 1.
+`absent`, `unreachable`, `changed`, `corrupt` and `refused`, in the order
+of the exit codes from 1.
 
 ```console
 $ mux cp --json https://example.org/a.bin ./out/
@@ -359,6 +430,7 @@ They are the same for every command and do not change between versions.
 | 4 | The source could not be reached, or stopped sending. | Yes: it carries on with what it stored. |
 | 5 | The source changed while it was being read. | Yes: it copies the source as it is now. |
 | 6 | What arrived is not what was asked for: it does not have the digest given. | No. |
+| 7 | The machine that offers the source does not let this one fetch it: the ticket is for machines named with `--to`, or was for the first to ask. | No, until whoever offers it lets this machine in. |
 
 An error is one line on standard error beginning `error:`. Where there is
 something to do about it, a line beginning `hint:` follows.

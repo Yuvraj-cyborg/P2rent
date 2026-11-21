@@ -42,7 +42,8 @@ impl Found {
         let folder = open(&tree);
         let scanning = observer.clone();
         let hints = async {
-            let all = fetch_hints(node, &self.manifest_peer, original).await?;
+            let secret = self.access.secret;
+            let all = fetch_hints(node, &self.manifest_peer, original, &secret).await?;
             match &selection {
                 None => Some(all),
                 Some(part) => Some(ChunkHints::pack(
@@ -60,7 +61,9 @@ impl Found {
         let resumed = bytes_of(&artifact, &store.held());
         observer(Event::Kept { bytes: resumed });
 
-        let (_, mut suppliers) = self.suppliers(node);
+        // What is fetched here is offered to nobody, so this node asks to
+        // be listed nowhere.
+        let (_, mut suppliers) = self.suppliers(node, false);
         if let Some(selection) = selection {
             suppliers = suppliers
                 .into_iter()

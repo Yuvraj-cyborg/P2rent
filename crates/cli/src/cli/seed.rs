@@ -1,6 +1,6 @@
 use super::exit::misuse;
 use super::tell::{self, Line};
-use super::{Reach, ui};
+use super::{Reach, Sharing, ui};
 use anyhow::Context;
 use mux::artifact::{DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use mux::net::Relays;
@@ -24,6 +24,9 @@ pub(super) struct Args {
     #[command(flatten)]
     reach: Reach,
 
+    #[command(flatten)]
+    sharing: Sharing,
+
     /// Address to put in the ticket for other machines to dial (repeatable)
     /// [default: this machine's own, if no relay is used]
     #[arg(long, value_name = "HOST[:PORT]")]
@@ -37,10 +40,11 @@ pub(super) struct Args {
 impl Args {
     /// What `mux cp PATH... peer:` means: these paths, offered as `seed`
     /// offers them when it is told nothing more.
-    pub(super) fn of(paths: Vec<PathBuf>, reach: Reach) -> Self {
+    pub(super) fn of(paths: Vec<PathBuf>, reach: Reach, sharing: Sharing) -> Self {
         Self {
             paths,
             reach,
+            sharing,
             advertise: Vec::new(),
             chunk_size: DEFAULT_CHUNK_SIZE,
         }
@@ -62,7 +66,12 @@ pub(super) async fn run(args: Args, key: Option<&Path>, json: bool) -> anyhow::R
     let advertised = advertised(&node, &args.reach, &args.advertise).await;
     let mut shares: Vec<Arc<Share>> = Vec::new();
     for path in &args.paths {
-        shares.push(offer(&node, path, args.chunk_size, &advertised, &[], json).await?);
+        let offered = Offered {
+            path,
+            chunk_size: args.chunk_size,
+            origins: &[],
+        };
+        shares.push(offer(&node, &offered, &advertised, &args.sharing, json).await?);
     }
 
     eprintln!("node     {}", node.node_id());
@@ -100,18 +109,26 @@ pub(super) async fn advertised(node: &Node, reach: &Reach, requested: &[String])
     advertised_addresses(requested, &node.local_addrs(), detect)
 }
 
-/// Offers what is at `path` from `node`, and writes its ticket: the one
-/// thing on standard output, so that it can be piped. `origins` are web
-/// addresses that hold the same file, for the ticket to name too.
+/// One thing to offer.
+pub(super) struct Offered<'a> {
+    /// The file or the folder.
+    pub(super) path: &'a Path,
+    pub(super) chunk_size: u32,
+    /// Web addresses that hold the same file, for the ticket to name too.
+    pub(super) origins: &'a [String],
+}
+
+/// Offers what is at `offered.path` from `node` to the machines `sharing`
+/// lets fetch it, and writes its ticket: the one thing on standard output,
+/// so that it can be piped.
 pub(super) async fn offer(
     node: &Node,
-    path: &Path,
-    chunk_size: u32,
+    offered: &Offered<'_>,
     advertised: &[String],
-    origins: &[String],
+    sharing: &Sharing,
     json: bool,
 ) -> anyhow::Result<Arc<Share>> {
-    let share = index_and_seed(node, path, chunk_size).await?;
+    let share = index_and_seed(node, offered, sharing).await?;
     let artifact = share.artifact();
     eprintln!(
         "seeding  {}  ({}, {})",
@@ -119,8 +136,9 @@ pub(super) async fn offer(
         ui::bytes(artifact.total_size()),
         ui::plural(artifact.chunk_count(), "chunk"),
     );
-    let mut ticket = node.ticket(artifact.id(), advertised);
-    ticket.origins.extend_from_slice(origins);
+    eprintln!("for      {}", sharing.in_words());
+    let mut ticket = node.ticket(&share, advertised);
+    ticket.origins.extend_from_slice(offered.origins);
     let ticket = ticket.to_string();
     if json {
         let files = artifact.entries().iter().filter(|e| e.is_file()).count();
@@ -136,7 +154,12 @@ pub(super) async fn offer(
     Ok(share)
 }
 
-async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Result<Arc<Share>> {
+async fn index_and_seed(
+    node: &Node,
+    offered: &Offered<'_>,
+    sharing: &Sharing,
+) -> anyhow::Result<Arc<Share>> {
+    let (path, chunk_size) = (offered.path, offered.chunk_size);
     let total = store::measure(path).with_context(|| format!("cannot read {}", path.display()))?;
     let bar = ui::bytes_bar(total, "hashing");
     let hashed = Arc::new(AtomicU64::new(0));
@@ -174,7 +197,7 @@ async fn index_and_seed(node: &Node, path: &Path, chunk_size: u32) -> anyhow::Re
              downloads and special files are not sent."
         );
     }
-    Ok(node.seed(Arc::new(indexed.artifact), indexed.root))
+    Ok(node.seed(Arc::new(indexed.artifact), indexed.root, sharing.access()))
 }
 
 pub(super) async fn serve_until_interrupted(shares: &[Arc<Share>]) {

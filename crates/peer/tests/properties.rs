@@ -1,7 +1,8 @@
 //! Properties of the wire messages, checked on generated inputs.
 
+use model::access::Proof;
 use model::artifact::{Bitfield, Hash};
-use peer::net::proto::{Have, Request, Response, Status};
+use peer::net::proto::{Call, Have, Request, Response, Status};
 use peer::net::{NodeId, PeerInfo};
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -41,13 +42,17 @@ fn peer_info() -> impl Strategy<Value = PeerInfo> {
     })
 }
 
-fn request() -> impl Strategy<Value = Request> {
-    prop_oneof![
+fn call() -> impl Strategy<Value = Call> {
+    let request = prop_oneof![
         hash().prop_map(|artifact| Request::Manifest { artifact }),
         hash().prop_map(|content| Request::Hints { content }),
-        hash().prop_map(|content| Request::Status { content }),
+        (hash(), any::<bool>()).prop_map(|(content, listed)| Request::Status { content, listed }),
         (hash(), any::<u64>()).prop_map(|(content, index)| Request::Chunk { content, index }),
-    ]
+    ];
+    (any::<[u8; 32]>(), request).prop_map(|(proof, request)| Call {
+        proof: Proof::from_bytes(proof),
+        request,
+    })
 }
 
 fn response() -> impl Strategy<Value = Response> {
@@ -59,14 +64,15 @@ fn response() -> impl Strategy<Value = Response> {
         any::<u32>().prop_map(|len| Response::Chunk { len }),
         Just(Response::NotFound),
         Just(Response::Hints),
+        Just(Response::Refused),
     ]
 }
 
 proptest! {
     #[test]
-    fn a_request_survives_encoding(request in request()) {
-        let wire = postcard::to_allocvec(&request).unwrap();
-        prop_assert_eq!(postcard::from_bytes::<Request>(&wire).unwrap(), request);
+    fn a_request_survives_encoding(call in call()) {
+        let wire = postcard::to_allocvec(&call).unwrap();
+        prop_assert_eq!(postcard::from_bytes::<Call>(&wire).unwrap(), call);
     }
 
     #[test]
@@ -79,7 +85,7 @@ proptest! {
     /// from it describes exactly the artifact we asked about, or is refused.
     #[test]
     fn a_status_from_a_stranger_is_checked(wire in vec(any::<u8>(), 0..200), chunks in 0u64..300) {
-        let _ = postcard::from_bytes::<Request>(&wire);
+        let _ = postcard::from_bytes::<Call>(&wire);
         if let Ok(Response::Status(status)) = postcard::from_bytes::<Response>(&wire)
             && let Ok(have) = status.have.into_bitfield(chunks)
         {

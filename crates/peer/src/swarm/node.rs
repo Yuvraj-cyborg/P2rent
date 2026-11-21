@@ -1,5 +1,5 @@
 use super::server;
-use super::share::Share;
+use super::share::{Access, Share};
 use super::{Ticket, TicketPeer, Whereabouts};
 use crate::error::Result;
 use crate::net::{Endpoint, Identity, NodeId, Options};
@@ -55,12 +55,16 @@ impl Node {
         &self.endpoint
     }
 
-    /// Offers a complete artifact whose files live at `root`. Chunks are
-    /// served straight from those files.
-    pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf) -> Arc<Share> {
+    /// Offers a complete artifact whose files live at `root`, to the
+    /// machines `access` lets in. Chunks are served straight from those
+    /// files.
+    ///
+    /// If the node offers the same content already, that share is given
+    /// back, and `access` is not used.
+    pub fn seed(&self, artifact: Arc<Artifact>, root: PathBuf, access: Access) -> Arc<Share> {
         let files = Arc::new(Folder::whole(artifact.tree().clone(), root));
         let store = Store::whole(artifact.clone(), files.clone());
-        self.register(Arc::new(Share::new(artifact, store, files)))
+        self.register(Arc::new(Share::new(artifact, store, files, access)))
     }
 
     /// Adds a share, or returns the one already registered for its content.
@@ -86,11 +90,14 @@ impl Node {
             .cloned()
     }
 
-    /// A ticket naming this node as the peer to ask: at each of `addrs`
-    /// (`host:port`), and by way of its relay if it has reached one. With
-    /// neither, the ticket names the node alone, to be looked up by its
-    /// id.
-    pub fn ticket(&self, artifact: Hash, addrs: &[String]) -> Ticket {
+    /// A ticket for `share`, naming this node as the peer to ask: at each
+    /// of `addrs` (`host:port`), and by way of its relay if it has reached
+    /// one. With neither, the ticket names the node alone, to be looked up
+    /// by its id.
+    ///
+    /// The ticket carries the share's secret: whoever is given it may
+    /// fetch, as far as the share lets machines in.
+    pub fn ticket(&self, share: &Share, addrs: &[String]) -> Ticket {
         let node = self.node_id();
         let addresses = addrs.iter().cloned().map(Whereabouts::Address);
         let relay = self.endpoint.relay().map(Whereabouts::Relay);
@@ -102,7 +109,9 @@ impl Node {
             peers.push(TicketPeer { node, at: None });
         }
         Ticket {
-            artifact,
+            artifact: share.artifact().id(),
+            secret: share.secret(),
+            swarm: share.swarm(),
             peers,
             origins: Vec::new(),
         }

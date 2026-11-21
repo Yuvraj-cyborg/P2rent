@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{CHUNK, get, index, pattern};
+use common::{CHUNK, get, index, pattern, swarm};
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use peer::net::{Identity, Options, Relays};
 use peer::swarm::Node;
@@ -42,10 +42,16 @@ async fn nodes_that_cannot_dial_each_other_transfer_through_a_relay() {
     let seeder = behind(&url).await;
     assert_eq!(seeder.local_addrs(), []);
     let (artifact, root) = index(&source);
-    seeder.seed(artifact.clone(), root);
+    // A swarm: the first to fetch it serves the second.
+    let share = seeder.seed(artifact.clone(), root, swarm());
     // The ticket says which relay, and no address: the node has none.
-    let ticket = seeder.ticket(artifact.id(), &[]);
-    let written = format!("mux://{}?peer={}@{url}", artifact.id(), seeder.node_id());
+    let ticket = seeder.ticket(&share, &[]);
+    let written = format!(
+        "mux://{}?secret={}&peer={}@{url}&swarm=1",
+        artifact.id(),
+        share.secret().to_hex(),
+        seeder.node_id()
+    );
     assert_eq!(ticket.to_string(), written);
 
     let first = behind(&url).await;

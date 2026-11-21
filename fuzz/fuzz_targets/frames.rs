@@ -6,10 +6,10 @@
 
 use libfuzzer_sys::fuzz_target;
 use model::schedule::Schedule;
-use peer::net::proto::{Request, Response};
+use peer::net::proto::{Call, Response};
 
 fuzz_target!(|data: &[u8]| {
-    let _ = postcard::from_bytes::<Request>(data);
+    let _ = postcard::from_bytes::<Call>(data);
 
     let Ok(Response::Status(status)) = postcard::from_bytes::<Response>(data) else {
         return;

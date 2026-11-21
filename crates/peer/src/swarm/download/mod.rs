@@ -4,20 +4,26 @@
 //! peer the ticket gives. Then it fetches that: it checks what is already
 //! on disk, and has the engine pull the missing chunks from as many peers
 //! as it can find. Every chunk is verified against the manifest
-//! before it is written, and is offered to other peers as soon as it lands.
-//! A file gets its final name only when every one of its chunks is in
-//! place.
+//! before it is written. A file gets its final name only when every one of
+//! its chunks is in place.
+//!
+//! Every request shows that this machine knows the ticket's secret. If the
+//! ticket is a swarm's, each chunk is offered to the other holders of the
+//! ticket as soon as it lands, and they are fetched from as they are heard
+//! of. Otherwise this machine serves nothing, is listed nowhere, and
+//! fetches from the peers of the ticket alone.
 
 mod selection;
 mod supplier;
 
 use self::supplier::Swarm;
-use super::{Node, Share, Ticket, Whereabouts};
+use super::{Access, Node, Share, Ticket, Whereabouts};
 use crate::error::{Error, Result};
 use crate::net::{NodeId, PeerInfo};
 use engine::{Store, sync};
 use fs::Folder;
-use model::artifact::{Artifact, Bitfield, Hash};
+use model::access::Secret;
+use model::artifact::{Artifact, Bitfield};
 use model::place::{Event, Observer, Supplier, SupplierId};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -141,7 +147,9 @@ impl Progress {
 /// The result of a finished download.
 #[derive(Debug)]
 pub struct Report {
-    /// The artifact, now registered with the node and served to others.
+    /// The artifact as this node now holds it. If the ticket was a swarm's
+    /// it is registered with the node, and served to the others of the
+    /// swarm.
     pub share: Arc<Share>,
     /// The file, or the directory holding the tree, that was written.
     pub root: PathBuf,
@@ -169,6 +177,9 @@ pub struct Report {
 pub struct Found {
     /// The artifact, with the digest of every chunk.
     pub artifact: Arc<Artifact>,
+    /// What the ticket says of who may fetch it, and whether they pass it
+    /// on: the ticket's secret, and whether it is a swarm's.
+    access: Access,
     /// The peers the ticket names, other than this node.
     peers: Vec<PeerInfo>,
     /// What else its chunks are to be fetched from.
@@ -186,11 +197,21 @@ impl Found {
         self.others.push(supplier);
     }
 
-    fn suppliers(&self, node: &Arc<Node>) -> (Swarm, Vec<Arc<dyn Supplier>>) {
+    /// Whether the ticket is a swarm's: its holders fetch from each other.
+    pub fn swarm(&self) -> bool {
+        self.access.swarm
+    }
+
+    /// The peers to fetch from. `serving` says that this node serves what
+    /// it fetches: in a swarm it then asks to be listed with the others.
+    fn suppliers(&self, node: &Arc<Node>, serving: bool) -> (Swarm, Vec<Arc<dyn Supplier>>) {
         let named = self.peers.iter().filter_map(|peer| peer.relay.clone());
         let swarm = Swarm {
             node: node.clone(),
             artifact: self.artifact.clone(),
+            secret: self.access.secret,
+            follow: self.access.swarm,
+            listed: self.access.swarm && serving,
             known: Arc::default(),
             relays: named.chain(node.endpoint().relay()).collect(),
         };
@@ -221,8 +242,9 @@ pub struct Holder {
 /// # Errors
 ///
 /// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached,
-/// [`Error::ManifestUnavailable`] if none supplies a valid manifest, [`Error::Stalled`] if no
-/// chunk arrives within the stall timeout, and [`Error::Place`] for local disk failures.
+/// [`Error::ManifestUnavailable`] if none supplies a valid manifest, [`Error::Refused`] if a
+/// peer does not let this machine fetch, [`Error::Stalled`] if no chunk arrives within the
+/// stall timeout, and [`Error::Place`] for local disk failures.
 pub async fn download(
     node: &Arc<Node>,
     ticket: &Ticket,
@@ -240,8 +262,10 @@ pub async fn download(
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached
-/// and [`Error::ManifestUnavailable`] if none supplies a valid manifest.
+/// Returns [`Error::InvalidTicket`] if no peer in the ticket can be reached,
+/// [`Error::ManifestUnavailable`] if none supplies a valid manifest, and
+/// [`Error::Refused`] if none does and one of them does not let this machine
+/// fetch.
 pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
     let peers = resolve(node, ticket).await;
     if peers.is_empty() {
@@ -249,9 +273,10 @@ pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
             "the ticket names no peer that can be reached".into(),
         ));
     }
-    let (artifact, manifest_peer) = fetch_manifest(node, ticket.artifact, &peers).await?;
+    let (artifact, manifest_peer) = fetch_manifest(node, ticket, &peers).await?;
     Ok(Found {
         artifact: Arc::new(artifact),
+        access: Access::of(ticket),
         manifest_peer,
         peers,
         others: Vec::new(),
@@ -262,6 +287,7 @@ pub async fn find(node: &Arc<Node>, ticket: &Ticket) -> Result<Found> {
 /// that is itself still fetching holds a part.
 pub async fn holders(node: &Arc<Node>, found: &Found) -> Vec<Holder> {
     let artifact = &found.artifact;
+    let secret = found.access.secret;
     // All of them at once: peers that do not answer are waited for
     // together, and not one after the other.
     let asked: Vec<_> = found
@@ -272,7 +298,8 @@ pub async fn holders(node: &Arc<Node>, found: &Found) -> Vec<Holder> {
             tokio::spawn(async move {
                 let asking = async {
                     let connection = node.endpoint().connect(&peer).await?;
-                    let status = connection.status(content).await;
+                    // Asking serves nothing, so it asks to be listed nowhere.
+                    let status = connection.status(content, &secret, false).await;
                     connection.close();
                     status
                 };
@@ -338,7 +365,8 @@ pub async fn fetch(
         scan_progress.scanned.fetch_add(bytes, Ordering::Relaxed);
         scan_observer(Event::Examined { bytes });
     };
-    let hints = fetch_hints(node, &found.manifest_peer, artifact);
+    let secret = found.access.secret;
+    let hints = fetch_hints(node, &found.manifest_peer, artifact, &secret);
     let store = Store::resume_with_hints(artifact.clone(), folder.clone(), examined, hints).await?;
     let have = store.held();
 
@@ -346,14 +374,22 @@ pub async fn fetch(
     progress.resumed.store(resumed, Ordering::Relaxed);
     observer(Event::Kept { bytes: resumed });
 
-    let share = node.register(Arc::new(Share::new(
+    let share = Arc::new(Share::new(
         artifact.clone(),
         store,
         folder.clone(),
-    )));
+        found.access.clone(),
+    ));
+    // Only in a swarm does this node answer for what it fetches. Otherwise
+    // the share is this download's alone, and no request reaches it.
+    let share = if found.swarm() {
+        node.register(share)
+    } else {
+        share
+    };
 
     progress.set_phase(Phase::Downloading);
-    let (swarm, suppliers) = found.suppliers(node);
+    let (swarm, suppliers) = found.suppliers(node, true);
     let not_peers: Vec<SupplierId> = found.others.iter().map(|other| other.id()).collect();
     let limits = engine::Options {
         max_suppliers: options.max_peers,
@@ -403,17 +439,18 @@ pub async fn fetch(
     })
 }
 
-/// Keeps this node listed with `peers` as a holder of `content`, a content
-/// id, so that downloaders arriving later are told about it. Runs until
-/// cancelled.
-pub async fn announce(node: Arc<Node>, content: Hash, peers: Vec<PeerInfo>) {
+/// Keeps this node listed with `peers` as a holder of `share`, which is a
+/// swarm's, so that downloaders arriving later are told about it. Runs
+/// until cancelled.
+pub async fn announce(node: Arc<Node>, share: Arc<Share>, peers: Vec<PeerInfo>) {
+    let (content, secret) = (share.artifact().content_id(), share.secret());
     let mut ticker = tokio::time::interval(ANNOUNCE_INTERVAL);
     loop {
         ticker.tick().await;
         for peer in &peers {
             let attempt = async {
                 let connection = node.endpoint().connect(peer).await?;
-                let status = connection.status(content).await;
+                let status = connection.status(content, &secret, true).await;
                 connection.close();
                 status
             };
@@ -459,13 +496,14 @@ async fn fetch_hints(
     node: &Node,
     peer: &PeerInfo,
     artifact: &Artifact,
+    secret: &Secret,
 ) -> Option<model::search::ChunkHints> {
     let connection = timeout(MANIFEST_TIMEOUT, node.endpoint().connect(peer))
         .await
         .ok()?
         .ok()?;
     let hints = connection
-        .hints(artifact, MANIFEST_TIMEOUT)
+        .hints(artifact, secret, MANIFEST_TIMEOUT)
         .await
         .ok()
         .flatten();
@@ -473,15 +511,23 @@ async fn fetch_hints(
     hints
 }
 
-async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<(Artifact, PeerInfo)> {
+async fn fetch_manifest(
+    node: &Node,
+    ticket: &Ticket,
+    peers: &[PeerInfo],
+) -> Result<(Artifact, PeerInfo)> {
+    let id = ticket.artifact;
     for attempt in 0..MANIFEST_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+        // A peer that does not let this machine in will not let it in a
+        // moment later. If no other peer answers, that is why.
+        let mut refused = false;
         for peer in peers {
             let request = async {
                 let connection = node.endpoint().connect(peer).await?;
-                let encoded = connection.manifest(id).await;
+                let encoded = connection.manifest(id, &ticket.secret).await;
                 connection.close();
                 encoded
             };
@@ -489,6 +535,11 @@ async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<(Ar
                 Ok(Ok(Some(encoded))) => encoded,
                 Ok(Ok(None)) => {
                     debug!(peer = %peer.node.short(), "peer does not serve this artifact");
+                    continue;
+                }
+                Ok(Err(Error::Refused)) => {
+                    debug!(peer = %peer.node.short(), "peer does not let this machine fetch");
+                    refused = true;
                     continue;
                 }
                 Ok(Err(e)) => {
@@ -504,6 +555,9 @@ async fn fetch_manifest(node: &Node, id: Hash, peers: &[PeerInfo]) -> Result<(Ar
                 Ok(artifact) => return Ok((artifact, peer.clone())),
                 Err(e) => warn!(peer = %peer.node.short(), "rejected manifest: {e}"),
             }
+        }
+        if refused {
+            return Err(Error::Refused);
         }
     }
     Err(Error::ManifestUnavailable)

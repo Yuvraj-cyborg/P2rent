@@ -54,6 +54,10 @@ pub(super) enum Line<'a> {
         checked: &'a str,
         parts: bool,
         digests: Vec<Digest>,
+        /// For a ticket: whether the machines that fetch it fetch from each
+        /// other too.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        swarm: Option<bool>,
         /// For a ticket: each machine it names, and how much it holds.
         #[serde(skip_serializing_if = "Option::is_none")]
         holders: Option<Vec<Holder>>,
@@ -226,6 +230,7 @@ mod tests {
                         path: "sub/b".into(),
                         digest: "sha256:00".into(),
                     }],
+                    swarm: None,
                     holders: None,
                     origins: None,
                 },
@@ -298,6 +303,7 @@ mod tests {
                     checked: "verified",
                     parts: true,
                     digests: Vec::new(),
+                    swarm: Some(false),
                     holders: Some(vec![
                         Holder {
                             node: "bb".into(),
@@ -319,7 +325,7 @@ mod tests {
                         },
                     ]),
                 },
-                r#"{"v":1,"event":"probe","place":"mux://aa?peer=bb","name":"a","kind":"file","bytes":5,"files":1,"checked":"verified","parts":true,"digests":[],"holders":[{"node":"bb","bytes":5},{"node":"cc","bytes":null}],"origins":[{"address":"https://example.org/a","unused":null},{"address":"https://example.net/a","unused":"it holds 4 bytes"}]}"#,
+                r#"{"v":1,"event":"probe","place":"mux://aa?peer=bb","name":"a","kind":"file","bytes":5,"files":1,"checked":"verified","parts":true,"digests":[],"swarm":false,"holders":[{"node":"bb","bytes":5},{"node":"cc","bytes":null}],"origins":[{"address":"https://example.org/a","unused":null},{"address":"https://example.net/a","unused":"it holds 4 bytes"}]}"#,
             ),
             (
                 Line::Offer {

@@ -17,7 +17,7 @@ use common::assert_same_tree;
 use kills::Moments;
 use mux::artifact::Hash;
 use mux::origins::Origin;
-use mux::swarm::{Node, Report, Ticket};
+use mux::swarm::{Access, Node, Report, Ticket};
 use server::{Behaviour, Fault, Server};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -1274,14 +1274,18 @@ async fn two_holders(
     std::fs::write(&held, file).unwrap();
     let (artifact, root) = common::index(&held);
     let mut holders = Vec::new();
+    // One offer, held by both: the ticket names the two.
+    let access = Access::new();
     let mut ticket = Ticket {
         artifact: artifact.id(),
+        secret: access.secret,
+        swarm: false,
         peers: Vec::new(),
         origins: origins.iter().map(|&origin| origin.to_owned()).collect(),
     };
     for _ in 0..2 {
         let node = common::node().await;
-        node.seed(artifact.clone(), root.clone());
+        node.seed(artifact.clone(), root.clone(), access.clone());
         ticket
             .peers
             .extend(common::ticket_for(&node, &artifact).peers);
@@ -1363,7 +1367,7 @@ async fn a_web_address_fills_in_for_a_machine_that_sends_wrong_bytes() {
     let forged = tmp.path().join("sample.bin");
     std::fs::write(&forged, bytes(file.len(), 79)).unwrap();
     let liar = common::node().await;
-    liar.seed(artifact.clone(), forged);
+    liar.seed(artifact.clone(), forged, Access::new());
     let mut ticket = common::ticket_for(&liar, &artifact);
     ticket.origins.push(url.clone());
 

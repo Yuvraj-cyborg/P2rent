@@ -1,5 +1,6 @@
 //! Properties of the data model, checked on generated inputs.
 
+use model::access::{Guests, Secret};
 use model::artifact::{
     Artifact, Bitfield, Entry, EntryKind, EntryMetadata, Hash, MIN_CHUNK_SIZE, Manifest, Timestamp,
 };
@@ -8,6 +9,7 @@ use model::rolling::Rolling;
 use model::run;
 use model::schedule::{ChunkState, Outcome, Owner, Schedule};
 use model::search::{Searched, Wanted};
+use model::ticket::NodeId;
 use proptest::collection::{btree_set, vec};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -485,4 +487,55 @@ fn postcard_pair(len: u64, bytes: &[u8]) -> Vec<u8> {
 
 fn decode_bitfield(wire: &[u8]) -> postcard::Result<Bitfield> {
     postcard::from_bytes(wire)
+}
+
+/// A machine told from the others by one byte.
+fn machine(byte: u8) -> NodeId {
+    NodeId::from_bytes([byte; 32])
+}
+
+proptest! {
+    /// Who is let in, compared with a set that is filled as machines come.
+    #[test]
+    fn the_first_machines_to_ask_are_let_in_and_no_other(
+        room in 0usize..6,
+        asking in vec(0u8..8, 0..40),
+    ) {
+        let mut guests = Guests::first(room);
+        let mut inside = BTreeSet::new();
+        for byte in asking {
+            let expected = inside.contains(&byte) || inside.len() < room;
+            prop_assert_eq!(guests.admit(&machine(byte)), expected);
+            if expected {
+                inside.insert(byte);
+            }
+        }
+        prop_assert!(inside.len() <= room);
+    }
+
+    #[test]
+    fn the_machines_that_are_named_are_let_in_and_no_other(
+        named in btree_set(0u8..8, 0..5),
+        asking in vec(0u8..8, 0..40),
+    ) {
+        let mut guests = Guests::only(named.iter().copied().map(machine).collect());
+        for byte in asking {
+            prop_assert_eq!(guests.admit(&machine(byte)), named.contains(&byte));
+        }
+    }
+
+    /// A proof is good for the secret, the server and the client it was
+    /// made for, and for nothing that differs in any of the three.
+    #[test]
+    fn a_proof_is_good_for_what_it_was_made_for_alone(
+        made in (any::<[u8; 16]>(), any::<[u8; 32]>(), any::<[u8; 32]>()),
+        shown in (any::<[u8; 16]>(), any::<[u8; 32]>(), any::<[u8; 32]>()),
+    ) {
+        let proof = |(secret, server, client): ([u8; 16], [u8; 32], [u8; 32])| {
+            let (server, client) = (NodeId::from_bytes(server), NodeId::from_bytes(client));
+            Secret::from_bytes(secret).proof(&server, &client)
+        };
+        prop_assert_eq!(proof(made) == proof(shown), made == shown);
+        prop_assert_eq!(proof(made), proof(made));
+    }
 }

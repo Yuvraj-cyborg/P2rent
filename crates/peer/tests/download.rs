@@ -2,12 +2,12 @@
 
 mod common;
 
-use common::{CHUNK, addr_of, assert_same_tree, direct, get, node, pattern, peer_info, seed};
+use common::{CHUNK, assert_same_tree, direct, get, node, pattern, peer_info, seed};
 use model::artifact::Hash;
 use model::place::Arrived;
 use peer::Error;
 use peer::net::{Endpoint, Identity, Options};
-use peer::swarm::{Node, Ticket};
+use peer::swarm::{Node, Secret, Ticket};
 use std::fs;
 
 #[tokio::test]
@@ -76,7 +76,7 @@ async fn the_bytes_of_a_chunk_are_counted_as_they_arrive() {
     let data = pattern(CHUNK * 3 + 7, 4);
     fs::write(&source, &data).unwrap();
     let seeder = node().await;
-    let (artifact, _) = seed(&seeder, &source);
+    let (artifact, ticket) = seed(&seeder, &source);
 
     // Kept until the end: an endpoint that is let go of closes what it has
     // connected.
@@ -85,7 +85,7 @@ async fn the_bytes_of_a_chunk_are_counted_as_they_arrive() {
     let connection = asker.connect(&peer_info(&seeder)).await.unwrap();
     let arrived = Arrived::default();
     let len = u32::try_from(CHUNK).unwrap();
-    let chunk = connection.chunk(artifact.content_id(), 1, len, &arrived);
+    let chunk = connection.chunk(artifact.content_id(), 1, len, &ticket.secret, &arrived);
     let chunk = chunk.await.unwrap().unwrap();
 
     assert_eq!(chunk, data[CHUNK..2 * CHUNK]);
@@ -254,11 +254,13 @@ async fn an_empty_file_needs_no_chunks() {
 #[tokio::test]
 async fn an_unknown_artifact_is_reported() {
     let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("held.bin");
+    fs::write(&source, b"something else").unwrap();
     let seeder = node().await;
-    let ticket = seeder.ticket(
-        Hash::of(b"nobody has this"),
-        &[addr_of(&seeder).to_string()],
-    );
+    let ticket = Ticket {
+        artifact: Hash::of(b"nobody has this"),
+        ..seed(&seeder, &source).1
+    };
     let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();
     assert!(matches!(error, Error::ManifestUnavailable), "{error}");
 }
@@ -268,6 +270,8 @@ async fn a_ticket_without_peers_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let ticket = Ticket {
         artifact: Hash::of(b"x"),
+        secret: Secret::from_bytes([1; 16]),
+        swarm: false,
         peers: Vec::new(),
         origins: Vec::new(),
     };
@@ -280,11 +284,20 @@ async fn a_ticket_without_peers_is_rejected() {
 #[tokio::test]
 async fn a_node_named_by_its_id_alone_is_not_found_without_a_directory() {
     let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("held.bin");
+    fs::write(&source, b"something").unwrap();
     let seeder = node().await;
-    let ticket = seeder.ticket(Hash::of(b"x"), &[]);
+    let (artifact, _) = seed(&seeder, &source);
+    let share = seeder.share(artifact.content_id()).unwrap();
+    let ticket = seeder.ticket(&share, &[]);
     assert_eq!(
         ticket.to_string(),
-        format!("mux://{}?peer={}", Hash::of(b"x"), seeder.node_id())
+        format!(
+            "mux://{}?secret={}&peer={}",
+            artifact.id(),
+            share.secret().to_hex(),
+            seeder.node_id()
+        )
     );
 
     let error = get(&node().await, &ticket, tmp.path()).await.unwrap_err();

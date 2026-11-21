@@ -23,6 +23,8 @@ pub(super) enum Exit {
     Changed = 5,
     /// What arrived is not what was asked for.
     Corrupt = 6,
+    /// The machine that offers the source does not let this one fetch it.
+    Refused = 7,
 }
 
 /// A command line that is written wrong, where only the command can tell.
@@ -64,6 +66,7 @@ impl Exit {
                 mux::Error::InvalidLocation(_) | mux::Error::InvalidTicket(_) => Some(Self::Usage),
                 mux::Error::Stalled(_) => Some(Self::Unreachable),
                 mux::Error::ManifestUnavailable => Some(Self::Absent),
+                mux::Error::Refused => Some(Self::Refused),
                 mux::Error::Place(failure) => Some(Self::of_failure(failure)),
                 _ => None,
             }
@@ -108,6 +111,7 @@ impl Exit {
             Self::Unreachable => "unreachable",
             Self::Changed => "changed",
             Self::Corrupt => "corrupt",
+            Self::Refused => "refused",
         }
     }
 
@@ -122,6 +126,10 @@ impl Exit {
             Self::Changed => Some("run the same command again to copy the source as it is now"),
             Self::Corrupt => Some(
                 "the source does not hold what was asked for: check the digest, and where it came from",
+            ),
+            Self::Refused => Some(
+                "the ticket is for other machines, or was for the first to ask. Whoever offers \
+                 it can name this machine with `--to` and what `mux id` prints here",
             ),
         }
     }
@@ -144,7 +152,7 @@ mod tests {
         let said = String::new;
         let io = |kind| mux::store::Error::Io(std::io::Error::from(kind));
         let sync = |error: mux::sync::Error| anyhow::Error::from(error);
-        let cases: [(anyhow::Error, Exit); 20] = [
+        let cases: [(anyhow::Error, Exit); 21] = [
             (
                 sync(engine::Error::Stalled(Duration::ZERO).into()),
                 Exit::Unreachable,
@@ -185,6 +193,7 @@ mod tests {
             (mux::Error::InvalidLocation(said()).into(), Exit::Usage),
             (Misuse(said()).into(), Exit::Usage),
             (mux::Error::ManifestUnavailable.into(), Exit::Absent),
+            (mux::Error::Refused.into(), Exit::Refused),
             (anyhow::anyhow!("something else"), Exit::Failed),
         ];
         for (error, exit) in cases {
@@ -209,6 +218,7 @@ mod tests {
             Exit::Unreachable,
             Exit::Changed,
             Exit::Corrupt,
+            Exit::Refused,
         ]
         .map(|exit| (exit as u8, exit.kind()));
         let kinds = [
@@ -218,6 +228,7 @@ mod tests {
             (4, "unreachable"),
             (5, "changed"),
             (6, "corrupt"),
+            (7, "refused"),
         ];
         assert_eq!(numbers, kinds);
     }

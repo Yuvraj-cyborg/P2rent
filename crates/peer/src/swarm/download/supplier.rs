@@ -8,6 +8,7 @@ use crate::error::Error;
 use crate::net::{Connection, NodeId, PeerInfo};
 use crate::swarm::Node;
 use engine::sync;
+use model::access::Secret;
 use model::artifact::Artifact;
 use model::place::{Arrived, Capabilities, Failure, Pending, Status, Supplier, SupplierId, Supply};
 use std::collections::HashMap;
@@ -29,6 +30,14 @@ const MAX_ADDRS_PER_PEER: usize = 8;
 pub(super) struct Swarm {
     pub node: Arc<Node>,
     pub artifact: Arc<Artifact>,
+    /// What every peer is shown that this node knows.
+    pub secret: Secret,
+    /// Whether the peers a peer tells of are called on: they are if the
+    /// ticket is a swarm's, and otherwise nobody but the ticket's own.
+    pub follow: bool,
+    /// Whether this node asks to be listed with the others of the swarm:
+    /// it does if it serves what it fetches.
+    pub listed: bool,
     pub known: Known,
     /// The relays this download may reach a peer through: those the ticket
     /// names, and this node's own.
@@ -109,21 +118,21 @@ impl Supply for Link {
     fn status(&self) -> Pending<'_, Status> {
         Box::pin(async move {
             let artifact = &self.swarm.artifact;
+            let swarm = &self.swarm;
             let status = self
                 .connection
-                .status(artifact.content_id())
+                .status(artifact.content_id(), &swarm.secret, swarm.listed)
                 .await
-                .map_err(|e| unreachable(&e))?
+                .map_err(|e| failure(&e))?
                 .ok_or_else(|| Failure::Absent("peer does not serve this artifact".into()))?;
             let held = status
                 .have
                 .into_bitfield(artifact.chunk_count())
                 .map_err(|e| Failure::Corrupt(e.to_string()))?;
-            let others = status
-                .peers
-                .into_iter()
-                .map(|peer| self.swarm.introduced(peer))
-                .collect();
+            // Outside a swarm a peer has nobody to tell of, and one that
+            // tells of somebody all the same is not followed there.
+            let told = status.peers.into_iter().filter(|_| swarm.follow);
+            let others = told.map(|peer| swarm.introduced(peer)).collect();
             Ok(Status { held, others })
         })
     }
@@ -140,10 +149,11 @@ impl Supply for Link {
             let location = artifact
                 .locate(index)
                 .ok_or_else(|| Failure::Fatal("chunk index out of range".into()))?;
+            let secret = &self.swarm.secret;
             self.connection
-                .chunk(artifact.content_id(), index, location.len, arrived)
+                .chunk(artifact.content_id(), index, location.len, secret, arrived)
                 .await
-                .map_err(|e| unreachable(&e))?
+                .map_err(|e| failure(&e))?
                 .ok_or_else(|| Failure::Absent(format!("peer does not hold chunk {index}")))
         })
     }
@@ -176,6 +186,15 @@ impl Drop for Link {
 /// trying again.
 fn unreachable(error: &Error) -> Failure {
     Failure::Unreachable(error.to_string())
+}
+
+/// What became of a request. A peer that does not let this machine in will
+/// not let it in later: it is not asked again.
+fn failure(error: &Error) -> Failure {
+    match error {
+        Error::Refused => Failure::Fatal(error.to_string()),
+        _ => unreachable(error),
+    }
 }
 
 #[cfg(test)]

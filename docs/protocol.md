@@ -1,18 +1,25 @@
 # Protocol
 
-This describes protocol version 4, negotiated with the ALPN token `mux/4`.
-Version 3 used connections authenticated with
-certificates, and version 2 was that protocol under the project's former
-name, p2rent, with the token `p2rent/2`. No two versions interoperate.
+This describes protocol version 5, negotiated with the ALPN token `mux/5`.
+Version 4, of release 0.3, answered any node that named what it wanted:
+its tickets had no secret and its requests no proof. Version 3 used
+connections authenticated with certificates, and version 2 was that
+protocol under the project's former name, p2rent, with the token
+`p2rent/2`. No two versions interoperate.
 
 ## Tickets
 
 ```
-mux://<artifact id>?peer=<node id>[@<where>]&peer=...&url=<web address>&url=...
+mux://<artifact id>?secret=<secret>&peer=<node id>[@<where>]&peer=...[&swarm=1]&url=<web address>&url=...
 ```
 
 - `artifact id`: 64 hex characters. It pins the content and the metadata of
   one artifact. [Identifiers](#identifiers) says how it is derived.
+- `secret`: 32 hex characters, sixteen random bytes made when the offer is.
+  A node answers only who [proves](#access) it knows them. A ticket without
+  one is refused when it is read.
+- `swarm=1` says that the nodes that fetch this serve it to each other too.
+  Without it, or with `swarm=0`, only the peers of the ticket serve.
 - `node id`: 64 hex characters, an Ed25519 public key.
 - `where` is `host:port`, or the address of a relay beginning `https://` or
   `http://`. `host` may be an IPv4 address, a bracketed IPv6 address or a
@@ -26,6 +33,9 @@ mux://<artifact id>?peer=<node id>[@<where>]&peer=...&url=<web address>&url=...
 
 Unknown query parameters are ignored, so a build that does not know `url`
 fetches from the peers alone.
+
+A ticket lets its holder fetch, as far as the offer lets nodes in. It is to
+be kept as a password is.
 
 ## Transport and identity
 
@@ -43,7 +53,7 @@ Nodes accept datagrams of up to 1472 bytes. Connections start at QUIC's
 Every request uses its own bidirectional stream.
 
 ```
-requester:  frame(Request)                    then FIN
+requester:  frame(Call { proof, request })    then FIN
 responder:  frame(Response) [payload bytes]   then FIN
 ```
 
@@ -51,12 +61,40 @@ A frame is a big-endian `u32` length followed by that many bytes of
 [postcard](https://postcard.jamesmunns.com/wire-format)-encoded message.
 Request frames are limited to 1 KiB and response frames to 4 MiB.
 
+## Access
+
+Every request comes with a proof that the requester knows the secret of
+what it asks for:
+
+```
+proof = BLAKE3 keyed hash
+          key:     secret (16 bytes), then the 16 bytes "mux access proof"
+          message: the responder's node id (32 bytes), then the requester's (32 bytes)
+```
+
+Both ids are those the handshake proved. So the secret never crosses the
+wire, a proof shown to one node cannot be shown by it to another, and a
+proof one node may show is of no use to any other node.
+
+A responder looks at the proof before it answers anything:
+
+| The responder | It answers |
+| --- | --- |
+| does not hold what is asked for | `NotFound` |
+| holds it, and the proof is not right | `NotFound`, as if it did not hold it |
+| holds it, the proof is right, and the requester is not let in | `Refused` |
+| holds it, the proof is right, and the requester is let in | the request |
+
+Which nodes are let in is the responder's rule, and not part of the
+protocol: every node that knows the secret, certain node ids, or the first
+so many to ask. A node that was let in once stays let in.
+
 ## Messages
 
 | Request | Response | Payload |
 | --- | --- | --- |
 | `Manifest { artifact }` | `Manifest { len }` | `len` bytes of encoded manifest, at most 64 MiB |
-| `Status { content }` | `Status { have, peers }` | none |
+| `Status { content, listed }` | `Status { have, peers }` | none |
 | `Chunk { content, index }` | `Chunk { len }` | `len` bytes of chunk data |
 | `Hints { content }` | `Hints` | one little-endian 64-bit rolling hash per manifest chunk |
 
@@ -66,7 +104,8 @@ older peer closing the stream leaves the receiver free to fetch the chunks.
 A rolling hash suggests a possible offset. The receiver checks those bytes
 against the chunk's BLAKE3 digest before copying them into the part file.
 
-Any request may be answered with `NotFound`.
+Any request may be answered with `NotFound` or with `Refused`: see
+[Access](#access).
 
 A manifest is asked for by artifact id. Chunks, and who holds them, are
 asked for by content id. Two nodes that hold the same bytes under different
@@ -77,11 +116,14 @@ for byte.
 
 - `have` is `All` or a bitfield with one bit per chunk, least significant bit
   first within each byte.
-- `peers` lists up to 32 other participants, most recently seen first. Each
-  is `(node id, socket addresses, relay)`. A participant is any node that
-  sent a `Status` request for the content in the last two minutes. The
-  addresses and the relay are those its connection was seen to go by, and
-  either may be missing: the node id is always enough to try.
+- `peers` is empty unless the content is offered as a swarm. In a swarm it
+  lists up to 32 other participants, most recently seen first. Each is
+  `(node id, socket addresses, relay)`. A participant is any node that sent
+  a `Status` request for the content with `listed` set in the last two
+  minutes: a node sets it if it serves the content too. The addresses and
+  the relay are those its connection was seen to go by, and either may be
+  missing: the node id is always enough to try.
+- A requester whose ticket is not a swarm's ignores any `peers` it is sent.
 - A `Chunk` response whose length differs from the length implied by the
   manifest is a protocol error.
 

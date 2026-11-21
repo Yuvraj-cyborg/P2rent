@@ -4,7 +4,7 @@
 use ::fs as store;
 use model::artifact::{Artifact, MIN_CHUNK_SIZE};
 use peer::net::{Identity, Options, PeerInfo, Relays};
-use peer::swarm::{DownloadOptions, Node, Progress, Report, Ticket};
+use peer::swarm::{Access, DownloadOptions, Node, Progress, Report, Ticket};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -58,16 +58,36 @@ pub(crate) fn index(path: &Path) -> (Arc<Artifact>, PathBuf) {
     (Arc::new(indexed.artifact), indexed.root)
 }
 
-/// Indexes `path`, seeds it from `node` and returns a ticket pointing there.
+/// Indexes `path`, seeds it from `node` to whoever has the ticket, and
+/// returns a ticket pointing there.
 pub(crate) fn seed(node: &Node, path: &Path) -> (Arc<Artifact>, Ticket) {
+    seed_for(node, path, Access::new())
+}
+
+/// As [`seed`], for the machines `access` lets in.
+pub(crate) fn seed_for(node: &Node, path: &Path, access: Access) -> (Arc<Artifact>, Ticket) {
     let (artifact, root) = index(path);
-    node.seed(artifact.clone(), root);
+    node.seed(artifact.clone(), root, access);
     let ticket = ticket_for(node, &artifact);
     (artifact, ticket)
 }
 
+/// A new offer whose holders fetch from each other.
+pub(crate) fn swarm() -> Access {
+    Access {
+        swarm: true,
+        ..Access::new()
+    }
+}
+
+/// A ticket for what `node` offers of `artifact`'s content, pointing there.
 pub(crate) fn ticket_for(node: &Node, artifact: &Artifact) -> Ticket {
-    node.ticket(artifact.id(), &[addr_of(node).to_string()])
+    let share = node.share(artifact.content_id()).unwrap();
+    Ticket {
+        // The node may hold the content under another manifest.
+        artifact: artifact.id(),
+        ..node.ticket(&share, &[addr_of(node).to_string()])
+    }
 }
 
 pub(crate) fn options() -> DownloadOptions {
