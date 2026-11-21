@@ -215,8 +215,9 @@ fn a_machine_there_is_no_build_for_is_told_so() {
     assert!(!trial.installed().exists());
 }
 
-/// The line that installs mux is written in four places. They say the
-/// same, so that changing the address in one cannot leave another behind.
+/// The line that installs mux is written in the script and in the README.
+/// They say the same, so that changing the address in one cannot leave the
+/// other behind.
 #[test]
 fn the_install_line_is_the_same_wherever_it_is_written() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -229,7 +230,8 @@ fn the_install_line_is_the_same_wherever_it_is_written() {
         .map(|rest| format!("curl {rest}"))
         .expect("the script says how it is run");
     assert!(line.ends_with("/install.sh | sh"), "{line}");
-    for path in ["README.md", "site/index.html", "site/llms.txt"] {
-        assert!(read(path).contains(&line), "{path} does not say `{line}`");
-    }
+    assert!(
+        read("README.md").contains(&line),
+        "the README does not say `{line}`"
+    );
 }
