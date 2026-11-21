@@ -1,0 +1,56 @@
+# mux
+
+> mux is a command-line tool that copies and syncs files between folders, web addresses and other machines. One command on each side sends a folder between two machines, through home routers, with every chunk checked against a BLAKE3 digest. It runs on Linux, macOS and Windows, and is open source (MIT).
+
+This page describes release 0.3.0. Progress and notes for people go to standard error. What a command produced goes to standard output. Every command takes `--json`, which writes one JSON object on each line of standard output.
+
+## Install
+
+- macOS or Linux: `curl -fsSL https://raw.githubusercontent.com/yuvichh/mux/main/install.sh | sh` puts `mux` in `~/.local/bin`. `MUX_INSTALL=/some/folder` names another folder, and `MUX_VERSION=v0.3.0` another release.
+- Homebrew: `brew install yuvichh/tap/mux`
+- Windows: download `mux.exe` from https://github.com/yuvichh/mux/releases/latest
+
+## Commands
+
+- `mux cp <SOURCE>... <DESTINATION>` copies. A source is a file, a folder, a web address or a ticket. The destination is a folder, written with a `/` at its end if it is not there yet, or `peer:`.
+- `mux cp ./folder peer:` offers a folder to other machines. It prints one ticket (a line that begins `mux://`) on standard output and runs until it is stopped. Keep it running while the other machine fetches.
+- `mux cp 'TICKET' ./downloads/` fetches what a ticket names into `./downloads/`. Run it again to carry on after a break. Quote the ticket: it holds `?` and `&`.
+- `mux cp https://example.org/file.iso ./downloads/` downloads from the web. `--hash sha256:<64 hex>` or `--hash blake3:<64 hex>` checks the file. `--mirror <URL>` reads the same file from a second server at once.
+- `mux sync <SOURCE> <DESTINATION>` makes the destination match the source and fetches only what changed. The source is a folder, a web address or a ticket. `--dry-run` says what would change. Nothing is removed without `--delete`. What is replaced or removed goes to `.mux-trash` inside the destination unless `--no-trash` is given. A sync that would remove more than half of the destination stops unless `--force` is given.
+- `mux probe <PLACE>` says what is at a web address, a folder or a ticket, and copies nothing.
+- `mux id` prints this machine's node id.
+
+`--dry-run` works on `cp` and `sync`. `--no-relay --listen <ADDR>` makes two machines connect at an address and through no relay.
+
+## Standard output
+
+Without `--json`, a finished copy writes one line: the path that was written, a tab, the size in bytes, a tab, and `verified`, `consistent` or `already there`.
+
+With `--json`, each line has `"v":1` and an `event`:
+
+- `start`: `source`, `destination`, `bytes`, `files`
+- `progress`: `bytes`, `of`
+- `file`: `path`, when a file is whole and has its final name
+- `done`: `path`, `bytes`, `checked`, `fetched`, `kept`
+- `plan`: what `--dry-run` would copy
+- `offer`: `ticket`, `name`, `bytes`, `files`, when something is offered
+- `step`, `synced`, `sync_plan`: what a sync does or would do
+- `probe`: the answer of `mux probe`
+- `error`: `code`, `kind`, `message`, `hint`. It is the last line of a command that failed.
+
+## Exit codes
+
+- 0: done
+- 1: failed for a reason not listed here
+- 2: the command line is wrong. Running it again will not help.
+- 3: nothing is at the source
+- 4: the source could not be reached or stopped sending. Run the same command again: it carries on with what it stored.
+- 5: the source changed while it was read. Run the same command again.
+- 6: what arrived does not have the digest that was given
+
+## Docs
+
+- [Commands](https://raw.githubusercontent.com/yuvichh/mux/v0.3.0/docs/commands.md): every command and flag, the JSON lines and the exit codes
+- [How it works](https://raw.githubusercontent.com/yuvichh/mux/v0.3.0/docs/how-it-works.md): tickets, chunks and checking
+- [Protocol](https://raw.githubusercontent.com/yuvichh/mux/v0.3.0/docs/protocol.md): what two machines say to each other
+- [Source](https://github.com/yuvichh/mux)

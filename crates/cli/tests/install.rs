@@ -214,3 +214,22 @@ fn a_machine_there_is_no_build_for_is_told_so() {
     assert!(!out.contains("downloading"), "{out}");
     assert!(!trial.installed().exists());
 }
+
+/// The line that installs mux is written in four places. They say the
+/// same, so that changing the address in one cannot leave another behind.
+#[test]
+fn the_install_line_is_the_same_wherever_it_is_written() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |path: &str| std::fs::read_to_string(root.join(path)).unwrap();
+    // As the script says it of itself, in the comment at its top.
+    let script = read("install.sh");
+    let line = script
+        .lines()
+        .find_map(|line| line.strip_prefix("#     curl "))
+        .map(|rest| format!("curl {rest}"))
+        .expect("the script says how it is run");
+    assert!(line.ends_with("/install.sh | sh"), "{line}");
+    for path in ["README.md", "site/index.html", "site/llms.txt"] {
+        assert!(read(path).contains(&line), "{path} does not say `{line}`");
+    }
+}
